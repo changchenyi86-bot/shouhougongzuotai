@@ -282,7 +282,7 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
               onClick={() => !sameGroup(target, g) && setTarget({ channel: g.channel, group_id: g.group_id })}
             >
               <span className={`g-avatar ${g.channel}`} aria-hidden>
-                {(g.group_name ?? g.group_id).replace(/^某/, "").slice(0, 1)}
+                {(g.group_name ?? g.group_id).trim().slice(0, 1)}
               </span>
               <div className="g-main">
                 <div className="g-top">

@@ -97,7 +97,7 @@ const files = new Map<string, string>([
 ]);
 
 function build(): Room[] {
-  const bank = room("wecom", "g1", "华东某银行-有数项目群", true, 65);
+  const bank = room("wecom", "g1", "银行客户-有数项目群", true, 65);
   let m = say(bank, "x9Kq", 9, 58, "下周三我们准备升级到 6.2，有什么需要注意的吗？");
   suggest(bank, m, "adopted", { handled_by: "李四" });
   say(bank, null, 10, 1, "升级前建议先备份元数据库，6.2 的权限模型有调整，升级说明我稍后发群里。");
@@ -121,7 +121,7 @@ function build(): Room[] {
     reason: "知识库命中：报表导出超时处理（3 次相似问题已解决）",
   });
 
-  const factory = room("dingtalk", "g2", "某制造客户-知数交付群", true, 212);
+  const factory = room("dingtalk", "g2", "制造客户-知数交付群", true, 212);
   say(factory, "t7Wd", 9, 40, "我们这边新来了两位同事，账号已经建好了");
   m = say(factory, "t7Wd", 9, 47, "新同事看不到看板，是不是权限没开？");
   suggest(factory, m, "ready", {
@@ -132,7 +132,7 @@ function build(): Room[] {
     reason: "知识库命中：新用户看不到看板",
   });
 
-  const retail = room("feishu", "g3", "某零售客户-有数运维群", true, 98);
+  const retail = room("feishu", "g3", "零售客户-有数运维群", true, 98);
   m = say(retail, "k2Rn", 9, 20, "昨天的数据和系统对不上，麻烦看下");
   suggest(retail, m, "escalated", {
     content: "您好，这个问题我们需要技术同事确认一下，稍后回复您。",
@@ -152,7 +152,7 @@ function build(): Room[] {
     reason: "知识库里没有找到相似问题，建议转人工",
   });
 
-  const broker = room("wecom", "g4", "某券商-知数实施群", true, 340);
+  const broker = room("wecom", "g4", "券商客户-知数实施群", true, 340);
   m = say(broker, "q8Fs", 8, 40, "测试环境的许可证快到期了，能帮忙续一下吗？");
   suggest(broker, m, "adopted", { handled_by: "王五" });
   say(broker, "q8Fs", 8, 52, "好的，收到，谢谢");

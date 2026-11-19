@@ -99,6 +99,9 @@ pytest
 cd web
 npm install
 npm run dev
+
+# 只看界面（内置演示数据，不需要后端和数据库），浏览器打开 http://localhost:5180/demo.html
+npm run demo
 ```
 
 ## 企业微信接入（会话内容存档）

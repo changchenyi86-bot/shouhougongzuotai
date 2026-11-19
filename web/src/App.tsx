@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchSendState, type SendState } from "./api";
 import Conversations from "./Conversations";
+import { applyTheme, loadTheme, saveTheme, THEMES, type Theme } from "./theme";
 
 // 线条图标（24×24 视图，描边绘制）
 const ICONS: Record<string, string> = {
@@ -35,6 +36,7 @@ function loadOperator(): string {
 
 export default function App() {
   const [operator, setOperator] = useState(loadOperator);
+  const [theme, setTheme] = useState<Theme>(loadTheme);
   const [toast, setToast] = useState<string | null>(null);
   const [sendState, setSendState] = useState<SendState | null>(null);
 
@@ -57,6 +59,11 @@ export default function App() {
       /* 浏览器禁用存储时忽略 */
     }
   }, [operator]);
+
+  useEffect(() => {
+    applyTheme(theme);
+    saveTheme(theme);
+  }, [theme]);
 
   const notify = (text: string) => {
     setToast(text);
@@ -88,10 +95,20 @@ export default function App() {
         <header>
           <h2>会话</h2>
           {sendState?.enabled && <SendIndicator state={sendState} />}
-          <label className="operator">
-            处理人
-            <input value={operator} maxLength={64} placeholder="填写你的名字" onChange={(e) => setOperator(e.target.value)} />
-          </label>
+          <div className="header-tools">
+            <div className="theme-switch" role="radiogroup" aria-label="界面风格" title="切换界面风格">
+              {THEMES.map((t) => (
+                <button key={t.key} role="radio" aria-checked={theme === t.key} className={theme === t.key ? "on" : ""} onClick={() => setTheme(t.key)}>
+                  <i className={t.key} />
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            <label className="operator">
+              处理人
+              <input value={operator} maxLength={64} placeholder="填写你的名字" onChange={(e) => setOperator(e.target.value)} />
+            </label>
+          </div>
         </header>
         <Conversations
           operator={operator}
