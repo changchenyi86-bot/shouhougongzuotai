@@ -2,7 +2,8 @@
 
 - 消息来源：ArchiveSyncer 定时按 seq 拉取（archive.py）
 - 回调：存档应用的「接收事件服务器」推送 msgaudit_notify 时立即触发一次拉取
-- 回复：会话存档无法通过 API 发消息，工作台采纳后复制，由技术支持在企业微信里发送（直发方式见 app/delivery.py）
+- 回复：会话存档无法通过 API 发消息。工作台采纳后要么复制后人工发送，要么由电脑端发送程序
+  操作官方企业微信客户端自动发送（见 app/send_queue.py 和 windows-agent/）
 """
 
 import asyncio

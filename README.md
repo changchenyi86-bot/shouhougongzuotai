@@ -21,11 +21,13 @@ backend/
     schemas.py       接口入参/出参
     api/messages.py  消息写入、查询、渠道回调入口
     ingest.py        消息入库统一入口（去重 + 触发 AI 建议）
-    delivery.py      回复发送方式（目前为复制后人工发送，预留直发接口）
+    send_queue.py    自动发送队列（确认发送 → 电脑端发送程序领取 → 回报结果）、频率限制
     ai/              AI 回复建议：llm.py 模型接口（可切换）、suggest.py 提示词、worker.py 后台生成
     api/suggestions.py  收件箱、采纳 / 修改 / 转人工 / 忽略 / 重新生成
+    api/sending.py   自动发送：发送程序心跳 / 领取 / 回报，工作台重发 / 取消 / 改为手动
     channels/        各 IM 渠道适配器（wecom 已实现：会话内容存档；dingtalk / feishu 待实现）
   tests/
+windows-agent/       电脑端发送程序：在常开的 Windows 电脑上操作官方企业微信客户端发消息
 web/                 React 工作台（消息收件箱，工单/知识库/积分排名占位）
 docker-compose.yml
 ```
@@ -58,6 +60,10 @@ docker-compose.yml
 - `GET/POST /webhooks/wecom`：企业微信会话存档应用的事件回调（URL 校验、msgaudit_notify）
 - `GET /api/inbox?view=todo|escalated|done|all&channel=`：收件箱（消息 + AI 建议）
 - `POST /api/suggestions/{id}/adopt|escalate|dismiss|regenerate`：处理 AI 建议
+- `GET /api/send/status`：自动发送程序是否在线
+- `POST /api/suggestions/{id}/adopt` 传 `send: true`：确认后交给发送程序自动发到群里
+- `POST /api/suggestions/{id}/resend|cancel-send|mark-manual-sent`：自动发送失败后重发、取消排队、标记已手动发送
+- `POST /api/agent/heartbeat|claim`、`POST /api/agent/tasks/{id}/result`：发送程序专用，需 `Authorization: Bearer <SEND_AGENT_TOKEN>`
 - 接口文档：启动后访问 http://localhost:8000/docs
 
 ## 本地运行
@@ -98,7 +104,16 @@ npm run dev
 5. 可选：填写 `WECOM_CONTACT_SECRET`（客户联系 Secret），工作台可显示外部客户群名称。
 
 发送人 ID 以 `wm` / `wo` 开头的是客户，只有客户的文本消息会生成 AI 建议；员工发言也入库，作为上下文。
-会话存档不能通过 API 发消息，所以工作台「采纳」后会把回复复制到剪贴板，由技术支持粘贴到企业微信发送（客户群回复保留人工确认）。
+会话存档不能通过 API 发消息，所以回复有两种发法（客户群回复都保留人工确认）：
+
+- 复制后手动发送：工作台把回复复制到剪贴板，技术支持粘贴到企业微信发送。
+- 自动发送（原型）：一台常开的 Windows 电脑登录专用客服企业微信账号，运行 `windows-agent/` 里的发送程序。
+  技术支持在工作台点「采纳并发送到群」并确认后，发送程序操作官方企业微信客户端：搜索群名、点开、
+  截屏识字核对群名、粘贴、发送，再把成功或失败回报给工作台。详见 [windows-agent/使用说明.md](windows-agent/使用说明.md)。
+
+自动发送的安全措施：只通过操作客户端界面发送，不碰通信协议、不注入客户端；群名未知或有同名群时不发；
+发送前后三次核对（标题是目标群、内容在输入框里、发送后输入框已清空）；两次发送至少间隔 5 秒、每群每小时最多 20 条；
+排队超过 10 分钟自动取消；发送中断时标记「结果未知」，不自动重发。
 
 ## AI 回复建议
 
@@ -115,7 +130,8 @@ npm run dev
 - [x] 项目骨架与统一消息模型
 - [x] 企业微信群消息接入（会话内容存档）
 - [ ] 钉钉、飞书群消息接入
-- [x] AI 预处理与回复建议（复制后人工发送；直发待定，如经网易七鱼）
+- [x] AI 预处理与回复建议
+- [x] 企业微信自动发送原型（电脑端发送程序操作客户端，待真机验证）
 - [ ] 转技术支持协助
 - [ ] 知识库沉淀与自迭代（pgvector）
 - [ ] 内部工单

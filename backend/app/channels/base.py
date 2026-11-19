@@ -15,10 +15,6 @@ class ChannelAdapter(ABC):
     async def parse(self, request: Request) -> MessageIn | None:
         """解析渠道回调。返回 None 表示非消息事件（如 URL 校验、心跳），无需入库。"""
 
-    def reply_senders(self) -> list:
-        """按优先级返回可用的直发方式（app.delivery.ReplySender）。默认没有，只能复制后人工发送。"""
-        return []
-
     def is_customer(self, message: Message) -> bool:
         """发送人是否客户（相对于本公司员工）。渠道能区分时应覆盖。"""
         return True

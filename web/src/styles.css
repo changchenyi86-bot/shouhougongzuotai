@@ -56,3 +56,17 @@ button.link { border: 0; background: none; color: #3370ff; padding: 0; margin-to
 .escalate { display: flex; gap: 8px; margin-top: 8px; }
 .escalate input { flex: 1; min-width: 0; border: 1px solid #dee0e3; border-radius: 6px; padding: 6px 8px; }
 .toast { position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%); background: #1f2329; color: #fff; padding: 10px 18px; border-radius: 8px; font-size: 14px; }
+.send-indicator { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #646a73; margin-right: auto; margin-left: 16px; }
+.send-indicator i { width: 8px; height: 8px; border-radius: 50%; background: #bbbfc4; }
+.send-indicator.on { color: #1a7f37; }
+.send-indicator.on i { background: #34c724; }
+.confirm-send { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; padding: 8px 10px; border-radius: 6px; background: #fff; border: 1px solid #3370ff; font-size: 14px; }
+.confirm-send span { flex: 1; min-width: 200px; }
+.confirm-send button { border: 1px solid #dee0e3; background: #fff; padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+.confirm-send button.primary { background: #3370ff; border-color: #3370ff; color: #fff; }
+.sug.done .badge + .badge { margin-left: 8px; }
+.badge.send { background: #e1eaff; color: #245bdb; }
+.badge.err { background: #ffe9e8; color: #d83931; }
+.sug.send-failed { background: #fff0f0; border-color: #ffd6d4; }
+.send-error { color: #d83931; font-size: 13px; }
+.sug.done .by { margin-right: 8px; }
