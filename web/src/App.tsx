@@ -1,17 +1,58 @@
-import { useEffect, useState } from "react";
-import { CHANNEL_LABEL, fetchMessages, type Channel, type Message } from "./api";
+import { useCallback, useEffect, useState } from "react";
+import { CHANNEL_LABEL, fetchInbox, type Channel, type InboxItem, type View } from "./api";
+import SuggestionCard from "./SuggestionCard";
 
 const NAV = ["消息收件箱", "工单", "知识库", "积分排名"] as const;
+const VIEWS: { key: View; label: string }[] = [
+  { key: "todo", label: "待处理" },
+  { key: "escalated", label: "已转人工" },
+  { key: "done", label: "已处理" },
+  { key: "all", label: "全部消息" },
+];
+
+function loadOperator(): string {
+  try {
+    return localStorage.getItem("operator") ?? "";
+  } catch {
+    return "";
+  }
+}
 
 export default function App() {
+  const [view, setView] = useState<View>("todo");
   const [channel, setChannel] = useState<Channel | undefined>();
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [items, setItems] = useState<InboxItem[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [operator, setOperator] = useState(loadOperator);
+  const [toast, setToast] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    fetchInbox(view, channel)
+      .then((data) => {
+        setItems(data);
+        setError(null);
+      })
+      .catch((e: Error) => setError(e.message));
+  }, [view, channel]);
 
   useEffect(() => {
-    setError(null);
-    fetchMessages(channel).then(setMessages).catch((e: Error) => setError(e.message));
-  }, [channel]);
+    load();
+    const timer = setInterval(load, 10_000);
+    return () => clearInterval(timer);
+  }, [load]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("operator", operator);
+    } catch {
+      /* 浏览器禁用存储时忽略 */
+    }
+  }, [operator]);
+
+  const notify = (text: string) => {
+    setToast(text);
+    setTimeout(() => setToast(null), 3000);
+  };
 
   return (
     <div className="layout">
@@ -28,31 +69,49 @@ export default function App() {
       <main>
         <header>
           <h2>消息收件箱</h2>
+          <label className="operator">
+            处理人
+            <input value={operator} maxLength={64} placeholder="填写你的名字" onChange={(e) => setOperator(e.target.value)} />
+          </label>
+        </header>
+        <div className="toolbar">
+          <div className="tabs">
+            {VIEWS.map((v) => (
+              <button key={v.key} className={view === v.key ? "on" : ""} onClick={() => setView(v.key)}>
+                {v.label}
+              </button>
+            ))}
+          </div>
           <div className="filters">
-            <button className={!channel ? "on" : ""} onClick={() => setChannel(undefined)}>全部</button>
+            <button className={!channel ? "on" : ""} onClick={() => setChannel(undefined)}>全部渠道</button>
             {(Object.keys(CHANNEL_LABEL) as Channel[]).map((c) => (
               <button key={c} className={channel === c ? "on" : ""} onClick={() => setChannel(c)}>
                 {CHANNEL_LABEL[c]}
               </button>
             ))}
           </div>
-        </header>
-        {error && <p className="error">{error}</p>}
-        {!error && messages.length === 0 && <p className="empty">暂无消息</p>}
+        </div>
+        {error && <p className="error">加载失败：{error}</p>}
+        {!error && items.length === 0 && <p className="empty">暂无消息</p>}
         <ul className="messages">
-          {messages.map((m) => (
+          {items.map(({ message: m, suggestion }) => (
             <li key={m.id}>
               <div className="meta">
                 <span className={`tag ${m.channel}`}>{CHANNEL_LABEL[m.channel]}</span>
-                <span>{m.group_name ?? m.group_id}</span>
+                {m.is_external_group && <span className="ext">客户群</span>}
+                <span className="group">{m.group_name ?? m.group_id}</span>
                 <span>{m.sender_name ?? m.sender_id}</span>
                 <time>{new Date(m.sent_at).toLocaleString("zh-CN")}</time>
               </div>
-              <p>{m.content}</p>
+              <p className="content">{m.content}</p>
+              {suggestion && (
+                <SuggestionCard suggestion={suggestion} operator={operator} onChanged={load} notify={notify} />
+              )}
             </li>
           ))}
         </ul>
       </main>
+      {toast && <div className="toast">{toast}</div>}
     </div>
   );
 }
