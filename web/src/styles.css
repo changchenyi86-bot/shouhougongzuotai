@@ -9,7 +9,7 @@ nav a.disabled { opacity: .5; }
 main { flex: 1; padding: 24px; min-width: 0; }
 header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
 header h2 { margin: 0; }
-.filters button { border: 1px solid #dee0e3; background: #fff; padding: 6px 12px; margin-left: 6px; border-radius: 6px; cursor: pointer; }
+
 .filters button.on { border-color: #3370ff; color: #3370ff; }
 .messages { list-style: none; padding: 0; margin-top: 16px; }
 .messages li { background: #fff; border-radius: 8px; padding: 12px 16px; margin-bottom: 10px; }
@@ -23,3 +23,36 @@ header h2 { margin: 0; }
 .error { color: #d83931; }
 .empty { color: #8f959e; }
 @media (max-width: 640px) { aside { display: none; } }
+.operator { font-size: 13px; color: #646a73; display: flex; align-items: center; gap: 6px; }
+.operator input { border: 1px solid #dee0e3; border-radius: 6px; padding: 6px 8px; width: 120px; }
+.toolbar { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.tabs button, .filters button { border: 1px solid #dee0e3; background: #fff; padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+.tabs button { margin-right: 6px; }
+.filters button { margin-left: 0; margin-right: 6px; }
+.tabs button.on { background: #3370ff; border-color: #3370ff; color: #fff; }
+.meta .group { font-weight: 600; color: #1f2329; }
+.ext { padding: 0 6px; border-radius: 4px; background: #fff3e8; color: #de7802; }
+.messages p.content { font-size: 15px; }
+.sug { margin-top: 12px; padding: 12px; border-radius: 8px; background: #f2f6ff; border: 1px solid #d6e2ff; }
+.sug.pending { color: #646a73; background: #f5f6f8; border-color: #eceef1; }
+.sug.failed { background: #fff0f0; border-color: #ffd6d4; }
+.sug.escalated { background: #fff8eb; border-color: #ffe2b3; }
+.sug.done { background: #f5f6f8; border-color: #eceef1; }
+.sug p { margin: 6px 0 0; }
+.sug-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; }
+.badge { padding: 2px 8px; border-radius: 10px; background: #e1eaff; color: #245bdb; font-size: 12px; }
+.badge.ok { background: #e3f9e9; color: #1a7f37; }
+.badge.warn { background: #fff1db; color: #b45c00; }
+.conf { color: #646a73; }
+.reason { color: #646a73; flex-basis: 100%; }
+.by { color: #8f959e; font-size: 12px; margin-left: 8px; }
+.note { color: #b45c00; font-size: 13px; }
+.sug textarea { width: 100%; margin-top: 8px; border: 1px solid #c9d6f5; border-radius: 6px; padding: 8px; font: inherit; font-size: 14px; resize: vertical; background: #fff; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.actions button, .escalate button { border: 1px solid #dee0e3; background: #fff; padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+.actions button.primary { background: #3370ff; border-color: #3370ff; color: #fff; }
+.actions button:disabled { opacity: .5; cursor: default; }
+button.link { border: 0; background: none; color: #3370ff; padding: 0; margin-top: 6px; cursor: pointer; }
+.escalate { display: flex; gap: 8px; margin-top: 8px; }
+.escalate input { flex: 1; min-width: 0; border: 1px solid #dee0e3; border-radius: 6px; padding: 6px 8px; }
+.toast { position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%); background: #1f2329; color: #fff; padding: 10px 18px; border-radius: 8px; font-size: 14px; }

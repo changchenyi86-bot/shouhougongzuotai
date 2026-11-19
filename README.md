@@ -20,7 +20,11 @@ backend/
     models.py        统一消息模型 Message
     schemas.py       接口入参/出参
     api/messages.py  消息写入、查询、渠道回调入口
-    channels/        各 IM 渠道适配器（wecom / dingtalk / feishu，待实现）
+    ingest.py        消息入库统一入口（去重 + 触发 AI 建议）
+    delivery.py      回复发送方式（目前为复制后人工发送，预留直发接口）
+    ai/              AI 回复建议：llm.py 模型接口（可切换）、suggest.py 提示词、worker.py 后台生成
+    api/suggestions.py  收件箱、采纳 / 修改 / 转人工 / 忽略 / 重新生成
+    channels/        各 IM 渠道适配器（wecom 已实现：会话内容存档；dingtalk / feishu 待实现）
   tests/
 web/                 React 工作台（消息收件箱，工单/知识库/积分排名占位）
 docker-compose.yml
@@ -50,7 +54,10 @@ docker-compose.yml
 - `GET /api/health`
 - `POST /api/messages`：写入一条已归一的消息
 - `GET /api/messages?channel=&group_id=&since=&limit=`：查询消息
-- `POST /webhooks/{channel}`：渠道回调（目前返回 501）
+- `POST /webhooks/{channel}`：渠道回调（钉钉、飞书目前返回 501）
+- `GET/POST /webhooks/wecom`：企业微信会话存档应用的事件回调（URL 校验、msgaudit_notify）
+- `GET /api/inbox?view=todo|escalated|done|all&channel=`：收件箱（消息 + AI 建议）
+- `POST /api/suggestions/{id}/adopt|escalate|dismiss|regenerate`：处理 AI 建议
 - 接口文档：启动后访问 http://localhost:8000/docs
 
 ## 本地运行
@@ -80,12 +87,35 @@ npm install
 npm run dev
 ```
 
+## 企业微信接入（会话内容存档）
+
+群消息通过企业微信「会话内容存档」获取，内部群和外部客户群都能拿到全部消息：
+
+1. 企业微信管理后台开通会话内容存档（付费功能），记下存档 Secret，配置消息加密公钥并保存对应私钥。
+2. 下载官方 Linux C SDK（`libWeWorkFinanceSdk_C.so`），和私钥一起放到项目根目录 `secrets/wecom/`（已在 .gitignore 中），docker-compose 会挂载到容器 `/opt/wecom`。
+3. 在 `backend/.env` 填写 `WECOM_CORP_ID`、`WECOM_ARCHIVE_SECRET`、`WECOM_ARCHIVE_PRIVATE_KEY_FILES`（见 `.env.example`）。后端每 30 秒增量拉取一次。
+4. 可选：存档应用「接收事件服务器」填 `https://<域名>/webhooks/wecom` 并配置 `WECOM_CALLBACK_TOKEN` / `WECOM_CALLBACK_AES_KEY`，有新消息时会立即拉取。
+5. 可选：填写 `WECOM_CONTACT_SECRET`（客户联系 Secret），工作台可显示外部客户群名称。
+
+发送人 ID 以 `wm` / `wo` 开头的是客户，只有客户的文本消息会生成 AI 建议；员工发言也入库，作为上下文。
+会话存档不能通过 API 发消息，所以工作台「采纳」后会把回复复制到剪贴板，由技术支持粘贴到企业微信发送（客户群回复保留人工确认）。
+
+## AI 回复建议
+
+新的客户消息入库后，后台结合同群最近 20 条聊天记录生成回复建议，给出「可直接回复 / 建议转人工」和把握程度。
+模型可配置（`LLM_PROVIDER`）：
+
+- `claude`（默认）：Anthropic Claude，密钥放在 `ANTHROPIC_API_KEY`
+- `openai_compatible`：任何兼容 OpenAI Chat Completions 协议的接口，如公司自有模型网关，配置 `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL`
+
+知识库检索的接入点在 `app/ai/suggest.py` 的 `retrieve_knowledge()`。
+
 ## 路线图
 
 - [x] 项目骨架与统一消息模型
-- [ ] 企业微信群消息接入
+- [x] 企业微信群消息接入（会话内容存档）
 - [ ] 钉钉、飞书群消息接入
-- [ ] AI 预处理与回复建议
+- [x] AI 预处理与回复建议（复制后人工发送；直发待定，如经网易七鱼）
 - [ ] 转技术支持协助
 - [ ] 知识库沉淀与自迭代（pgvector）
 - [ ] 内部工单
