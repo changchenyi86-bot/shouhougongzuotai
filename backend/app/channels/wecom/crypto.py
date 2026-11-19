@@ -46,14 +46,14 @@ class WeComCrypto:
                 raise WeComCryptoError("补位错误")
             plain = plain[16:-pad]
             (length,) = struct.unpack(">I", plain[:4])
-            msg, receive_id = plain[4 : 4 + length], plain[4 + length :]
+            msg, receive_id = plain[4 : 4 + length].decode(), plain[4 + length :].decode()
         except WeComCryptoError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise WeComCryptoError(f"解密失败：{exc}") from exc
-        if receive_id.decode() != self.receive_id:
+        if receive_id != self.receive_id:
             raise WeComCryptoError("receiveid 不匹配")
-        return msg.decode()
+        return msg
 
     def encrypt(self, msg: str) -> str:
         body = os.urandom(16) + struct.pack(">I", len(msg.encode())) + msg.encode() + self.receive_id.encode()

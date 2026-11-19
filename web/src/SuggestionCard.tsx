@@ -106,7 +106,9 @@ export default function SuggestionCard({ suggestion: s, operator, onChanged, not
           <button disabled={busy} onClick={() => setShowNote((v) => !v)}>转人工</button>
         )}
         <button disabled={busy} onClick={() => run(() => dismiss(s.id, operator))}>无需回复</button>
-        <button disabled={busy} onClick={() => run(() => regenerate(s.id))}>重新生成</button>
+        {s.status !== "escalated" && (
+          <button disabled={busy} onClick={() => run(() => regenerate(s.id))}>重新生成</button>
+        )}
       </div>
       {showNote && (
         <div className="escalate">

@@ -42,13 +42,17 @@ class GroupDirectory:
         self._client = client or httpx.Client(timeout=10)
         self._archive = _TokenCache(corp_id, archive_secret) if archive_secret else None
         self._contact = _TokenCache(corp_id, contact_secret) if contact_secret else None
-        self._cache: dict[str, GroupInfo] = {}
+        self._cache: dict[str, tuple[GroupInfo, float]] = {}
 
     def lookup(self, room_id: str) -> GroupInfo:
-        if room_id in self._cache:
-            return self._cache[room_id]
-        info = self._lookup_external(room_id) or self._lookup_internal(room_id) or GroupInfo(None, None)
-        self._cache[room_id] = info
+        cached = self._cache.get(room_id)
+        if cached and time.time() < cached[1]:
+            return cached[0]
+        info = self._lookup_external(room_id) or self._lookup_internal(room_id)
+        # 查询成功缓存 1 天（群名可能改）；失败只缓存 10 分钟，之后重试
+        ttl = 86400 if info else 600
+        info = info or GroupInfo(None, None)
+        self._cache[room_id] = (info, time.time() + ttl)
         return info
 
     def _post(self, tokens: _TokenCache, path: str, body: dict) -> dict | None:

@@ -16,6 +16,7 @@ from app.models import Message, Suggestion, SyncCursor
 
 AES_KEY = base64.b64encode(os.urandom(32)).decode().rstrip("=")
 CORP = "ww_test_corp"
+CUST = "wmAbCdEfGhIjKlMnOpQrStUvWxYz0123"  # 客户 external_userid
 
 
 # ---------- 回调加解密 ----------
@@ -106,11 +107,11 @@ class FakeDirectory:
 
 def test_archive_sync(client, fake_llm):
     items = [
-        _item(1, rec("m1", "wmCUSTOMER", "报表导出一直转圈怎么办？")),
+        _item(1, rec("m1", CUST, "报表导出一直转圈怎么办？")),
         _item(2, rec("m2", "zhangsan", "我看一下", ts=1763539260000)),
-        _item(3, rec("m3", "wmCUSTOMER", "单聊消息", room="")),  # 单聊，跳过
-        _item(4, rec("m4", "wmCUSTOMER", action="recall")),  # 撤回，跳过
-        _item(5, rec("m5", "wmCUSTOMER", msgtype="image", image={"md5sum": "x"}, ts=1763539320000)),
+        _item(3, rec("m3", CUST, "单聊消息", room="")),  # 单聊，跳过
+        _item(4, rec("m4", CUST, action="recall")),  # 撤回，跳过
+        _item(5, rec("m5", CUST, msgtype="image", image={"md5sum": "x"}, ts=1763539320000)),
     ]
     archive = FakeArchive(items)
     syncer = ArchiveSyncer(lambda: archive, {"1": KEY}, FakeDirectory(), batch_size=2)
@@ -128,7 +129,7 @@ def test_archive_sync(client, fake_llm):
         assert s.get(SyncCursor, "wecom_archive_seq").value == "5"
 
     # 员工发言作为上下文出现在提示里
-    assert "客户 wmCUSTOMER：报表导出一直转圈怎么办？" in fake_llm.calls[0][1]
+    assert f"客户 {CUST}：报表导出一直转圈怎么办？" in fake_llm.calls[0][1]
 
     # 再次拉取从 seq=5 开始，没有新消息
     archive.calls.clear()
@@ -137,7 +138,7 @@ def test_archive_sync(client, fake_llm):
 
 
 def test_archive_missing_key_stops_without_advancing(client):
-    archive = FakeArchive([_item(1, rec("m1", "wmC", "hi")), _item(2, rec("m2", "wmC", "hi"), ver=2)])
+    archive = FakeArchive([_item(1, rec("m1", CUST, "hi")), _item(2, rec("m2", CUST, "hi"), ver=2)])
     syncer = ArchiveSyncer(lambda: archive, {"1": KEY}, batch_size=10)
     with pytest.raises(ArchiveError):
         syncer.sync_once()
@@ -147,7 +148,7 @@ def test_archive_missing_key_stops_without_advancing(client):
 
 def test_to_message_in_types():
     g = GroupInfo(None, None)
-    m = to_message_in(rec("a", "wmX", msgtype="file", file={"filename": "日志.zip"}), g)
+    m = to_message_in(rec("a", CUST, msgtype="file", file={"filename": "日志.zip"}), g)
     assert m.content == "[文件] 日志.zip" and m.is_external_group  # 查不到群信息时按发送人推断
     mixed = rec("b", "lisi", msgtype="mixed", mixed={"item": [
         {"type": "text", "content": json.dumps({"content": "看图"})},
@@ -158,5 +159,37 @@ def test_to_message_in_types():
 
 def test_wecom_customer_detection():
     adapter = channels.ADAPTERS[channels.Channel.WECOM]
-    assert adapter.is_customer(Message(sender_id="wmABC")) and adapter.is_customer(Message(sender_id="woABC"))
+    assert adapter.is_customer(Message(sender_id=CUST)) and adapter.is_customer(Message(sender_id="wo" + CUST[2:]))
     assert not adapter.is_customer(Message(sender_id="zhangsan"))
+    assert not adapter.is_customer(Message(sender_id="wmeng"))  # 员工 userid 恰好以 wm 开头
+
+
+def test_archive_bad_item_skipped(client):
+    class BadOnce(FakeArchive):
+        def decrypt(self, random_key, encrypt_chat_msg):
+            if random_key == "rk1":
+                raise ArchiveError("DecryptData 失败，错误码 -1")
+            return super().decrypt(random_key, encrypt_chat_msg)
+
+    archive = BadOnce([_item(1, rec("m1", CUST, "坏消息")), _item(2, rec("m2", CUST, "好消息"))])
+    syncer = ArchiveSyncer(lambda: archive, {"1": KEY}, batch_size=10)
+    assert syncer.sync_once() == 1
+    with db.SessionLocal() as s:
+        assert [m.external_id for m in s.query(Message).all()] == ["m2"]
+        assert s.get(SyncCursor, "wecom_archive_seq").value == "2"
+
+
+def test_sync_requested_during_running_sync_reruns(client):
+    archive = FakeArchive([_item(1, rec("m1", CUST, "第一条"))])
+    syncer = ArchiveSyncer(lambda: archive, {"1": KEY}, batch_size=10)
+    original = syncer._sync
+
+    def sync_and_receive_more():
+        n = original()
+        if len(archive.items) == 1:  # 拉取过程中又来了新消息和通知
+            archive.items.append(_item(2, rec("m2", CUST, "第二条")))
+            assert syncer.sync_once() == 0  # 并发的通知不重复拉取，只做标记
+        return n
+
+    syncer._sync = sync_and_receive_more
+    assert syncer.sync_once() == 2

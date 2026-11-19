@@ -71,7 +71,7 @@ export default function App() {
           <h2>消息收件箱</h2>
           <label className="operator">
             处理人
-            <input value={operator} placeholder="填写你的名字" onChange={(e) => setOperator(e.target.value)} />
+            <input value={operator} maxLength={64} placeholder="填写你的名字" onChange={(e) => setOperator(e.target.value)} />
           </label>
         </header>
         <div className="toolbar">

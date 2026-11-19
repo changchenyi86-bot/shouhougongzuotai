@@ -62,7 +62,9 @@ async function call<T>(url: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     let detail = `${res.status}`;
     try {
-      detail = (await res.json()).detail ?? detail;
+      const d = (await res.json()).detail;
+      // FastAPI 校验错误的 detail 是数组
+      detail = Array.isArray(d) ? d.map((x: { msg?: string }) => x.msg ?? "").join("；") : d ?? detail;
     } catch {
       /* 非 JSON 错误 */
     }

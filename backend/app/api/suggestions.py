@@ -52,7 +52,8 @@ def inbox(
 
 
 def _get(session: Session, suggestion_id: uuid.UUID) -> Suggestion:
-    sug = session.get(Suggestion, suggestion_id)
+    # 行锁：两人同时处理同一条建议时，后到的请求会看到已处理状态并返回 409
+    sug = session.get(Suggestion, suggestion_id, with_for_update=True)
     if sug is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "建议不存在")
     return sug
@@ -112,7 +113,9 @@ def dismiss(suggestion_id: uuid.UUID, body: HandleIn, session: Session = Depends
 @router.post("/suggestions/{suggestion_id}/regenerate", response_model=SuggestionOut)
 def regenerate(suggestion_id: uuid.UUID, session: Session = Depends(get_session)) -> Suggestion:
     sug = _get(session, suggestion_id)
-    _ensure_open(sug)
+    if sug.status not in (S.READY, S.FAILED):
+        raise HTTPException(status.HTTP_409_CONFLICT, f"当前状态不能重新生成（{sug.status.value}）")
+    session.rollback()  # 释放行锁，enqueue 用独立会话更新状态
     worker.enqueue(sug.message_id)
     session.refresh(sug)
     return sug

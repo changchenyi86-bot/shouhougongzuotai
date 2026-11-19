@@ -50,6 +50,35 @@ def test_empty_or_non_text_skipped(client, fake_llm):
     assert len(_todo(client, "all")) == 2
 
 
+def test_old_messages_skip_suggestion(client, fake_llm, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "ai_suggest_max_age_minutes", 120)
+    _post(client, external_id="old", sent_at="2025-01-01T00:00:00Z")
+    assert fake_llm.calls == [] and _todo(client) == []
+
+
+def test_dismiss_while_generating_not_overwritten(client, fake_llm, monkeypatch):
+    from app.ai import worker
+
+    pending = []
+    monkeypatch.setattr(worker, "submit", lambda fn, *args: pending.append((fn, args)))
+    _post(client)
+    sid = _todo(client)[0]["suggestion"]["id"]
+    assert client.post(f"/api/suggestions/{sid}/dismiss", json={}).status_code == 200
+    fn, args = pending[0]
+    fn(*args)  # 生成结束
+    assert _todo(client) == [] and _todo(client, "done")[0]["suggestion"]["status"] == "dismissed"
+
+
+def test_regenerate_only_ready_or_failed(client):
+    _post(client)
+    sid = _todo(client)[0]["suggestion"]["id"]
+    client.post(f"/api/suggestions/{sid}/escalate", json={})
+    assert client.post(f"/api/suggestions/{sid}/regenerate").status_code == 409
+    assert _todo(client, "escalated")[0]["suggestion"]["status"] == "escalated"
+
+
 def test_adopt_as_is(client):
     _post(client)
     sid = _todo(client)[0]["suggestion"]["id"]

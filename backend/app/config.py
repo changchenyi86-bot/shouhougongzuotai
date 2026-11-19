@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     llm_timeout: float = 60
     ai_context_messages: int = 20  # 生成建议时带上的群内最近消息条数
     ai_workers: int = 4
+    ai_suggest_max_age_minutes: int = 120  # 超过这个时间的旧消息（如首次导入的历史记录）不生成建议
 
     # ---- 企业微信 会话内容存档 ----
     wecom_corp_id: str = ""

@@ -15,6 +15,10 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from app import db
 from app.channels.wecom.directory import GroupDirectory, GroupInfo
 from app.channels.wecom.sdk import ArchiveClient, ArchiveError
+
+
+class MissingKeyError(ArchiveError):
+    """缺少某个版本的解密私钥：停止拉取且不推进 seq，避免丢消息。"""
 from app.models import Channel, MessageType, SyncCursor
 from app.schemas import MessageIn
 
@@ -22,12 +26,14 @@ log = logging.getLogger(__name__)
 
 CURSOR_KEY = "wecom_archive_seq"
 
-# 外部联系人（客户）的 userid 以 wo / wm 开头，员工为企业内 userid
+# 外部联系人（客户）的 external_userid 以 wo / wm 开头，且是 30 位左右的随机串；
+# 员工 userid 由企业自定义，可能恰好以 wm/wo 开头（如 wmeng），所以同时检查长度
 EXTERNAL_USER_PREFIXES = ("wo", "wm")
+EXTERNAL_USER_MIN_LEN = 20
 
 
 def is_external_user(user_id: str) -> bool:
-    return user_id.startswith(EXTERNAL_USER_PREFIXES)
+    return user_id.startswith(EXTERNAL_USER_PREFIXES) and len(user_id) >= EXTERNAL_USER_MIN_LEN
 
 
 def load_private_keys(files: dict[str, str]) -> dict[str, RSAPrivateKey]:
@@ -101,6 +107,7 @@ class ArchiveSyncer:
         self._directory = directory
         self._batch_size = batch_size
         self._lock = threading.Lock()
+        self._rerun = threading.Event()
 
     @property
     def client(self) -> ArchiveClient:
@@ -113,7 +120,7 @@ class ArchiveSyncer:
         key = self._keys.get(ver)
         if key is None:
             # 不推进 seq，等管理员补上对应版本的私钥后重拉，避免丢消息
-            raise ArchiveError(f"缺少 publickey_ver={ver} 对应的私钥，请在 WECOM_ARCHIVE_PRIVATE_KEY_FILES 中配置")
+            raise MissingKeyError(f"缺少 publickey_ver={ver} 对应的私钥，请在 WECOM_ARCHIVE_PRIVATE_KEY_FILES 中配置")
         random_key = key.decrypt(base64.b64decode(item["encrypt_random_key"]), padding.PKCS1v15()).decode()
         return json.loads(self.client.decrypt(random_key, item["encrypt_chat_msg"]))
 
@@ -121,11 +128,17 @@ class ArchiveSyncer:
         return self._directory.lookup(room_id) if self._directory else GroupInfo(None, None)
 
     def sync_once(self) -> int:
-        """拉取到最新为止，返回新入库的消息数。已有拉取在进行时直接返回 0。"""
+        """拉取到最新为止，返回新入库的消息数。
+        已有拉取在进行时只做标记并返回 0，正在进行的那次结束前会再拉一轮，避免漏掉期间到达的消息。"""
+        self._rerun.set()
         if not self._lock.acquire(blocking=False):
             return 0
         try:
-            return self._sync()
+            created = 0
+            while self._rerun.is_set():
+                self._rerun.clear()
+                created += self._sync()
+            return created
         finally:
             self._lock.release()
 
@@ -143,7 +156,7 @@ class ArchiveSyncer:
                 for item in items:
                     try:
                         record = self._decrypt(item)
-                    except ArchiveError:
+                    except MissingKeyError:
                         raise
                     except Exception as exc:  # noqa: BLE001  单条损坏的消息跳过，不阻塞后续
                         log.exception("会话存档消息解密失败 seq=%s msgid=%s: %s", item.get("seq"), item.get("msgid"), exc)
