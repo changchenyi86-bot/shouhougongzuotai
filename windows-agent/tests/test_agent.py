@@ -4,7 +4,7 @@ from wecom_agent import config as config_mod
 from wecom_agent.config import AgentConfig
 from wecom_agent.matching import find_title, match_title
 from wecom_agent.runner import Runner, SendResult
-from wecom_agent.server import ServerError, ServerRejected, Task
+from wecom_agent.server import Attachment, ServerError, ServerRejected, Task
 
 
 # ---------- 群名核对 ----------
@@ -64,6 +64,13 @@ class FakeServer:
             raise self.claim_error
         return (self.tasks.pop(0) if self.tasks else None), self.retry_after
 
+    def download(self, att, folder):
+        if att.id == "bad":
+            raise ServerError("404")
+        path = folder / att.filename
+        path.write_bytes(b"x")
+        return path
+
     def report(self, task_id, ok, error):
         if self.reject_report:
             raise ServerRejected("409")
@@ -81,8 +88,8 @@ class FakeDriver:
     def status(self):
         return True, "企业微信已就绪"
 
-    def send(self, group_name, content):
-        self.sent.append((group_name, content))
+    def send(self, group_name, content, files=None):
+        self.sent.append((group_name, content) if not files else (group_name, content, [f.name for f in files]))
         r = self.results.pop(0) if self.results else SendResult(True)
         if isinstance(r, Exception):
             raise r
@@ -167,3 +174,17 @@ def test_heartbeat():
     runner, _ = _runner(server, driver)
     runner.heartbeat_once()
     assert server.heartbeats == [(True, "企业微信已就绪")]
+
+
+def test_attachments_downloaded_and_passed():
+    server, driver = FakeServer(), FakeDriver()
+    server.tasks = [Task("t1", "群A", "看图", [Attachment("a1", "截图.png")]), Task("t2", "群A", "", [Attachment("bad", "x.pdf")])]
+    runner, clock = _runner(server, driver)
+    runner.step()
+    assert driver.sent == [("群A", "看图", ["截图.png"])]
+    clock.t += 10
+    runner.step()
+    clock.t += 10
+    runner.step()
+    assert len(driver.sent) == 1  # 附件下载失败，不发送
+    assert server.reports[-1][1] is False and "下载" in server.reports[-1][2]

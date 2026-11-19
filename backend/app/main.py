@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.ai import worker
-from app.api import conversations, messages, sending, suggestions
+from app.api import attachments, conversations, messages, sending, suggestions
 from app.channels.wecom import router as wecom_router
 from app.channels.wecom.archive import get_syncer
 from app.config import settings
@@ -55,6 +55,7 @@ app.include_router(messages.router)
 app.include_router(suggestions.router)
 app.include_router(sending.router)
 app.include_router(conversations.router)
+app.include_router(attachments.router)
 app.include_router(sending.agent_router)
 
 

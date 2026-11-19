@@ -23,6 +23,7 @@ from app.models import Channel, Message, SendAgent, SendStatus, SendTask, Sugges
 S = SendStatus
 # 发送还没有结果、需要人跟进的状态：这些建议留在「待处理」里
 PENDING = {S.QUEUED, S.SENDING, S.FAILED, S.CANCELLED}
+NEEDS_ACTION = {S.FAILED, S.CANCELLED}  # 没发出去，要有人重发或手动处理
 SUPPORTED_CHANNELS = {Channel.WECOM}
 
 
@@ -52,11 +53,11 @@ def ready_agents(session: Session) -> list[SendAgent]:
     return [a for a in online_agents(session) if a.wecom_ready]
 
 
-def target_group_name(session: Session, message: Message) -> str:
+def target_group_name(session: Session, channel: Channel, group_id: str) -> str:
     """群在企业微信客户端里显示的名字。发送程序靠它搜索并核对，不唯一时拒绝，宁可不发也不发错群。"""
     name = session.scalar(
         select(Message.group_name)
-        .where(Message.channel == message.channel, Message.group_id == message.group_id,
+        .where(Message.channel == channel, Message.group_id == group_id,
                Message.group_name.is_not(None), Message.group_name != "")
         .order_by(Message.sent_at.desc())
         .limit(1)
@@ -65,7 +66,7 @@ def target_group_name(session: Session, message: Message) -> str:
         raise SendRejected("还不知道这个群在企业微信里的名字，无法自动发送，请复制后手动发送")
     others = session.scalar(
         select(func.count(distinct(Message.group_id))).where(
-            Message.channel == message.channel, Message.group_name == name, Message.group_id != message.group_id
+            Message.channel == channel, Message.group_name == name, Message.group_id != group_id
         )
     )
     if others:
@@ -93,6 +94,8 @@ def latest_task(session: Session, suggestion_id: uuid.UUID) -> SendTask | None:
 
 def _sync(session: Session, task: SendTask) -> None:
     """把任务状态同步到建议上（只同步该建议最近的一次任务）。"""
+    if task.suggestion_id is None:
+        return
     latest = latest_task(session, task.suggestion_id)
     if latest is not None and latest.id != task.id:
         return
@@ -102,22 +105,27 @@ def _sync(session: Session, task: SendTask) -> None:
     sug.sent_at = task.finished_at if task.status == S.SENT else None
 
 
-def enqueue(session: Session, sug: Suggestion, message: Message, content: str, operator: str | None) -> SendTask:
+def enqueue(session: Session, channel: Channel, group_id: str, content: str, attachment_ids: list[uuid.UUID],
+            operator: str | None, sug: Suggestion | None = None) -> SendTask:
     """建发送任务（调用方负责 commit）。不能自动发送时抛 SendRejected。"""
-    if message.channel not in SUPPORTED_CHANNELS:
+    if channel not in SUPPORTED_CHANNELS:
         raise SendRejected("这个渠道暂不支持自动发送，请复制后手动发送")
     if not enabled():
         raise SendRejected("自动发送未启用，请复制后手动发送")
     if not ready_agents(session):
         raise SendRejected("电脑端发送程序不在线或企业微信未登录，请复制后手动发送")
-    name = target_group_name(session, message)
-    _check_group_rate(session, message.group_id)
-    task = SendTask(suggestion_id=sug.id, channel=message.channel, group_id=message.group_id, group_name=name,
-                    content=content, created_by=operator, created_at=_now())
+    if not content.strip() and not attachment_ids:
+        raise SendRejected("没有要发送的内容")
+    name = target_group_name(session, channel, group_id)
+    _check_group_rate(session, group_id)
+    task = SendTask(suggestion_id=sug.id if sug else None, channel=channel, group_id=group_id, group_name=name,
+                    content=content, attachment_ids=[str(a) for a in attachment_ids] or None,
+                    created_by=operator, created_at=_now())
     session.add(task)
     session.flush()
     _sync(session, task)
-    sug.delivery = "agent"
+    if sug is not None:
+        sug.delivery = "agent"
     return task
 
 
@@ -199,15 +207,23 @@ def heartbeat(session: Session, agent_id: str, wecom_ready: bool, detail: str | 
     session.commit()
 
 
-def resend(session: Session, sug: Suggestion, message: Message, operator: str | None) -> SendTask:
-    if sug.send_status not in (S.FAILED, S.CANCELLED):
-        raise ReportConflict("只有发送失败或已取消的回复可以重新发送")
-    return enqueue(session, sug, message, sug.final_content or "", operator)
+# ---------- 失败或取消后的处理（按任务） ----------
 
 
-def cancel(session: Session, sug: Suggestion) -> None:
-    task = latest_task(session, sug.id)
-    if task is None or task.status != S.QUEUED:
+def resend_task(session: Session, task: SendTask, operator: str | None) -> SendTask:
+    if task.status not in (S.FAILED, S.CANCELLED):
+        raise ReportConflict("只有发送失败或已取消的可以重新发送")
+    if task.replaced_by is not None:
+        raise ReportConflict("已经重新发送过了")
+    sug = session.get(Suggestion, task.suggestion_id) if task.suggestion_id else None
+    new = enqueue(session, task.channel, task.group_id, task.content,
+                  [uuid.UUID(a) for a in task.attachment_ids or []], operator, sug)
+    task.replaced_by = new.id  # 原任务由新任务接替，不再算待处理
+    return new
+
+
+def cancel_task(session: Session, task: SendTask) -> None:
+    if task.status != S.QUEUED:
         raise ReportConflict("只能取消还在排队的发送（已经在发送中的无法撤回）")
     claimed = session.execute(
         update(SendTask).where(SendTask.id == task.id, SendTask.status == S.QUEUED)
@@ -220,7 +236,33 @@ def cancel(session: Session, sug: Suggestion) -> None:
     _sync(session, task)
 
 
-def mark_manual(sug: Suggestion) -> None:
-    if sug.send_status not in (S.FAILED, S.CANCELLED):
-        raise ReportConflict("只有发送失败或已取消的回复可以标记为已手动发送")
-    sug.send_status, sug.send_error, sug.delivery = S.MANUAL, None, "manual"
+def dismiss_task(session: Session, task: SendTask) -> None:
+    """发送失败或取消后，技术支持已自己在企业微信里发出（或不再需要发）。"""
+    if task.status not in (S.FAILED, S.CANCELLED):
+        raise ReportConflict("只有发送失败或已取消的可以标记为已手动处理")
+    task.status = S.MANUAL
+    _sync(session, task)
+    if task.suggestion_id:
+        session.get(Suggestion, task.suggestion_id).delivery = "manual"
+
+
+# ---------- 按建议（取该建议最近一次任务） ----------
+
+
+def _latest_or_conflict(session: Session, sug: Suggestion) -> SendTask:
+    task = latest_task(session, sug.id)
+    if task is None:
+        raise ReportConflict("这条回复没有自动发送过")
+    return task
+
+
+def resend(session: Session, sug: Suggestion, operator: str | None) -> SendTask:
+    return resend_task(session, _latest_or_conflict(session, sug), operator)
+
+
+def cancel(session: Session, sug: Suggestion) -> None:
+    cancel_task(session, _latest_or_conflict(session, sug))
+
+
+def mark_manual(session: Session, sug: Suggestion) -> None:
+    dismiss_task(session, _latest_or_conflict(session, sug))

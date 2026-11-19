@@ -96,7 +96,7 @@ def adopt(suggestion_id: uuid.UUID, body: AdoptIn, session: Session = Depends(ge
     if body.send:
         message = session.get(Message, sug.message_id)
         try:
-            send_queue.enqueue(session, sug, message, content, body.operator)
+            send_queue.enqueue(session, message.channel, message.group_id, content, [], body.operator, sug)
         except send_queue.SendRejected as exc:
             session.rollback()
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc

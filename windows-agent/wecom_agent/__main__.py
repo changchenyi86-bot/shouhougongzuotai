@@ -2,13 +2,15 @@
 
     python -m wecom_agent setup       填写工作台地址和口令
     python -m wecom_agent calibrate   校准企业微信窗口里各位置
-    python -m wecom_agent test        试着打开一个群（可选发一条测试消息）
+    python -m wecom_agent test        试着打开一个群（可选发测试消息、图片和文件）
     python -m wecom_agent run         开始工作：自动发送工作台确认过的回复
 """
 
 import logging
 import logging.handlers
 import sys
+import tempfile
+from pathlib import Path
 
 from wecom_agent import VERSION
 from wecom_agent import config as config_mod
@@ -83,7 +85,27 @@ def cmd_test() -> int:
         return 0
     result = driver.send(name, "【测试】这是售后工作台自动发送的测试消息，请忽略。")
     print("发送成功，请到企业微信群里看一下。" if result.ok else f"发送失败：{result.error}")
+    if not result.ok:
+        return 1
+    if input("再试发一张测试图片和一个测试文件吗？输入 y 并回车确认，直接回车跳过：").strip().lower() != "y":
+        return 0
+    with tempfile.TemporaryDirectory(prefix="wecom-agent-test-") as tmp:
+        files = _test_files(Path(tmp))
+        result = driver.send(name, "【测试】上面是一张测试图片和一个测试文件，请忽略。", files)
+    print("发送成功，请到群里看图片、文件和文字是否都收到了。" if result.ok else f"发送失败：{result.error}")
     return 0 if result.ok else 1
+
+
+def _test_files(folder: Path) -> list[Path]:
+    from PIL import Image, ImageDraw
+
+    img = folder / "测试图片.png"
+    im = Image.new("RGB", (360, 200), "#eef3ff")
+    ImageDraw.Draw(im).rectangle([12, 12, 348, 188], outline="#3370ff", width=6)
+    im.save(img)
+    doc = folder / "测试文件.txt"
+    doc.write_text("这是售后工作台自动发送的测试文件，请忽略。\n", encoding="utf-8")
+    return [img, doc]
 
 
 def cmd_run() -> int:

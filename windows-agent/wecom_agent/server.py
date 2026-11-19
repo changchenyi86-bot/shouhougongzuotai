@@ -3,7 +3,8 @@
 import json
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 
 from wecom_agent import VERSION
 from wecom_agent.config import ServerConfig
@@ -18,10 +19,17 @@ class ServerRejected(Exception):
 
 
 @dataclass
+class Attachment:
+    id: str
+    filename: str
+
+
+@dataclass
 class Task:
     id: str
     group_name: str
     content: str
+    attachments: list[Attachment] = field(default_factory=list)
 
 
 class Server:
@@ -29,15 +37,19 @@ class Server:
         self.cfg, self.timeout = cfg, timeout
 
     def _post(self, path: str, body: dict) -> dict:
+        raw = self._request(path, json.dumps(body, ensure_ascii=False).encode("utf-8"))
+        return json.loads(raw.decode("utf-8") or "{}")
+
+    def _request(self, path: str, data: bytes | None = None) -> bytes:
         req = urllib.request.Request(
             f"{self.cfg.url}{path}",
-            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            data=data,
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.cfg.token}"},
-            method="POST",
+            method="POST" if data is not None else "GET",
         )
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                return json.loads(resp.read().decode("utf-8") or "{}")
+                return resp.read()
         except urllib.error.HTTPError as exc:
             try:
                 detail = json.loads(exc.read().decode("utf-8")).get("detail", "")
@@ -56,9 +68,18 @@ class Server:
     def claim(self) -> tuple[Task | None, float]:
         data = self._post("/api/agent/claim", {"agent_id": self.cfg.agent_id})
         t = data.get("task")
-        task = Task(id=t["id"], group_name=t["group_name"], content=t["content"]) if t else None
+        task = Task(id=t["id"], group_name=t["group_name"], content=t["content"],
+                    attachments=[Attachment(a["id"], a["filename"]) for a in t.get("attachments") or []]) if t else None
         return task, float(data.get("retry_after") or 0)
 
     def report(self, task_id: str, ok: bool, error: str | None) -> None:
         self._post(f"/api/agent/tasks/{task_id}/result",
                    {"agent_id": self.cfg.agent_id, "ok": ok, "error": (error or "")[:2000] or None})
+
+    def download(self, att: Attachment, folder: Path) -> Path:
+        """下载要发出的图片、文件，按原文件名保存（企业微信里显示的就是这个名字）。"""
+        name = Path(att.filename.replace("\\", "/")).name or att.id
+        path = folder / att.id / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(self._request(f"/api/agent/attachments/{att.id}"))
+        return path

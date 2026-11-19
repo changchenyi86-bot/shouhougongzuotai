@@ -11,6 +11,7 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 from wecom_agent.config import LOG_DIR, UIConfig
 from wecom_agent.matching import find_title, match_title, normalize
@@ -240,15 +241,18 @@ def _same_text(a: str, b: str) -> bool:
 
 
 class WeComDriver:
-    def __init__(self, cfg: UIConfig):
+    def __init__(self, cfg: UIConfig, clipboard=None):
         set_dpi_aware()
         import pyautogui
+
+        from wecom_agent.clipboard import Clipboard
 
         pyautogui.FAILSAFE = True  # 紧急停止：把鼠标甩到屏幕任意一个角
         pyautogui.PAUSE = 0.08
         self.gui = pyautogui
         self.cfg = cfg
         self.ocr = Ocr()
+        self.clip = clipboard or Clipboard()
 
     # ---- 状态 ----
 
@@ -270,22 +274,22 @@ class WeComDriver:
             self.gui.hotkey(*keys)
 
     def _paste(self, text: str) -> None:
-        import pyperclip
-
-        pyperclip.copy(text)
+        self.clip.set_text(text)
         time.sleep(0.1)
         self._keys("ctrl+v")
 
-    def _copy_input(self, x: int, y: int) -> str:
-        """读出输入框里现在的内容（全选复制）。"""
-        import pyperclip
+    def _read_input(self, x: int | None = None, y: int | None = None) -> str | None:
+        """全选复制输入框里的内容。返回文字；空输入框返回 ""；里面有图片、文件等时返回 None。
 
-        pyperclip.copy(CLIP_SENTINEL)
-        self.gui.click(x, y)
+        x, y 给出时先点一下输入框；输入框里已有图片或文件时不要点，以免点开预览。
+        """
+        self.clip.set_text(CLIP_SENTINEL)
+        if x is not None:
+            self.gui.click(x, y)
         self._keys("ctrl+a")
         self._keys("ctrl+c")
         time.sleep(0.25)
-        text = pyperclip.paste()
+        text = self.clip.get_text()
         return "" if text == CLIP_SENTINEL else text
 
     def _clear_input(self, x: int, y: int) -> None:
@@ -348,40 +352,70 @@ class WeComDriver:
 
     # ---- 发送 ----
 
-    def send(self, group_name: str, content: str) -> SendResult:
+    def send(self, group_name: str, content: str, files: list[Path] | None = None) -> SendResult:
+        """先逐个发图片、文件（各算一条消息），再发文字。"""
+        done: list[str] = []
         try:
-            self._send(group_name, content)
+            self._send(group_name, content, files or [], done)
             return SendResult(True)
         except UIError as exc:
             shot = save_screen("failed")
             log.warning("未发送：%s（截图 %s）", exc, shot)
-            return SendResult(False, str(exc))
+            prefix = f"已发出：{'、'.join(done)}；后面的没有发送。" if done else ""
+            return SendResult(False, prefix + str(exc))
         except self.gui.FailSafeException:
             return SendResult(False, "发送被人工中止（鼠标移到了屏幕角落），请到群里确认是否已发出")
 
-    def _send(self, name: str, content: str) -> None:
-        rect = self.open_group(name)
-        ix, iy = rect.point(self.cfg.input_x, self.cfg.input_y)
-
-        # 清掉输入框里可能残留的草稿，再粘贴回复
-        self._clear_input(ix, iy)
-        self._paste(content)
-        time.sleep(0.4)
-        # 核对 1：回复确实进了输入框（而不是别处）
-        if not _same_text(self._copy_input(ix, iy), content):
-            self._clear_input(ix, iy)
-            raise UIError("没能把回复填进企业微信的输入框，未发送")
-        self._keys("ctrl+end")  # 取消全选
-        # 核对 2：按发送键前再确认一次还是这个群（防止期间有弹窗或切换）
+    def _press_send(self, rect: Rect, name: str, ix: int, iy: int) -> None:
+        """按发送键前再核对一次群名（防止期间有弹窗或切换），对不上就清空输入框。"""
         try:
             self.verify_header(rect, name)
         except UIError:
             self._clear_input(ix, iy)
             raise
         self._keys(self.cfg.send_key)
+
+    def _send(self, name: str, content: str, files: list[Path], done: list[str]) -> None:
+        from wecom_agent.clipboard import is_image
+
+        rect = self.open_group(name)
+        ix, iy = rect.point(self.cfg.input_x, self.cfg.input_y)
+        self._clear_input(ix, iy)  # 清掉输入框里可能残留的草稿
+
+        for path in files:
+            label = f"{'图片' if is_image(path) else '文件'}「{path.name}」"
+            if is_image(path):
+                self.clip.set_image(path)
+            else:
+                self.clip.set_files([path])
+            self.gui.click(ix, iy)
+            self._keys("ctrl+v")
+            time.sleep(0.8)
+            # 核对：输入框里有东西了
+            if self._read_input() == "":
+                raise UIError(f"没能把{label}放进企业微信的输入框，未发送")
+            self._press_send(rect, name, ix, iy)
+            time.sleep(1.5)
+            # 核对：输入框空了，说明发出去了
+            if self._read_input() != "":
+                self._clear_input(ix, iy)
+                raise UIError(f"按了发送键，但{label}还留在输入框里，没有发出，未发送")
+            done.append(label)
+
+        if not content:
+            return
+        self._paste(content)
+        time.sleep(0.4)
+        # 核对 1：回复确实进了输入框（而不是别处）
+        if not _same_text(self._read_input(ix, iy) or "", content):
+            self._clear_input(ix, iy)
+            raise UIError("没能把回复填进企业微信的输入框，未发送")
+        self._keys("ctrl+end")  # 取消全选
+        # 核对 2：按发送键前再确认一次还是这个群
+        self._press_send(rect, name, ix, iy)
         time.sleep(1.0)
         # 核对 3：输入框清空了，说明消息发出去了
-        if _same_text(self._copy_input(ix, iy), content):
+        if _same_text(self._read_input(ix, iy) or "", content):
             self._clear_input(ix, iy)
             raise UIError("按了发送键，但回复还留在输入框里，消息没有发出（请检查企业微信的发送快捷键设置），未发送")
 

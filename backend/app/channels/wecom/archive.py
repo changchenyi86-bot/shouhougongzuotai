@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 
 from app import db
+from app.channels.wecom import media
 from app.channels.wecom.directory import GroupDirectory, GroupInfo
 from app.channels.wecom.sdk import ArchiveClient, ArchiveError
 
@@ -163,7 +164,10 @@ class ArchiveSyncer:
                     else:
                         data = to_message_in(record, self._group(record["roomid"])) if record.get("roomid") else None
                         if data is not None:
-                            created += int(ingest(session, data)[1])
+                            msg, is_new = ingest(session, data)
+                            created += int(is_new)
+                            if is_new and media.wants_media(msg):
+                                media.submit(msg.id)
                     seq = max(seq, int(item["seq"]))
                     cursor.value = str(seq)
                     session.merge(cursor)

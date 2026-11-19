@@ -22,12 +22,23 @@ class MessageIn(BaseModel):
     raw: dict | None = None
 
 
+class AttachmentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    filename: str
+    mime: str
+    size: int
+
+
 class MessageOut(MessageIn):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
     received_at: datetime
     raw: dict | None = Field(default=None, exclude=True)
+    attachment: AttachmentOut | None = None
+    media_error: str | None = None
 
     @computed_field
     @property
@@ -119,13 +130,12 @@ class AgentClaimIn(BaseModel):
 
 
 class AgentTask(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
     id: uuid.UUID
     channel: Channel
     group_id: str
     group_name: str
     content: str
+    attachments: list[AttachmentOut] = Field(description="先逐个发出附件，再发文字")
     created_at: datetime
 
 
@@ -151,10 +161,33 @@ class GroupOut(BaseModel):
     last_message_at: datetime
     last_content: str
     message_count: int
-    pending_count: int = Field(description="待处理的客户消息数")
+    pending_count: int = Field(description="待处理数：待回复的客户消息、还没发出或发送失败的回复")
+    escalated_count: int = Field(description="已转人工、还没回复的客户消息数")
+
+
+class SendTaskOut(BaseModel):
+    id: uuid.UUID
+    suggestion_id: uuid.UUID | None
+    content: str
+    attachments: list[AttachmentOut]
+    status: SendStatus
+    error: str | None
+    created_by: str | None
+    created_at: datetime
+    finished_at: datetime | None
 
 
 class ConversationOut(BaseModel):
     items: list[InboxItem] = Field(description="按时间从早到晚")
     has_more_before: bool
     has_more_after: bool
+    outbox: list[SendTaskOut] = Field(default=[], description="工作台发出、还没出现在聊天记录里的消息（排队、发送中、失败，及刚发出的）")
+
+
+class SendIn(BaseModel):
+    channel: Channel
+    group_id: str = Field(max_length=128)
+    content: str = ""
+    attachment_ids: list[uuid.UUID] = Field(default=[], max_length=9)
+    suggestion_id: uuid.UUID | None = Field(default=None, description="回复的是哪条 AI 建议，发送后该建议记为已采纳")
+    operator: str | None = Field(default=None, max_length=64)
