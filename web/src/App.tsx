@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { CHANNEL_LABEL, fetchInbox, fetchSendState, type Channel, type InboxItem, type SendState, type View } from "./api";
+import GroupChat, { type ChatTarget } from "./GroupChat";
 import SuggestionCard from "./SuggestionCard";
 
-const NAV = ["消息收件箱", "工单", "知识库", "积分排名"] as const;
+type Page = "inbox" | "groups";
+const NAV: { label: string; page?: Page }[] = [
+  { label: "消息收件箱", page: "inbox" },
+  { label: "群聊记录", page: "groups" },
+  { label: "工单" },
+  { label: "知识库" },
+  { label: "积分排名" },
+];
 const VIEWS: { key: View; label: string }[] = [
   { key: "todo", label: "待处理" },
   { key: "escalated", label: "已转人工" },
@@ -26,6 +34,13 @@ export default function App() {
   const [operator, setOperator] = useState(loadOperator);
   const [toast, setToast] = useState<string | null>(null);
   const [sendState, setSendState] = useState<SendState | null>(null);
+  const [page, setPage] = useState<Page>("inbox");
+  const [chatTarget, setChatTarget] = useState<ChatTarget | null>(null);
+
+  const openChat = (target: ChatTarget) => {
+    setChatTarget(target);
+    setPage("groups");
+  };
 
   const load = useCallback(() => {
     fetchInbox(view, channel)
@@ -66,22 +81,38 @@ export default function App() {
       <aside>
         <h1>售后工作台</h1>
         <nav>
-          {NAV.map((item, i) => (
-            <a key={item} className={i === 0 ? "active" : "disabled"} title={i ? "即将上线" : undefined}>
-              {item}
+          {NAV.map((item) => (
+            <a
+              key={item.label}
+              className={item.page ? (item.page === page ? "active" : "") : "disabled"}
+              title={item.page ? undefined : "即将上线"}
+              onClick={() => item.page && setPage(item.page)}
+            >
+              {item.label}
             </a>
           ))}
         </nav>
       </aside>
       <main>
         <header>
-          <h2>消息收件箱</h2>
+          <h2>{page === "inbox" ? "消息收件箱" : "群聊记录"}</h2>
           {sendState?.enabled && <SendIndicator state={sendState} />}
           <label className="operator">
             处理人
             <input value={operator} maxLength={64} placeholder="填写你的名字" onChange={(e) => setOperator(e.target.value)} />
           </label>
         </header>
+        {page === "groups" && (
+          <GroupChat
+            target={chatTarget}
+            onTarget={setChatTarget}
+            operator={operator}
+            canAutoSend={(c) => c === "wecom" && !!sendState?.ready}
+            notify={notify}
+          />
+        )}
+        {page === "inbox" && (
+        <>
         <div className="toolbar">
           <div className="tabs">
             {VIEWS.map((v) => (
@@ -108,6 +139,12 @@ export default function App() {
                 <span className={`tag ${m.channel}`}>{CHANNEL_LABEL[m.channel]}</span>
                 {m.is_external_group && <span className="ext">客户群</span>}
                 <span className="group">{m.group_name ?? m.group_id}</span>
+                <button
+                  className="link history"
+                  onClick={() => openChat({ channel: m.channel, group_id: m.group_id, anchor: m.id })}
+                >
+                  查看前后聊天记录
+                </button>
                 <span>{m.sender_name ?? m.sender_id}</span>
                 <time>{new Date(m.sent_at).toLocaleString("zh-CN")}</time>
               </div>
@@ -125,6 +162,8 @@ export default function App() {
             </li>
           ))}
         </ul>
+        </>
+        )}
       </main>
       {toast && <div className="toast">{toast}</div>}
     </div>
