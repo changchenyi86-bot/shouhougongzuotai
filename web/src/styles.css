@@ -1,6 +1,6 @@
 /* ============ 设计变量 ============ */
 :root {
-  --font: "Inter", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font: "Inter", system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
   --mono: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
 
   --bg: #f7f7f8;
