@@ -1,5 +1,6 @@
 services:
   db:
+    restart: unless-stopped  # 电脑重启、Docker 重新启动后自动拉起
     image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: support
@@ -15,6 +16,7 @@ services:
       retries: 10
 
   backend:
+    restart: unless-stopped  # 电脑重启、Docker 重新启动后自动拉起
     build: ./backend
     environment:
       DATABASE_URL: postgresql+psycopg://support:support@db:5432/support
@@ -35,6 +37,7 @@ services:
         condition: service_healthy
 
   web:
+    restart: unless-stopped  # 电脑重启、Docker 重新启动后自动拉起
     build: ./web
     environment:
       API_URL: http://backend:8000

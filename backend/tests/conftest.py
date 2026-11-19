@@ -1,6 +1,7 @@
 import os
 
 os.environ["DATABASE_URL"] = "sqlite+pysqlite:///:memory:"
+os.environ["APP_ENV_FILE"] = ""  # 不读本机的 backend/.env，测试只用代码里的默认配置
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

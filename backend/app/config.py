@@ -1,8 +1,11 @@
+import os
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # APP_ENV_FILE 设为空字符串时不读 .env（测试用，避免本机配置影响测试结果）
+    model_config = SettingsConfigDict(env_file=os.environ.get("APP_ENV_FILE", ".env") or None, extra="ignore")
 
     database_url: str = "postgresql+psycopg://support:support@localhost:5432/support"
     cors_origins: list[str] = ["http://localhost:5173"]
