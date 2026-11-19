@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models import Channel, MessageType, SuggestionStatus
+from app.models import Channel, MessageType, SendStatus, SuggestionStatus
 
 
 class MessageIn(BaseModel):
@@ -44,6 +44,9 @@ class SuggestionOut(BaseModel):
     error: str | None
     final_content: str | None
     delivery: str | None
+    send_status: SendStatus | None = None
+    send_error: str | None = None
+    sent_at: datetime | None = None
     note: str | None
     handled_by: str | None
     handled_at: datetime | None
@@ -59,6 +62,7 @@ class InboxItem(BaseModel):
 class AdoptIn(BaseModel):
     content: str | None = Field(default=None, description="修改后的回复；不传则原样采纳 AI 建议")
     operator: str | None = Field(default=None, max_length=64)
+    send: bool = Field(default=False, description="true：交给电脑端发送程序自动发到群里；false：复制后人工发送")
 
 
 class HandleIn(BaseModel):
@@ -68,5 +72,61 @@ class HandleIn(BaseModel):
 
 class AdoptOut(BaseModel):
     suggestion: SuggestionOut
-    delivery: str = Field(description="manual：需复制后在客户端发送；其他值表示已由系统直接发出")
+    delivery: str = Field(description="manual：需复制后在客户端发送；agent：已加入自动发送队列")
     detail: str = ""
+
+
+# ---------- 自动发送 ----------
+
+
+class OperatorIn(BaseModel):
+    operator: str | None = Field(default=None, max_length=64)
+
+
+class AgentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    agent_id: str
+    last_seen: datetime
+    wecom_ready: bool
+    detail: str | None
+    version: str | None
+
+
+class SendStatusOut(BaseModel):
+    enabled: bool = Field(description="服务端是否配置了发送程序口令")
+    ready: bool = Field(description="是否有在线且企业微信已登录的发送程序")
+    agents: list[AgentOut]
+
+
+class AgentHeartbeatIn(BaseModel):
+    agent_id: str = Field(min_length=1, max_length=64)
+    wecom_ready: bool
+    detail: str | None = Field(default=None, max_length=1000)
+    version: str | None = Field(default=None, max_length=32)
+
+
+class AgentClaimIn(BaseModel):
+    agent_id: str = Field(min_length=1, max_length=64)
+
+
+class AgentTask(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    channel: Channel
+    group_id: str
+    group_name: str
+    content: str
+    created_at: datetime
+
+
+class AgentClaimOut(BaseModel):
+    task: AgentTask | None
+    retry_after: float = Field(description="没有任务或需要限速时，建议多少秒后再领取")
+
+
+class AgentResultIn(BaseModel):
+    agent_id: str = Field(min_length=1, max_length=64)
+    ok: bool
+    error: str | None = Field(default=None, max_length=2000)

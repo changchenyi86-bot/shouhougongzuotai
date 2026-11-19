@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     # 「客户联系」Secret，可选：用于查询外部客户群名称
     wecom_contact_secret: str = ""
 
+    # ---- 自动发送（电脑端发送程序操作企业微信客户端） ----
+    send_agent_token: str = ""  # 发送程序的访问口令，留空表示不启用自动发送
+    send_min_interval_seconds: float = 5  # 两次发送之间至少间隔
+    send_group_max_per_hour: int = 20  # 每个群每小时最多自动发送条数
+    send_queue_timeout_minutes: int = 10  # 排队超过这个时间仍未被领取则取消，避免很久以后才发出过时的回复
+    send_result_timeout_minutes: int = 3  # 发送中超过这个时间没回报结果，标记为结果未知
+    send_agent_offline_seconds: int = 60  # 超过这个时间没有心跳视为离线
+
     @property
     def wecom_archive_enabled(self) -> bool:
         return bool(self.wecom_corp_id and self.wecom_archive_secret and self.wecom_archive_private_key_files)

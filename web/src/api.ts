@@ -42,9 +42,28 @@ export interface Suggestion {
   error: string | null;
   final_content: string | null;
   delivery: string | null;
+  send_status: SendStatus | null;
+  send_error: string | null;
+  sent_at: string | null;
   note: string | null;
   handled_by: string | null;
   handled_at: string | null;
+}
+
+export type SendStatus = "queued" | "sending" | "sent" | "failed" | "cancelled" | "manual";
+
+export interface SendAgent {
+  agent_id: string;
+  last_seen: string;
+  wecom_ready: boolean;
+  detail: string | null;
+  version: string | null;
+}
+
+export interface SendState {
+  enabled: boolean;
+  ready: boolean;
+  agents: SendAgent[];
 }
 
 export interface InboxItem {
@@ -82,11 +101,17 @@ export function fetchInbox(view: View, channel?: Channel): Promise<InboxItem[]> 
 const post = <T>(url: string, body: unknown = {}) =>
   call<T>(url, { method: "POST", body: JSON.stringify(body) });
 
-export const adopt = (id: string, content: string, operator: string) =>
+export const adopt = (id: string, content: string, operator: string, send = false) =>
   post<{ suggestion: Suggestion; delivery: string; detail: string }>(`/api/suggestions/${id}/adopt`, {
     content,
     operator: operator || null,
+    send,
   });
+export const fetchSendState = () => call<SendState>("/api/send/status");
+export const resend = (id: string, operator: string) =>
+  post<Suggestion>(`/api/suggestions/${id}/resend`, { operator: operator || null });
+export const cancelSend = (id: string) => post<Suggestion>(`/api/suggestions/${id}/cancel-send`);
+export const markManualSent = (id: string) => post<Suggestion>(`/api/suggestions/${id}/mark-manual-sent`);
 export const escalate = (id: string, note: string, operator: string) =>
   post<Suggestion>(`/api/suggestions/${id}/escalate`, { note: note || null, operator: operator || null });
 export const dismiss = (id: string, operator: string) =>

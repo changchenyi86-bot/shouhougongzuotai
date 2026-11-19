@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { CHANNEL_LABEL, fetchInbox, type Channel, type InboxItem, type View } from "./api";
+import { CHANNEL_LABEL, fetchInbox, fetchSendState, type Channel, type InboxItem, type SendState, type View } from "./api";
 import SuggestionCard from "./SuggestionCard";
 
 const NAV = ["消息收件箱", "工单", "知识库", "积分排名"] as const;
@@ -25,6 +25,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [operator, setOperator] = useState(loadOperator);
   const [toast, setToast] = useState<string | null>(null);
+  const [sendState, setSendState] = useState<SendState | null>(null);
 
   const load = useCallback(() => {
     fetchInbox(view, channel)
@@ -33,13 +34,19 @@ export default function App() {
         setError(null);
       })
       .catch((e: Error) => setError(e.message));
+    fetchSendState()
+      .then(setSendState)
+      .catch(() => setSendState(null));
   }, [view, channel]);
+
+  // 有正在排队/发送的回复时刷新快一些，尽快看到发送结果
+  const sending = items.some((i) => i.suggestion?.send_status === "queued" || i.suggestion?.send_status === "sending");
 
   useEffect(() => {
     load();
-    const timer = setInterval(load, 10_000);
+    const timer = setInterval(load, sending ? 3_000 : 10_000);
     return () => clearInterval(timer);
-  }, [load]);
+  }, [load, sending]);
 
   useEffect(() => {
     try {
@@ -69,6 +76,7 @@ export default function App() {
       <main>
         <header>
           <h2>消息收件箱</h2>
+          {sendState?.enabled && <SendIndicator state={sendState} />}
           <label className="operator">
             处理人
             <input value={operator} maxLength={64} placeholder="填写你的名字" onChange={(e) => setOperator(e.target.value)} />
@@ -105,7 +113,14 @@ export default function App() {
               </div>
               <p className="content">{m.content}</p>
               {suggestion && (
-                <SuggestionCard suggestion={suggestion} operator={operator} onChanged={load} notify={notify} />
+                <SuggestionCard
+                  suggestion={suggestion}
+                  message={m}
+                  canAutoSend={m.channel === "wecom" && !!sendState?.ready}
+                  operator={operator}
+                  onChanged={load}
+                  notify={notify}
+                />
               )}
             </li>
           ))}
@@ -113,5 +128,18 @@ export default function App() {
       </main>
       {toast && <div className="toast">{toast}</div>}
     </div>
+  );
+}
+
+function SendIndicator({ state }: { state: SendState }) {
+  const agent = state.agents[0];
+  let text = "自动发送：发送程序离线，只能复制后手动发送";
+  if (state.ready) text = `自动发送：在线（${state.agents.filter((a) => a.wecom_ready).map((a) => a.agent_id).join("、")}）`;
+  else if (agent) text = `自动发送：${agent.detail || "企业微信未就绪"}`;
+  return (
+    <span className={`send-indicator ${state.ready ? "on" : "off"}`} title="电脑端发送程序操作企业微信客户端，把确认后的回复发到群里">
+      <i />
+      {text}
+    </span>
   );
 }

@@ -22,6 +22,22 @@ def init_db() -> None:
         with engine.begin() as conn:
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
     Base.metadata.create_all(engine)
+    _add_missing_columns()
+
+
+# 早期版本建的表缺少的列（create_all 不会给已有表加列）
+_NEW_COLUMNS = {
+    "suggestions": {"send_status": "VARCHAR(16)", "send_error": "TEXT", "sent_at": "TIMESTAMP WITH TIME ZONE"},
+}
+
+
+def _add_missing_columns() -> None:
+    if engine.dialect.name != "postgresql":
+        return
+    with engine.begin() as conn:
+        for table, columns in _NEW_COLUMNS.items():
+            for name, ddl in columns.items():
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {ddl}"))
 
 
 def get_session() -> Iterator[Session]:

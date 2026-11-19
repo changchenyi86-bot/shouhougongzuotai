@@ -5,12 +5,12 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from app import send_queue
 from app.ai import worker
 from app.db import get_session
-from app.delivery import DeliveryError, deliver
 from app.models import Channel, Message, Suggestion, SuggestionStatus
 from app.schemas import AdoptIn, AdoptOut, HandleIn, InboxItem, MessageOut, SuggestionOut
 
@@ -35,10 +35,19 @@ def inbox(
     limit: int = Query(50, ge=1, le=200),
     session: Session = Depends(get_session),
 ) -> list[InboxItem]:
-    """待处理的客户消息及其 AI 建议。view=all 时包含员工发言等没有建议的消息。"""
+    """待处理的客户消息及其 AI 建议。view=all 时包含员工发言等没有建议的消息。
+
+    自动发送还没成功的（排队、发送中、失败、取消）也算待处理，直到发出或标记为手动发送。
+    """
+    send_queue.expire_stale(session)
     stmt = select(Message, Suggestion).outerjoin(Suggestion, Suggestion.message_id == Message.id)
     statuses = VIEWS[view]
-    if statuses is not None:
+    pending_send = Suggestion.send_status.in_(send_queue.PENDING)
+    if view == "todo":
+        stmt = stmt.where(or_(Suggestion.status.in_(statuses), pending_send))
+    elif view == "done":
+        stmt = stmt.where(Suggestion.status.in_(statuses), or_(Suggestion.send_status.is_(None), ~pending_send))
+    elif statuses is not None:
         stmt = stmt.where(Suggestion.status.in_(statuses))
     if channel:
         stmt = stmt.where(Message.channel == channel)
@@ -70,22 +79,30 @@ def _mark(sug: Suggestion, new_status: SuggestionStatus, operator: str | None) -
 
 @router.post("/suggestions/{suggestion_id}/adopt", response_model=AdoptOut)
 def adopt(suggestion_id: uuid.UUID, body: AdoptIn, session: Session = Depends(get_session)) -> AdoptOut:
-    """采纳建议。传入 content 且与 AI 建议不同时记为「修改后采纳」。"""
+    """采纳建议。传入 content 且与 AI 建议不同时记为「修改后采纳」。
+
+    send=true 时交给电脑端发送程序自动发到群里（不满足条件时返回 409 和原因，建议保持未处理）；
+    否则由技术支持复制后在客户端手动发送。
+    """
     sug = _get(session, suggestion_id)
     _ensure_open(sug)
     content = (body.content if body.content is not None else sug.content or "").strip()
     if not content:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "回复内容为空")
-    message = session.get(Message, sug.message_id)
-    try:
-        result = deliver(session, message, content)
-    except DeliveryError as exc:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
     edited = content != (sug.content or "").strip()
     _mark(sug, S.EDITED if edited else S.ADOPTED, body.operator)
-    sug.final_content, sug.delivery = content, result.mode
+    sug.final_content, sug.delivery = content, "manual"
+    detail = "请复制后在客户端发送"
+    if body.send:
+        message = session.get(Message, sug.message_id)
+        try:
+            send_queue.enqueue(session, sug, message, content, body.operator)
+        except send_queue.SendRejected as exc:
+            session.rollback()
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        detail = "已加入发送队列"
     session.commit()
-    return AdoptOut(suggestion=SuggestionOut.model_validate(sug), delivery=result.mode, detail=result.detail)
+    return AdoptOut(suggestion=SuggestionOut.model_validate(sug), delivery=sug.delivery, detail=detail)
 
 
 @router.post("/suggestions/{suggestion_id}/escalate", response_model=SuggestionOut)
