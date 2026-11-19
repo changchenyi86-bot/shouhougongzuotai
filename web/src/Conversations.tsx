@@ -281,17 +281,22 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
               className={sameGroup(target, g) ? "on" : ""}
               onClick={() => !sameGroup(target, g) && setTarget({ channel: g.channel, group_id: g.group_id })}
             >
-              <div className="g-top">
-                <span className="g-name">{g.group_name ?? g.group_id}</span>
-                <time>{shortTime(g.last_message_at)}</time>
-              </div>
-              <div className="g-bottom">
-                <span className={`tag ${g.channel}`}>{CHANNEL_LABEL[g.channel]}</span>
-                {g.is_external_group && <span className="ext">客户群</span>}
-                <span className="g-preview">{g.last_content}</span>
-                {view === "escalated"
-                  ? g.escalated_count > 0 && <span className="g-badge warn">{g.escalated_count}</span>
-                  : g.pending_count > 0 && <span className="g-badge" title="待处理">{g.pending_count}</span>}
+              <span className={`g-avatar ${g.channel}`} aria-hidden>
+                {(g.group_name ?? g.group_id).trim().slice(0, 1)}
+              </span>
+              <div className="g-main">
+                <div className="g-top">
+                  <span className="g-name">{g.group_name ?? g.group_id}</span>
+                  <time>{shortTime(g.last_message_at)}</time>
+                </div>
+                <div className="g-bottom">
+                  <span className={`tag ${g.channel}`}>{CHANNEL_LABEL[g.channel]}</span>
+                  {g.is_external_group && <span className="ext">客户群</span>}
+                  <span className="g-preview">{g.last_content}</span>
+                  {view === "escalated"
+                    ? g.escalated_count > 0 && <span className="g-badge warn">{g.escalated_count}</span>
+                    : g.pending_count > 0 && <span className="g-badge" title="待处理">{g.pending_count}</span>}
+                </div>
               </div>
             </li>
           ))}
