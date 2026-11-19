@@ -79,8 +79,11 @@ docker-compose.yml
 一键启动：
 
 ```bash
-docker compose up --build
+docker compose up -d --build
 ```
+
+三个服务都设置了自动重启：只要 Docker 在运行，电脑重启后工作台会自己起来。
+Mac 上不想装 Docker Desktop 的话，可以用 Homebrew 装 Colima：`brew install colima docker docker-compose`，再用 `brew services start colima` 设为开机自启。
 
 工作台在 http://localhost:5173 ，后端在 http://localhost:8000 。
 
