@@ -4,9 +4,11 @@
 """
 
 import logging
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from wecom_agent.config import AgentConfig
@@ -25,8 +27,8 @@ class Driver(Protocol):
     def status(self) -> tuple[bool, str]:
         """(企业微信是否可用, 说明)。"""
 
-    def send(self, group_name: str, content: str) -> SendResult:
-        """打开群、核对群名、发送。任何一步不确定都要返回失败，不能发错群。"""
+    def send(self, group_name: str, content: str, files: list[Path] | None = None) -> SendResult:
+        """打开群、核对群名、先发图片和文件再发文字。任何一步不确定都要返回失败，不能发错群。"""
 
 
 class Runner:
@@ -90,12 +92,18 @@ class Runner:
 
     def _send(self, task: Task) -> SendResult:
         log.info("开始发送 %s 到「%s」", task.id, task.group_name)
-        with self.ui_lock:
+        with tempfile.TemporaryDirectory(prefix="wecom-agent-") as tmp:
             try:
-                result = self.driver.send(task.group_name, task.content)
+                files = [self.server.download(a, Path(tmp)) for a in task.attachments]
             except Exception as exc:  # noqa: BLE001
-                log.exception("发送出错")
-                result = SendResult(False, f"发送程序出错，未确认是否发出，请到群里确认：{exc}")
+                log.warning("下载附件失败：%s", exc)
+                return SendResult(False, f"发送电脑下载图片或文件失败，未发送：{exc}")
+            with self.ui_lock:
+                try:
+                    result = self.driver.send(task.group_name, task.content, files)
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("发送出错")
+                    result = SendResult(False, f"发送程序出错，未确认是否发出，请到群里确认：{exc}")
         if result.ok:
             log.info("已发送 %s", task.id)
         else:

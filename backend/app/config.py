@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     # 「客户联系」Secret，可选：用于查询外部客户群名称
     wecom_contact_secret: str = ""
 
+    # ---- 附件（图片、文件） ----
+    attachment_dir: str = "./data/attachments"
+    attachment_max_mb: int = 20  # 上传和下载的单个文件上限
+
     # ---- 自动发送（电脑端发送程序操作企业微信客户端） ----
     send_agent_token: str = ""  # 发送程序的访问口令，留空表示不启用自动发送
     send_min_interval_seconds: float = 5  # 两次发送之间至少间隔

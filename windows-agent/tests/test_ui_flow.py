@@ -1,7 +1,7 @@
 """用假的鼠标键盘、剪贴板和识字结果，检查 WeComDriver 的发送步骤和各项核对（真机测试见使用说明）。"""
 
-import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -24,9 +24,10 @@ class FakeChat:
         self.current = "别的群"
         self.focus = None
         self.search = ""
-        self.inputs: dict[str, str] = {}
-        self.sent: list[tuple[str, str]] = []
-        self.clipboard = ""
+        self.inputs: dict[str, object] = {}  # 文字，或 ("图片"/"文件", 文件名)
+        self.sent: list[tuple[str, object]] = []
+        self.clipboard: tuple[str, object] = ("text", "")
+        self.paste_media_broken = False
         self.selected = False
         self.input_broken = False
         self.send_broken = False
@@ -62,10 +63,17 @@ class FakeChat:
         if keys == ("ctrl", "a"):
             self.selected = True
         elif keys == ("ctrl", "v"):
-            if not (self.focus == "input" and self.input_broken):
-                self._set(self.clipboard)
+            kind, value = self.clipboard
+            if kind == "text" and not (self.focus == "input" and self.input_broken):
+                self._set(value)
+            elif kind != "text" and self.focus == "input" and not self.paste_media_broken:
+                self._set((kind, value))
         elif keys == ("ctrl", "c") and self.selected and self.focus == "input":
-            self.clipboard = self.inputs.get(self.current, "") or self.clipboard
+            value = self.inputs.get(self.current, "")
+            if isinstance(value, tuple):
+                self.clipboard = value
+            elif value:
+                self.clipboard = ("text", value)
         else:
             self.selected = False
 
@@ -92,8 +100,12 @@ def chat(monkeypatch):
     fake = FakeChat({"某客户-有数项目群": 23, "某客户-有数项目群二期": 8, "张三": None})
     gui = types.SimpleNamespace(click=fake.click, press=fake.press, hotkey=fake.hotkey,
                                 FailSafeException=type("FailSafe", (Exception,), {}))
-    clip = types.SimpleNamespace(copy=lambda t: setattr(fake, "clipboard", t), paste=lambda: fake.clipboard)
-    monkeypatch.setitem(sys.modules, "pyperclip", clip)
+    clip = types.SimpleNamespace(
+        set_text=lambda t: setattr(fake, "clipboard", ("text", t)),
+        get_text=lambda: fake.clipboard[1] if fake.clipboard[0] == "text" else None,
+        set_image=lambda p: setattr(fake, "clipboard", ("图片", p.name)),
+        set_files=lambda ps: setattr(fake, "clipboard", ("文件", ps[0].name)),
+    )
     monkeypatch.setattr(ui, "desktop_locked", lambda: False)
     monkeypatch.setattr(ui, "find_main_window", lambda cfg: (object(), "ok"))
     monkeypatch.setattr(ui, "prepare_window", lambda win, cfg: RECT)
@@ -102,6 +114,7 @@ def chat(monkeypatch):
     driver = WeComDriver.__new__(WeComDriver)
     driver.gui, driver.cfg = gui, CFG
     driver.ocr = types.SimpleNamespace(read=fake.ocr)
+    driver.clip = clip
     fake.driver = driver
     return fake
 
@@ -155,3 +168,32 @@ def test_locked_screen(chat, monkeypatch):
     monkeypatch.setattr(ui, "desktop_locked", lambda: True)
     r = chat.driver.send("某客户-有数项目群", "回复")
     assert not r.ok and "锁定" in r.error
+
+
+def test_images_and_files_then_text(chat):
+    files = [Path("截图.png"), Path("说明.pdf")]
+    r = chat.driver.send("某客户-有数项目群", "请看上面的截图", files)
+    assert r.ok, r.error
+    assert chat.sent == [("某客户-有数项目群", ("图片", "截图.png")), ("某客户-有数项目群", ("文件", "说明.pdf")),
+                         ("某客户-有数项目群", "请看上面的截图")]
+
+
+def test_only_files(chat):
+    assert chat.driver.send("某客户-有数项目群", "", [Path("a.jpg")]).ok
+    assert chat.sent == [("某客户-有数项目群", ("图片", "a.jpg"))]
+
+
+def test_file_paste_failed_reports_progress(chat, monkeypatch):
+    calls = []
+    real = chat.driver.clip.set_files
+
+    def flaky(paths):
+        calls.append(paths)
+        chat.paste_media_broken = True
+        real(paths)
+
+    chat.driver.clip.set_files = flaky
+    r = chat.driver.send("某客户-有数项目群", "文字", [Path("a.png"), Path("b.zip")])
+    assert not r.ok
+    assert r.error.startswith("已发出：图片「a.png」；后面的没有发送。") and "文件「b.zip」" in r.error
+    assert chat.sent == [("某客户-有数项目群", ("图片", "a.png"))]

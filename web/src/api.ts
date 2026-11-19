@@ -20,7 +20,19 @@ export interface Message {
   sent_at: string;
   received_at: string;
   from_customer: boolean;
+  attachment: Attachment | null;
+  media_error: string | null;
 }
+
+export interface Attachment {
+  id: string;
+  filename: string;
+  mime: string;
+  size: number;
+}
+
+export const attachmentUrl = (id: string, download = false) =>
+  `/api/attachments/${id}${download ? "?download=true" : ""}`;
 
 export type SuggestionStatus =
   | "generating"
@@ -72,8 +84,6 @@ export interface InboxItem {
   suggestion: Suggestion | null;
 }
 
-export type View = "todo" | "escalated" | "done" | "all";
-
 async function call<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     ...init,
@@ -93,12 +103,6 @@ async function call<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
-export function fetchInbox(view: View, channel?: Channel): Promise<InboxItem[]> {
-  const qs = new URLSearchParams({ view });
-  if (channel) qs.set("channel", channel);
-  return call(`/api/inbox?${qs}`);
-}
-
 const post = <T>(url: string, body: unknown = {}) =>
   call<T>(url, { method: "POST", body: JSON.stringify(body) });
 
@@ -109,10 +113,6 @@ export const adopt = (id: string, content: string, operator: string, send = fals
     send,
   });
 export const fetchSendState = () => call<SendState>("/api/send/status");
-export const resend = (id: string, operator: string) =>
-  post<Suggestion>(`/api/suggestions/${id}/resend`, { operator: operator || null });
-export const cancelSend = (id: string) => post<Suggestion>(`/api/suggestions/${id}/cancel-send`);
-export const markManualSent = (id: string) => post<Suggestion>(`/api/suggestions/${id}/mark-manual-sent`);
 export const escalate = (id: string, note: string, operator: string) =>
   post<Suggestion>(`/api/suggestions/${id}/escalate`, { note: note || null, operator: operator || null });
 export const dismiss = (id: string, operator: string) =>
@@ -128,19 +128,65 @@ export interface Group {
   last_content: string;
   message_count: number;
   pending_count: number;
+  escalated_count: number;
+}
+
+export interface SendTask {
+  id: string;
+  suggestion_id: string | null;
+  content: string;
+  attachments: Attachment[];
+  status: SendStatus;
+  error: string | null;
+  created_by: string | null;
+  created_at: string;
+  finished_at: string | null;
 }
 
 export interface Conversation {
   items: InboxItem[];
   has_more_before: boolean;
   has_more_after: boolean;
+  outbox: SendTask[];
 }
 
-export function fetchGroups(channel?: Channel): Promise<Group[]> {
-  const qs = new URLSearchParams();
-  if (channel) qs.set("channel", channel);
-  return call(`/api/groups?${qs}`);
+export type GroupView = "todo" | "escalated" | "all";
+
+export function fetchGroups(view: GroupView = "all"): Promise<Group[]> {
+  return call(`/api/groups?${new URLSearchParams({ view })}`);
 }
+
+export async function uploadAttachment(file: File, operator: string): Promise<Attachment> {
+  const form = new FormData();
+  form.append("file", file);
+  if (operator) form.append("operator", operator);
+  const res = await fetch("/api/attachments", { method: "POST", body: form });
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      detail = (await res.json()).detail ?? detail;
+    } catch {
+      /* 非 JSON 错误 */
+    }
+    throw new Error(String(detail));
+  }
+  return res.json();
+}
+
+export const sendToGroup = (body: {
+  channel: Channel;
+  group_id: string;
+  content: string;
+  attachment_ids: string[];
+  suggestion_id: string | null;
+  operator: string;
+}) => post<SendTask>("/api/conversations/send", { ...body, operator: body.operator || null });
+
+export const resendTask = (id: string, operator: string) =>
+  post<SendTask>(`/api/send-tasks/${id}/resend`, { operator: operator || null });
+export const cancelTask = (id: string) => post<SendTask>(`/api/send-tasks/${id}/cancel`);
+export const dismissTask = (id: string) => post<SendTask>(`/api/send-tasks/${id}/mark-manual-sent`);
+export const fetchMedia = (messageId: string) => post<Message>(`/api/messages/${messageId}/fetch-media`);
 
 export function fetchConversation(
   channel: Channel,

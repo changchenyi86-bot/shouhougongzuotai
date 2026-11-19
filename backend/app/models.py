@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, String, Text, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 
@@ -25,6 +25,25 @@ class MessageType(str, enum.Enum):
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class Attachment(Base):
+    """图片、文件：技术支持上传准备发出的，或从渠道下载的客户发来的。文件存在 settings.attachment_dir 下。"""
+
+    __tablename__ = "attachments"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    filename: Mapped[str] = mapped_column(String(255))
+    mime: Mapped[str] = mapped_column(String(128))
+    size: Mapped[int]
+    sha256: Mapped[str] = mapped_column(String(64))
+    source: Mapped[str] = mapped_column(String(16), comment="upload：工作台上传；channel：从渠道下载")
+    created_by: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    @property
+    def is_image(self) -> bool:
+        return self.mime.startswith("image/")
 
 
 class Message(Base):
@@ -54,6 +73,11 @@ class Message(Base):
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     raw: Mapped[dict | None] = mapped_column(JSON, comment="渠道原始报文，便于排查与回溯")
+    attachment_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("attachments.id", ondelete="SET NULL"), comment="图片、文件等的本地副本"
+    )
+    media_error: Mapped[str | None] = mapped_column(Text, comment="图片、文件下载失败的原因")
+    attachment: Mapped[Attachment | None] = relationship(lazy="selectin")
 
 
 class SuggestionStatus(str, enum.Enum):
@@ -113,17 +137,21 @@ class SendTask(Base):
     __tablename__ = "send_tasks"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    suggestion_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("suggestions.id", ondelete="CASCADE"), index=True)
+    suggestion_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("suggestions.id", ondelete="CASCADE"), index=True, comment="回复的是哪条 AI 建议；直接在会话里发的为空"
+    )
     channel: Mapped[Channel] = mapped_column(Enum(Channel, native_enum=False, length=16))
     group_id: Mapped[str] = mapped_column(String(128), index=True)
     group_name: Mapped[str] = mapped_column(String(256), comment="群在客户端里显示的名字，发送前用它核对")
-    content: Mapped[str] = mapped_column(Text)
+    content: Mapped[str] = mapped_column(Text, default="")
+    attachment_ids: Mapped[list | None] = mapped_column(JSON, comment="要一起发出的图片、文件，按顺序")
     status: Mapped[SendStatus] = mapped_column(
         Enum(SendStatus, native_enum=False, length=16), default=SendStatus.QUEUED, index=True
     )
     agent_id: Mapped[str | None] = mapped_column(String(64), comment="领取任务的发送程序")
     error: Mapped[str | None] = mapped_column(Text)
     timed_out: Mapped[bool] = mapped_column(Boolean, default=False, comment="发送中超时、结果未知")
+    replaced_by: Mapped[uuid.UUID | None] = mapped_column(comment="失败后重新发送时，接替它的新任务")
     created_by: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)

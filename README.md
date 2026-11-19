@@ -23,12 +23,14 @@ backend/
     ingest.py        消息入库统一入口（去重 + 触发 AI 建议）
     send_queue.py    自动发送队列（确认发送 → 电脑端发送程序领取 → 回报结果）、频率限制
     ai/              AI 回复建议：llm.py 模型接口（可切换）、suggest.py 提示词、worker.py 后台生成
-    api/suggestions.py  收件箱、采纳 / 修改 / 转人工 / 忽略 / 重新生成
+    api/suggestions.py  AI 建议：采纳 / 修改 / 转人工 / 忽略 / 重新生成
+    api/conversations.py 会话：群列表、聊天记录、在会话里发文字 / 图片 / 文件
+    api/attachments.py  图片、文件上传和下载（客户发来的也会下载保存）
     api/sending.py   自动发送：发送程序心跳 / 领取 / 回报，工作台重发 / 取消 / 改为手动
     channels/        各 IM 渠道适配器（wecom 已实现：会话内容存档；dingtalk / feishu 待实现）
   tests/
 windows-agent/       电脑端发送程序：在常开的 Windows 电脑上操作官方企业微信客户端发消息
-web/                 React 工作台（消息收件箱，工单/知识库/积分排名占位）
+web/                 React 工作台（会话：群列表 + 聊天记录 + AI 建议 + 输入框；工单/知识库/积分排名占位）
 docker-compose.yml
 ```
 
@@ -58,7 +60,13 @@ docker-compose.yml
 - `GET /api/messages?channel=&group_id=&since=&limit=`：查询消息
 - `POST /webhooks/{channel}`：渠道回调（钉钉、飞书目前返回 501）
 - `GET/POST /webhooks/wecom`：企业微信会话存档应用的事件回调（URL 校验、msgaudit_notify）
-- `GET /api/inbox?view=todo|escalated|done|all&channel=`：收件箱（消息 + AI 建议）
+- `GET /api/groups?view=todo|escalated|all`：群列表（待处理数、转人工数）
+- `GET /api/conversation?channel=&group_id=&before=|after=|anchor=`：一个群的聊天记录（含 AI 建议、附件、工作台发出的消息状态）
+- `POST /api/attachments`（表单上传）、`GET /api/attachments/{id}`：图片、文件
+- `POST /api/conversations/send`：在会话里发文字 + 图片 + 文件（可带 `suggestion_id` 表示回复哪条客户消息）
+- `POST /api/send-tasks/{id}/resend|cancel|mark-manual-sent`：发送失败后重发、取消排队、标记已手动发送
+- `POST /api/messages/{id}/fetch-media`：重新下载客户发的图片或文件
+- `GET /api/inbox?view=todo|escalated|done|all&channel=`：按消息列出待处理（旧接口，工作台已不用）
 - `POST /api/suggestions/{id}/adopt|escalate|dismiss|regenerate`：处理 AI 建议
 - `GET /api/send/status`：自动发送程序是否在线
 - `POST /api/suggestions/{id}/adopt` 传 `send: true`：确认后交给发送程序自动发到群里
@@ -104,12 +112,13 @@ npm run dev
 5. 可选：填写 `WECOM_CONTACT_SECRET`（客户联系 Secret），工作台可显示外部客户群名称。
 
 发送人 ID 以 `wm` / `wo` 开头的是客户，只有客户的文本消息会生成 AI 建议；员工发言也入库，作为上下文。
+群里的图片和文件会在后台下载，保存在 `ATTACHMENT_DIR`（docker-compose 里是 `attachments` 卷），单个上限 `ATTACHMENT_MAX_MB`（默认 20MB），下载失败可在工作台重试。
 会话存档不能通过 API 发消息，所以回复有两种发法（客户群回复都保留人工确认）：
 
 - 复制后手动发送：工作台把回复复制到剪贴板，技术支持粘贴到企业微信发送。
 - 自动发送（原型）：一台常开的 Windows 电脑登录专用客服企业微信账号，运行 `windows-agent/` 里的发送程序。
-  技术支持在工作台点「采纳并发送到群」并确认后，发送程序操作官方企业微信客户端：搜索群名、点开、
-  截屏识字核对群名、粘贴、发送，再把成功或失败回报给工作台。详见 [windows-agent/使用说明.md](windows-agent/使用说明.md)。
+  技术支持在工作台「会话」里写好回复（可加图片、文件）并确认后，发送程序操作官方企业微信客户端：搜索群名、点开、
+  截屏识字核对群名、通过剪贴板粘贴（图片、文件、文字依次）、发送，再把成功或失败回报给工作台。详见 [windows-agent/使用说明.md](windows-agent/使用说明.md)。
 
 自动发送的安全措施：只通过操作客户端界面发送，不碰通信协议、不注入客户端；群名未知或有同名群时不发；
 发送前后三次核对（标题是目标群、内容在输入框里、发送后输入框已清空）；两次发送至少间隔 5 秒、每群每小时最多 20 条；

@@ -18,6 +18,7 @@ services:
     build: ./backend
     environment:
       DATABASE_URL: postgresql+psycopg://support:support@db:5432/support
+      ATTACHMENT_DIR: /data/attachments
     # AI 与企业微信的密钥写在 backend/.env（参考 .env.example），不要提交到仓库
     env_file:
       - path: ./backend/.env
@@ -25,6 +26,8 @@ services:
     # 企业微信会话存档：把官方 SDK 和解密私钥放到 ./secrets/wecom 下
     volumes:
       - ./secrets/wecom:/opt/wecom:ro
+      # 图片、文件附件
+      - attachments:/data/attachments
     ports:
       - "8000:8000"
     depends_on:
@@ -42,3 +45,4 @@ services:
 
 volumes:
   pgdata:
+  attachments:

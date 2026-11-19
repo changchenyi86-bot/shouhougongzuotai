@@ -23,6 +23,9 @@ class ArchiveClient(Protocol):
     def decrypt(self, random_key: str, encrypt_chat_msg: str) -> str:
         """用 RSA 解出的随机密钥解密消息，返回明文 JSON 字符串。"""
 
+    def get_media(self, sdkfileid: str, max_bytes: int) -> bytes:
+        """下载图片、文件等媒体内容。超过 max_bytes 抛 ArchiveError。"""
+
 
 class FinanceSdk:
     def __init__(self, lib_path: str, corp_id: str, secret: str, proxy: str = "", proxy_password: str = "",
@@ -43,6 +46,16 @@ class FinanceSdk:
         lib.GetContentFromSlice.restype = ctypes.c_void_p
         lib.GetSliceLen.argtypes = [ctypes.c_void_p]
         lib.DestroySdk.argtypes = [ctypes.c_void_p]
+        lib.NewMediaData.restype = ctypes.c_void_p
+        lib.FreeMediaData.argtypes = [ctypes.c_void_p]
+        lib.GetMediaData.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p,
+                                     ctypes.c_char_p, ctypes.c_int, ctypes.c_void_p]
+        for name in ("GetOutIndexBuf", "GetData"):
+            getattr(lib, name).argtypes = [ctypes.c_void_p]
+            getattr(lib, name).restype = ctypes.c_void_p
+        for name in ("GetIndexLen", "GetDataLen", "IsMediaDataFinish"):
+            getattr(lib, name).argtypes = [ctypes.c_void_p]
+            getattr(lib, name).restype = ctypes.c_int
 
         self._sdk = lib.NewSdk()
         ret = lib.Init(self._sdk, corp_id.encode(), secret.encode())
@@ -82,6 +95,28 @@ class FinanceSdk:
             return self._read_slice(slice_ptr)
         finally:
             self._lib.FreeSlice(slice_ptr)
+
+    def get_media(self, sdkfileid: str, max_bytes: int) -> bytes:
+        """分片拉取媒体文件：每次带上一片返回的 indexbuf，直到 IsMediaDataFinish。"""
+        lib, chunks, size, index = self._lib, [], 0, b""
+        while True:
+            with self._lock:
+                media = lib.NewMediaData()
+                try:
+                    ret = lib.GetMediaData(self._sdk, index, sdkfileid.encode(), self._proxy, self._proxy_password,
+                                           self._timeout, media)
+                    if ret != 0:
+                        raise ArchiveError(f"GetMediaData 失败，错误码 {ret}")
+                    chunks.append(ctypes.string_at(lib.GetData(media), lib.GetDataLen(media)))
+                    index = ctypes.string_at(lib.GetOutIndexBuf(media), lib.GetIndexLen(media))
+                    finished = bool(lib.IsMediaDataFinish(media))
+                finally:
+                    lib.FreeMediaData(media)
+            size += len(chunks[-1])
+            if size > max_bytes:
+                raise ArchiveError("文件太大，未下载")
+            if finished:
+                return b"".join(chunks)
 
     def close(self) -> None:
         if self._sdk:
