@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from app.models import Channel, MessageType, SendStatus, SuggestionStatus
 
@@ -28,6 +28,14 @@ class MessageOut(MessageIn):
     id: uuid.UUID
     received_at: datetime
     raw: dict | None = Field(default=None, exclude=True)
+
+    @computed_field
+    @property
+    def from_customer(self) -> bool:
+        """发送人是客户（否则是本公司员工）。"""
+        from app.channels import ADAPTERS
+
+        return ADAPTERS[self.channel].is_customer(self)
 
 
 class SuggestionOut(BaseModel):
@@ -130,3 +138,23 @@ class AgentResultIn(BaseModel):
     agent_id: str = Field(min_length=1, max_length=64)
     ok: bool
     error: str | None = Field(default=None, max_length=2000)
+
+
+# ---------- 群聊记录 ----------
+
+
+class GroupOut(BaseModel):
+    channel: Channel
+    group_id: str
+    group_name: str | None
+    is_external_group: bool
+    last_message_at: datetime
+    last_content: str
+    message_count: int
+    pending_count: int = Field(description="待处理的客户消息数")
+
+
+class ConversationOut(BaseModel):
+    items: list[InboxItem] = Field(description="按时间从早到晚")
+    has_more_before: bool
+    has_more_after: bool

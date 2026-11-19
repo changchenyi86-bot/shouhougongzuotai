@@ -19,6 +19,7 @@ export interface Message {
   content: string;
   sent_at: string;
   received_at: string;
+  from_customer: boolean;
 }
 
 export type SuggestionStatus =
@@ -117,3 +118,36 @@ export const escalate = (id: string, note: string, operator: string) =>
 export const dismiss = (id: string, operator: string) =>
   post<Suggestion>(`/api/suggestions/${id}/dismiss`, { operator: operator || null });
 export const regenerate = (id: string) => post<Suggestion>(`/api/suggestions/${id}/regenerate`);
+
+export interface Group {
+  channel: Channel;
+  group_id: string;
+  group_name: string | null;
+  is_external_group: boolean;
+  last_message_at: string;
+  last_content: string;
+  message_count: number;
+  pending_count: number;
+}
+
+export interface Conversation {
+  items: InboxItem[];
+  has_more_before: boolean;
+  has_more_after: boolean;
+}
+
+export function fetchGroups(channel?: Channel): Promise<Group[]> {
+  const qs = new URLSearchParams();
+  if (channel) qs.set("channel", channel);
+  return call(`/api/groups?${qs}`);
+}
+
+export function fetchConversation(
+  channel: Channel,
+  groupId: string,
+  opts: { before?: string; after?: string; anchor?: string; limit?: number } = {},
+): Promise<Conversation> {
+  const qs = new URLSearchParams({ channel, group_id: groupId, limit: String(opts.limit ?? 50) });
+  for (const k of ["before", "after", "anchor"] as const) if (opts[k]) qs.set(k, opts[k]!);
+  return call(`/api/conversation?${qs}`);
+}
