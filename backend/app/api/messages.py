@@ -2,6 +2,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.channels import ADAPTERS
@@ -12,15 +13,27 @@ from app.schemas import MessageIn, MessageOut
 router = APIRouter()
 
 
-def _save(session: Session, data: MessageIn) -> Message:
-    existing = session.scalar(
+def _find(session: Session, data: MessageIn) -> Message | None:
+    return session.scalar(
         select(Message).where(Message.channel == data.channel, Message.external_id == data.external_id)
     )
+
+
+def _save(session: Session, data: MessageIn) -> Message:
+    existing = _find(session, data)
     if existing:
         return existing
     msg = Message(**data.model_dump())
     session.add(msg)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        # 渠道并发重试回调：另一请求已先写入同一条消息
+        session.rollback()
+        existing = _find(session, data)
+        if existing is None:
+            raise
+        return existing
     return msg
 
 
