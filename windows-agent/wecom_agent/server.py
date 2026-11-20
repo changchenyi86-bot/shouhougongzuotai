@@ -36,11 +36,11 @@ class Server:
     def __init__(self, cfg: ServerConfig, timeout: float = 15):
         self.cfg, self.timeout = cfg, timeout
 
-    def _post(self, path: str, body: dict) -> dict:
-        raw = self._request(path, json.dumps(body, ensure_ascii=False).encode("utf-8"))
+    def _post(self, path: str, body: dict, timeout: float | None = None) -> dict:
+        raw = self._request(path, json.dumps(body, ensure_ascii=False).encode("utf-8"), timeout)
         return json.loads(raw.decode("utf-8") or "{}")
 
-    def _request(self, path: str, data: bytes | None = None) -> bytes:
+    def _request(self, path: str, data: bytes | None = None, timeout: float | None = None) -> bytes:
         req = urllib.request.Request(
             f"{self.cfg.url}{path}",
             data=data,
@@ -48,7 +48,7 @@ class Server:
             method="POST" if data is not None else "GET",
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout or self.timeout) as resp:
                 return resp.read()
         except urllib.error.HTTPError as exc:
             try:
@@ -65,8 +65,10 @@ class Server:
         self._post("/api/agent/heartbeat",
                    {"agent_id": self.cfg.agent_id, "wecom_ready": ready, "detail": detail[:1000], "version": VERSION})
 
-    def claim(self) -> tuple[Task | None, float]:
-        data = self._post("/api/agent/claim", {"agent_id": self.cfg.agent_id})
+    def claim(self, wait: float = 0) -> tuple[Task | None, float]:
+        """领取下一条任务。wait > 0 时请工作台最多留着这次请求 wait 秒：一有任务马上返回。"""
+        data = self._post("/api/agent/claim", {"agent_id": self.cfg.agent_id, "wait": wait},
+                          timeout=self.timeout + wait)
         t = data.get("task")
         task = Task(id=t["id"], group_name=t["group_name"], content=t["content"],
                     attachments=[Attachment(a["id"], a["filename"]) for a in t.get("attachments") or []]) if t else None

@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import select
 
 from app import db
 from app.config import settings
@@ -240,3 +241,61 @@ def test_heartbeat_offline_after_timeout(sending, monkeypatch):
     _online(sending)
     monkeypatch.setattr(settings, "send_agent_offline_seconds", -1)
     assert sending.get("/api/send/status").json() == {"enabled": True, "ready": False, "agents": []}
+
+
+def test_claim_waits_for_new_task(sending, monkeypatch):
+    """发送程序带着 wait 来领任务：没有任务时服务端先等着，任务一来马上交出去。"""
+    from app.api import sending as sending_api
+
+    _online(sending)
+    sid = _msg(sending)
+    naps = []
+
+    def nap(seconds):
+        naps.append(seconds)
+        if len(naps) == 3:  # 等到第 3 下时，技术支持点了确认发送
+            assert _adopt_send(sending, sid, content="稍等，马上处理").status_code == 200
+
+    monkeypatch.setattr(sending_api.time, "sleep", nap)
+    r = sending.post("/api/agent/claim", headers=AUTH, json={"agent_id": "pc1", "wait": 20})
+    assert r.status_code == 200 and r.json()["task"]["content"] == "稍等，马上处理"
+    assert len(naps) == 3 and max(naps) <= sending_api.CLAIM_POLL_SECONDS
+
+
+def test_claim_wait_gives_up_after_wait_seconds(sending, monkeypatch):
+    from app.api import sending as sending_api
+
+    clock = [0.0]
+    monkeypatch.setattr(sending_api.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(sending_api.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    _online(sending)
+    r = sending.post("/api/agent/claim", headers=AUTH, json={"agent_id": "pc1", "wait": 2})
+    assert r.status_code == 200 and r.json() == {"task": None, "retry_after": 0}
+    assert 2 <= clock[0] < 2.2
+    # 等待时间有上限，免得一个请求挂太久
+    assert sending.post("/api/agent/claim", headers=AUTH, json={"agent_id": "pc1", "wait": 300}).status_code == 422
+
+
+def test_claim_wait_respects_min_interval(sending, monkeypatch):
+    """两条消息之间的最小间隔照旧：等待期间不会提前把下一条交出去，间隔一到马上交。"""
+    from app.api import sending as sending_api
+
+    monkeypatch.setattr(settings, "send_min_interval_seconds", 5)
+    _online(sending)
+    for n in (1, 2):
+        _adopt_send(sending, _msg(sending, n=n))
+    assert _claim(sending)["task"] is not None
+    naps = []
+
+    def nap(seconds):
+        naps.append(seconds)
+        with db.SessionLocal() as s:  # 假装时间过去了：把上一条的领取时间往前拨
+            for t in s.scalars(select(SendTask)).all():
+                if t.claimed_at:
+                    t.claimed_at -= timedelta(seconds=seconds + 0.01)
+            s.commit()
+
+    monkeypatch.setattr(sending_api.time, "sleep", nap)
+    r = sending.post("/api/agent/claim", headers=AUTH, json={"agent_id": "pc1", "wait": 20})
+    assert r.json()["task"] is not None
+    assert len(naps) == 1 and 4 < naps[0] <= 5

@@ -19,7 +19,8 @@ class ServerConfig:
 
 @dataclass
 class AgentConfig:
-    poll_seconds: float = 3  # 没有任务时多久问一次
+    poll_seconds: float = 3  # 没有任务时多久问一次（工作台不支持“有任务立刻通知”时才用得上）
+    long_poll_seconds: float = 20  # 领任务时让工作台最多留着这次请求多久：一有任务马上返回，不用等下一次询问
     heartbeat_seconds: float = 15
     min_interval_seconds: float = 5  # 本机两次发送至少间隔（服务端也有限制）
 
@@ -52,8 +53,8 @@ class UIConfig:
     results_bottom: float = 1
     require_member_count: bool = False
     send_key: str = "enter"  # 企业微信设置里如果改成了 Ctrl+Enter 发送，这里填 ctrl+enter
-    search_wait: float = 1.5  # 输入群名后等搜索结果出来的秒数
-    open_wait: float = 1.2  # 点开群后等聊天窗口切换的秒数
+    search_wait: float = 1.5  # 输入群名后最多等搜索结果多少秒（结果出来并稳定后就继续，不用等满）
+    open_wait: float = 1.2  # 点开群后最多等聊天窗口切换多少秒（标题换过来就继续，不用等满）
     calibrated: bool = False
 
 

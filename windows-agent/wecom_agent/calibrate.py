@@ -96,14 +96,15 @@ def run(cfg: Config) -> bool:
     ui.header_top = round(max(0, title.y0 - 12 - rect.top) / rect.height, 4)
     ui.header_right = round(min(1, (title.x1 - rect.left) / rect.width + 0.25), 4)
     ui.header_bottom = round(min(1, (title.y1 + 12 - rect.top) / rect.height), 4)
+    # 搜索结果区先按“标题左边整列”算（第 5 步再收窄）：标题识字时参照它的大小
+    ui.results_left, ui.results_right = 0.0, ui.header_left
+    ui.results_top, ui.results_bottom = round(min(1, ui.search_y + 0.02), 4), 1.0
     header_texts = [ln.text for ln in driver.header_lines(rect)]
     ui.require_member_count = find_title(header_texts, name, require_count=True, exact_name=True) is not None
     print(f"  已找到聊天标题：{'、'.join(header_texts)}"
           + ("（带人数，以后发送时会要求标题带人数，确保打开的是群聊）" if ui.require_member_count else ""))
 
     print("\n第 5 步：自动试一下搜索这个群…")
-    ui.results_left, ui.results_right = 0.0, ui.header_left
-    ui.results_top, ui.results_bottom = round(min(1, ui.search_y + 0.02), 4), 1.0
     rect = driver.window()
     driver.gui.click(*rect.point(ui.search_x, ui.search_y))
     time.sleep(0.3)

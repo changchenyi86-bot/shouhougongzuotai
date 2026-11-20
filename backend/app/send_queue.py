@@ -149,6 +149,11 @@ def expire_stale(session: Session) -> None:
     session.commit()
 
 
+def has_queued(session: Session) -> bool:
+    """有没有在排队的任务（发送程序等任务时用来快速看一眼）。"""
+    return session.scalar(select(SendTask.id).where(SendTask.status == S.QUEUED).limit(1)) is not None
+
+
 def claim(session: Session, agent_id: str) -> tuple[SendTask | None, float]:
     """发送程序领取下一条任务。返回 (任务或 None, 建议多少秒后再来)。"""
     expire_stale(session)

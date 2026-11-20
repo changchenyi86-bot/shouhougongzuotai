@@ -10,6 +10,7 @@ import logging
 import logging.handlers
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from wecom_agent import VERSION
@@ -136,6 +137,12 @@ def cmd_run() -> int:
     driver = WeComDriver(cfg.ui)
     ready, detail = driver.status()
     log.info("企业微信状态：%s", detail)
+    try:
+        started = time.monotonic()
+        driver.ocr.warm()  # 提前加载识字模型，第一条消息就不用等
+        log.info("识字组件已就绪（加载用了 %.1f 秒）", time.monotonic() - started)
+    except Exception:  # noqa: BLE001  加载失败不退出：发送时会再试，失败原因会报给工作台
+        log.exception("提前加载识字组件失败")
     try:
         Runner(Server(cfg.server), driver, cfg.agent).run()
     except KeyboardInterrupt:

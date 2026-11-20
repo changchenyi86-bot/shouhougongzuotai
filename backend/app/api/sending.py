@@ -1,6 +1,7 @@
 """自动发送：工作台查看发送程序状态、重发/取消/改为手动；电脑端发送程序的心跳、领取任务、回报结果。"""
 
 import hmac
+import time
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
@@ -162,11 +163,33 @@ def heartbeat(body: AgentHeartbeatIn, session: Session = Depends(get_session)) -
     return {"ok": True}
 
 
+CLAIM_POLL_SECONDS = 0.1  # 发送程序等任务时，服务端多久看一次有没有新任务
+CLAIM_SWEEP_SECONDS = 5  # 等任务期间多久清理一次过期任务
+
+
 @agent_router.post("/claim", response_model=AgentClaimOut)
 def claim(body: AgentClaimIn, session: Session = Depends(get_session)) -> AgentClaimOut:
-    task, retry_after = send_queue.claim(session, body.agent_id)
-    if task is None:
-        return AgentClaimOut(task=None, retry_after=retry_after)
+    """领取下一条任务。wait > 0 时没有任务不立刻返回，最多等 wait 秒：一有任务（并且限速允许）马上交给发送程序。
+
+    这样确认发送后不用等发送程序下一次来问（原来每 3 秒问一次，平均要多等 1.5 秒）。
+    """
+    deadline = time.monotonic() + body.wait
+    swept = time.monotonic()
+    while True:
+        task, retry_after = send_queue.claim(session, body.agent_id)
+        if task is not None:
+            break
+        while True:
+            session.rollback()  # 等待期间不占着数据库事务
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return AgentClaimOut(task=None, retry_after=retry_after)
+            time.sleep(min(left, retry_after if retry_after > 0 else CLAIM_POLL_SECONDS))
+            # 限速的时间到了、来了新任务、或者该清理过期任务了，才去认真领一次
+            if (retry_after > 0 or send_queue.has_queued(session)
+                    or time.monotonic() - swept >= CLAIM_SWEEP_SECONDS):
+                swept = time.monotonic()
+                break
     out = AgentTask(id=task.id, channel=task.channel, group_id=task.group_id, group_name=task.group_name,
                     content=task.content, created_at=task.created_at,
                     attachments=[AttachmentOut.model_validate(a) for a in attachments_of(session, task)])

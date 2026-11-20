@@ -224,7 +224,8 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
 
   const sending = outbox.some((t) => t.status === "queued" || t.status === "sending");
   useEffect(() => {
-    const t = setInterval(() => refresh(), sending ? 3_000 : 10_000);
+    // 有消息正在发送时每秒看一次结果，发完马上显示「已发出」
+    const t = setInterval(() => refresh(), sending ? 1_000 : 10_000);
     return () => clearInterval(t);
   }, [refresh, sending]);
 
