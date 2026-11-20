@@ -312,6 +312,7 @@ class WeComDriver:
         self.ocr = Ocr()
         self.clip = clipboard or Clipboard()
         self._result_texts: list[str] = []
+        self._pressed = False
 
     # ---- 状态 ----
 
@@ -418,6 +419,7 @@ class WeComDriver:
     def send(self, group_name: str, content: str, files: list[Path] | None = None) -> SendResult:
         """先逐个发图片、文件（各算一条消息），再发文字。"""
         done: list[str] = []
+        self._pressed = False  # 是否已按下发送键、还没核对结果
         try:
             self._send(group_name, content, files or [], done)
             return SendResult(True)
@@ -428,6 +430,14 @@ class WeComDriver:
             return SendResult(False, prefix + str(exc))
         except self.gui.FailSafeException:
             return SendResult(False, "发送被人工中止（鼠标移到了屏幕角落），请到群里确认是否已发出")
+        except Exception as exc:  # noqa: BLE001  程序自身出错（如剪贴板写入失败）
+            shot = save_screen("error")
+            log.exception("发送出错（截图 %s）", shot)
+            prefix = f"已发出：{'、'.join(done)}；" if done else ""
+            if self._pressed:
+                return SendResult(False, f"{prefix}发送程序出错，未确认最后一条是否发出，请到群里确认：{exc}")
+            # 还没按发送键就出错了，这一条肯定没有发出去
+            return SendResult(False, f"{prefix}发送程序出错，{'后面的' if done else ''}没有发送：{exc}")
 
     def _press_send(self, rect: Rect, name: str, ix: int, iy: int) -> None:
         """按发送键前再核对一次群名（防止期间有弹窗或切换），对不上就清空输入框。"""
@@ -436,6 +446,7 @@ class WeComDriver:
         except UIError:
             self._clear_input(ix, iy)
             raise
+        self._pressed = True
         self._keys(self.cfg.send_key)
 
     def _send(self, name: str, content: str, files: list[Path], done: list[str]) -> None:
@@ -464,6 +475,7 @@ class WeComDriver:
                 self._clear_input(ix, iy)
                 raise UIError(f"按了发送键，但{label}还留在输入框里，没有发出，未发送")
             done.append(label)
+            self._pressed = False
 
         if not content:
             return
