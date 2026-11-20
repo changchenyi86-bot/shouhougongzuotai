@@ -30,6 +30,9 @@ services:
       - ./secrets/wecom:/opt/wecom:ro
       # 图片、文件附件
       - attachments:/data/attachments
+    # 让容器能访问本机端口（如转到内网 embedding 服务的 SSH 隧道）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
     depends_on:

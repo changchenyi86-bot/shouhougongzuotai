@@ -140,6 +140,14 @@ npm run demo
 
 知识库检索的接入点在 `app/ai/suggest.py` 的 `retrieve_knowledge()`。
 
+### 知识库向量模型（embedding）
+
+使用 OpenAI 兼容的 `/v1/embeddings` 接口，在 `backend/.env` 配置 `EMBEDDING_BASE_URL` / `EMBEDDING_MODEL` / `EMBEDDING_DIM`（见 `.env.example`）。
+服务只在公司内网时，本机用 SSH 隧道把它转到 127.0.0.1 的某个端口，后端容器通过 `host.docker.internal` 访问该端口；
+隧道断了（电脑重启、网络切换）向量检索就不可用，重新打开隧道即可。具体服务器和端口记在本机配置里，不写进仓库。
+
+换模型或换部署后，向量维度和相似度分布可能变化：维度变了要重建已存的向量，知识库「命中」阈值要用实际问答数据重新校准。
+
 ## 路线图
 
 - [x] 项目骨架与统一消息模型

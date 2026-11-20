@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     ai_workers: int = 4
     ai_suggest_max_age_minutes: int = 120  # 超过这个时间的旧消息（如首次导入的历史记录）不生成建议
 
+    # ---- 知识库向量检索（embedding，OpenAI 兼容的 /v1/embeddings 接口） ----
+    embedding_base_url: str = ""  # 如 http://host.docker.internal:<端口>/v1，留空表示未配置
+    embedding_api_key: str = ""  # 接口不需要鉴权时留空
+    embedding_model: str = ""
+    embedding_dim: int = 1024  # 向量维度，pgvector 列按这个长度建；换模型后维度变了要重建向量
+
     # ---- 企业微信 会话内容存档 ----
     wecom_corp_id: str = ""
     wecom_archive_secret: str = ""  # 「会话内容存档」应用的 Secret
