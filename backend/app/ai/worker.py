@@ -49,9 +49,9 @@ def run(message_id: uuid.UUID) -> None:
             return
         if sug.status != SuggestionStatus.GENERATING:
             return
-        draft = model = error = None
+        result = error = None
         try:
-            draft, model = generate(session, message)
+            result = generate(session, message)
         except SuggestionFailed as exc:
             error = str(exc)
         except Exception as exc:  # noqa: BLE001
@@ -62,12 +62,16 @@ def run(message_id: uuid.UUID) -> None:
         if sug.status != SuggestionStatus.GENERATING:
             session.rollback()
             return
-        if draft is None:
+        if result is None:
             sug.status, sug.error = SuggestionStatus.FAILED, error
+            sug.knowledge = sug.knowledge_error = None
         else:
+            draft = result.draft
             sug.status = SuggestionStatus.READY
             sug.content, sug.can_answer = draft.reply, draft.can_answer
-            sug.confidence, sug.reason, sug.model = draft.confidence, draft.reason, model
+            sug.confidence, sug.reason, sug.model = draft.confidence, draft.reason, result.model
+            sug.knowledge = [k.to_record() for k in result.knowledge]
+            sug.knowledge_error = result.knowledge_error
         session.commit()
 
 

@@ -116,6 +116,10 @@ class Suggestion(Base):
     reason: Mapped[str | None] = mapped_column(Text, comment="AI 的判断依据或需要补充的信息")
     model: Mapped[str | None] = mapped_column(String(64))
     error: Mapped[str | None] = mapped_column(Text)
+    knowledge: Mapped[list | None] = mapped_column(
+        JSON, comment="生成时从售后数字人查到的参考知识（不含全文），cited 标出建议实际引用的"
+    )
+    knowledge_error: Mapped[str | None] = mapped_column(Text, comment="知识库没查成的原因")
 
     final_content: Mapped[str | None] = mapped_column(Text, comment="实际发出的回复")
     delivery: Mapped[str | None] = mapped_column(String(16), comment="manual：复制后人工发送；agent：由电脑端发送程序自动发送")

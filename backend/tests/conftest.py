@@ -22,7 +22,8 @@ class FakeLLM:
     def __init__(self):
         self.calls: list[tuple[str, str]] = []
         self.draft_result = SuggestionDraft(can_answer=True, confidence="high",
-                                            reply="您好，请清理浏览器缓存后重试。", reason="常见问题")
+                                            reply="您好，请清理浏览器缓存后重试。", reason="常见问题",
+                                            references=[])
         self.error: Exception | None = None
 
     def draft(self, system: str, prompt: str):

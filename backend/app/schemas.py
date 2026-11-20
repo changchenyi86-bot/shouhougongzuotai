@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 from app.models import Channel, MessageType, SendStatus, SuggestionStatus
 
@@ -49,6 +49,20 @@ class MessageOut(MessageIn):
         return ADAPTERS[self.channel].is_customer(self)
 
 
+class KnowledgeRef(BaseModel):
+    """生成建议时从售后数字人查到的一条参考知识。"""
+
+    ref: str = Field(description="提示词里的编号，如 K1")
+    kind: str = Field(description="card 纠错卡 / manual 产品手册 / faq / ticket 历史工单 / bug 缺陷单 等")
+    branch: str = Field(description="适用分支：有数 / 知数 / 通用")
+    title: str
+    source_id: str = Field(description="纠错卡的 card_id，或数字人知识库里的文件名")
+    url: str | None = Field(default=None, description="原文链接（产品手册、FAQ 是帮助中心，工单是 Overmind）")
+    card_status: str | None = Field(default=None, description="纠错卡状态，draft 表示技术支持还没确认")
+    snippet: str = ""
+    cited: bool = Field(description="建议是否实际引用了这条")
+
+
 class SuggestionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -61,6 +75,8 @@ class SuggestionOut(BaseModel):
     reason: str | None
     model: str | None
     error: str | None
+    knowledge: list[KnowledgeRef] = Field(default=[], description="参考知识，建议引用的排在前面")
+    knowledge_error: str | None = None
     final_content: str | None
     delivery: str | None
     send_status: SendStatus | None = None
@@ -71,6 +87,11 @@ class SuggestionOut(BaseModel):
     handled_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("knowledge", mode="before")
+    @classmethod
+    def _cited_first(cls, v):
+        return sorted(v or [], key=lambda k: not (k.get("cited") if isinstance(k, dict) else getattr(k, "cited", False)))
 
 
 class InboxItem(BaseModel):

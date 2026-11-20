@@ -25,6 +25,15 @@ class Settings(BaseSettings):
     ai_workers: int = 4
     ai_suggest_max_age_minutes: int = 120  # 超过这个时间的旧消息（如首次导入的历史记录）不生成建议
 
+    # ---- 售后数字人知识检索（自建实例的检索服务，MCP 接口） ----
+    # 如 http://host.docker.internal:<本机端口>/messages，留空表示生成建议时不查知识库
+    knowledge_mcp_url: str = ""
+    knowledge_product: str = "bi"  # 查哪个产品的知识：bi（有数，检索服务会自动带上知数）、zs（只查知数）
+    knowledge_top: int = 6  # 带给模型的手册、FAQ、工单篇数（纠错卡另算，最多 3 张）
+    knowledge_read_full: int = 3  # 前几篇把全文带给模型，其余只带摘要
+    knowledge_article_chars: int = 1500  # 每篇全文最多带多少字
+    knowledge_timeout: float = 15
+
     # ---- 知识库向量检索（embedding，OpenAI 兼容的 /v1/embeddings 接口） ----
     embedding_base_url: str = ""  # 如 http://host.docker.internal:<端口>/v1，留空表示未配置
     embedding_api_key: str = ""  # 接口不需要鉴权时留空

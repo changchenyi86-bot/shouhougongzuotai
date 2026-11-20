@@ -9,6 +9,7 @@ import {
   type Attachment,
   type InboxItem,
 } from "./api";
+import Knowledge from "./Knowledge";
 import { formatSize } from "./MessageBody";
 
 const CONFIDENCE: Record<string, string> = { high: "把握高", medium: "把握一般", low: "把握低" };
@@ -186,6 +187,7 @@ export default function Composer(props: Props) {
               </div>
               {s.note && <p className="note">转人工备注：{s.note}</p>}
               {s.content && <p className="ai-text">{s.content}</p>}
+              <Knowledge s={s} />
             </>
           )}
           <div className="actions">
