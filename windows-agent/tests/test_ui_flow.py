@@ -470,3 +470,41 @@ def test_window_placement_skipped_when_already_in_place(monkeypatch):
     calls.clear()
     assert ui.prepare_window(win, cfg) == Rect(40, 40, 1274, 860)
     assert calls == []  # 停在上次摆好的位置：不用每次都再摆一遍
+
+
+def test_keep_full_speed_asks_windows_not_to_throttle(monkeypatch):
+    import ctypes
+
+    calls = []
+
+    class Kernel32:
+        class _Fn:
+            def __init__(self, fn):
+                self.fn = fn
+
+            def __call__(self, *args):
+                return self.fn(*args)
+
+        def __init__(self, known_masks):
+            def set_info(handle, info_class, state, size):
+                control, on = ctypes.cast(state, ctypes.POINTER(ctypes.c_uint32 * 3)).contents[1:]
+                calls.append((info_class, control, on, size))
+                return 1 if control in known_masks else 0
+
+            self.GetCurrentProcess = self._Fn(lambda: -1)
+            self.SetProcessInformation = self._Fn(set_info)
+
+    fake_types = types.SimpleNamespace(ULONG=ctypes.c_uint32, HANDLE=ctypes.c_void_p, DWORD=ctypes.c_uint32,
+                                       BOOL=ctypes.c_int)
+    monkeypatch.setattr(ui, "wintypes", fake_types, raising=False)
+    monkeypatch.setattr(ui.ctypes, "WinDLL", lambda name, use_last_error=False: Kernel32({0x5, 0x1}), raising=False)
+    assert ui.keep_full_speed() is True
+    assert calls == [(4, 0x5, 0, 12)]  # 4 = 省电限速这一项；状态为 0 = 运行速度和计时精度都不限
+
+    calls.clear()  # 旧一些的系统不认识“计时精度”：只设运行速度
+    monkeypatch.setattr(ui.ctypes, "WinDLL", lambda name, use_last_error=False: Kernel32({0x1}), raising=False)
+    assert ui.keep_full_speed() is True
+    assert [c[1] for c in calls] == [0x5, 0x1]
+
+    monkeypatch.setattr(ui.ctypes, "WinDLL", lambda name, use_last_error=False: Kernel32(set()), raising=False)
+    assert ui.keep_full_speed() is False  # 设不了也不报错，只是慢一些

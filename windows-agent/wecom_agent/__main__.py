@@ -137,6 +137,7 @@ def cmd_run() -> int:
     driver = WeComDriver(cfg.ui)
     ready, detail = driver.status()
     log.info("企业微信状态：%s", detail)
+    log.info("已让系统不给本程序限速" if driver.full_speed else "没能关闭系统对后台程序的限速，识字可能偏慢")
     try:
         started = time.monotonic()
         driver.ocr.warm()  # 提前加载识字模型，第一条消息就不用等
