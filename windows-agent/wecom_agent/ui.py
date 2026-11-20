@@ -249,6 +249,29 @@ def window_alive(win: Window) -> bool:
     return pid.value == win.pid and _text(user32.GetWindowTextW, hwnd) == win.title
 
 
+def find_search_popup(pid: int) -> tuple[int, int, int, int] | None:
+    """企业微信的搜索下拉面板现在在屏幕上的位置（左、上、右、下）；没打开、或认不准是哪个时返回 None。
+
+    在搜索框里输入后，结果显示在一个单独的小窗口里（5.0 版里窗口类名是 SearchResultWindow2），
+    它只盖住左边会话列表的上半截。只在这个面板里找搜索结果，才不会把面板下面露出来的会话列表
+    也当成搜索结果（真机上出现过：要发的群正好露在面板下面，被数成了“2 个同名结果”）。
+    """
+    found: list[tuple[int, int, int, int]] = []
+
+    def callback(hwnd, _):
+        if user32.IsWindowVisible(hwnd):
+            owner = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+            if owner.value == pid and "searchresult" in _text(user32.GetClassNameW, hwnd).lower():
+                x, y, w, h = _window_rect(hwnd)
+                if w >= 100 and h >= 40:
+                    found.append((x, y, x + w, y + h))
+        return True
+
+    user32.EnumWindows(WNDENUMPROC(callback), 0)
+    return found[0] if len(found) == 1 else None
+
+
 def _is_foreground(hwnd: int) -> bool:
     fg = user32.GetForegroundWindow()
     return fg == hwnd or user32.GetAncestor(fg, GA_ROOTOWNER) == hwnd
@@ -445,6 +468,8 @@ class WeComDriver:
 
     def _reset(self) -> None:
         self._result_texts: list[str] = []
+        self._result_lines: list[OcrLine] = []
+        self._in_popup = False  # 这次的搜索结果是不是在搜索下拉面板里找的
         self._pressed = False
         self._win: Window | None = None  # 上次找到的企业微信主窗口
         self._header_seen: tuple[str, object] | None = None  # (群名, 已经识字核对过的标题截图)
@@ -667,10 +692,28 @@ class WeComDriver:
                 break
         self.verify_header(rect, name)  # 最后再完整核对一次，对不上就报错
 
-    def search_results(self, rect: Rect, name: str, frame=None) -> list[OcrLine]:
+    def _search_view(self, rect: Rect) -> tuple[tuple[int, int, int, int], object]:
+        """现在该在哪块区域里找搜索结果：(区域, 这块区域的截图)。
+
+        搜索下拉面板开着就只看面板；找不到面板（别的版本可能不是单独的窗口）才看校准时记下的整列。
+        """
+        pid = getattr(self._win, "pid", 0)
+        box = (find_search_popup(pid) if pid else None) or self._results_box(rect)
+        return box, self._grab(box)[0]
+
+    @staticmethod
+    def _view_differs(a, b) -> bool:
+        return a[0] != b[0] or differs(a[1], b[1])
+
+    def search_results(self, rect: Rect, name: str, view=None) -> list[OcrLine]:
         c = self.cfg
-        lines = self.ocr.read(self._results_box(rect), image=frame)
+        whole = self._results_box(rect)
+        box, frame = view or self._search_view(rect)
+        # 面板比整列小，识字组件会把它放大好几倍再找字（慢）；按整列的倍数处理，字的大小本来就一样
+        lines = self.ocr.read(box, image=frame, like=(whole[2] - whole[0], whole[3] - whole[1]))
+        self._result_lines = lines
         self._result_texts = [line.text for line in lines]
+        self._in_popup = box != whole
         _, sy = rect.point(c.search_x, c.search_y)
         hx0, hy0, hx1, hy1 = self._header_box(rect)
 
@@ -683,62 +726,77 @@ class WeComDriver:
         return [line for line in lines if is_result(line)]
 
     def _settled_results(self, rect: Rect, name: str, before) -> list[OcrLine]:
-        """等搜索结果出齐，再识字找出和群名完全一样的结果。
+        """等搜索结果出齐，再识字找出和群名完全一样的结果。before 是输入群名之前的样子。
 
         原来是输入群名后固定等 search_wait 秒再识字。现在：
-        1. 等结果区变了样、并且连续两次截屏一样，就开始识字，不用等满；
+        1. 等结果变了样（面板弹出来，或内容换了）、并且连续两次截屏一样，就开始识字，不用等满；
         2. 识字完再截一次屏：列表在这期间又变了（比如又加载出一条）就按新的重认一遍；
         3. 还没搜到就接着等，直到列表有变化或者等满 search_wait 秒（和原来一样久）才算搜不到。
         所以去点之前，认的那一版列表至少有约半秒没有变化；等满 search_wait 秒后和原来的做法完全一样。
         """
-        box = self._results_box(rect)
         deadline = time.monotonic() + self.cfg.search_wait
         last = None
         while True:
             time.sleep(0.08)
-            frame = self._grab(box)[0]
-            if last is not None and not differs(frame, last) and differs(frame, before):
+            view = self._search_view(rect)
+            if last is not None and not self._view_differs(view, last) and self._view_differs(view, before):
                 break
             if time.monotonic() >= deadline:
                 break
-            last = frame
+            last = view
         self._mark("等搜索结果")
         while True:
             started = time.monotonic()
-            hits = self.search_results(rect, name, frame)
+            hits = self.search_results(rect, name, view)
             if time.monotonic() >= deadline:
                 break
             left = RESULTS_STABLE - (time.monotonic() - started)
             if left > 0:
                 time.sleep(left)
-            latest = self._grab(box)[0]
-            if differs(latest, frame):
-                frame = latest
+            latest = self._search_view(rect)
+            if self._view_differs(latest, view):
+                view = latest
                 continue
-            if hits or not self._wait_changed(box, frame, deadline - time.monotonic()):
+            if hits:
                 break
-            frame = self._grab(box)[0]
+            # 还没搜到：等到列表有变化再认，或者等满 search_wait 秒
+            while not self._view_differs(latest, view) and time.monotonic() < deadline:
+                time.sleep(0.05)
+                latest = self._search_view(rect)
+            if not self._view_differs(latest, view):
+                break
+            view = latest
         self._mark("识别结果")
+        if not self._in_popup and "没找到搜索面板，按整列找的结果" not in self._notes:
+            self._notes.append("没找到搜索面板，按整列找的结果")
         return hits
+
+    def _search_failed(self) -> None:
+        """搜索没通过：先把当时看到的留下来（截图、认出的每一行），再关掉搜索面板。"""
+        shot = save_screen("search")
+        seen = "；".join(f"{ln.text}@({ln.x0},{ln.y0})" for ln in self._result_lines) or "没有识别到文字"
+        log.warning("搜索没通过。%s里识别到：%s（截图 %s）",
+                    "搜索面板" if self._in_popup else "左侧整列", seen, shot)
+        self._keys("esc")
 
     def open_group(self, name: str) -> Rect:
         self._header_seen = None
         rect = self.window()
         self._mark("窗口")
-        before = self._grab(self._results_box(rect))[0]
         self.gui.click(*rect.point(self.cfg.search_x, self.cfg.search_y))
         time.sleep(0.15)
         self._keys("ctrl+a")
+        before = self._search_view(rect)
         self._paste(name)
         hits = self._settled_results(rect, name, before)
         if not hits:
-            self._keys("esc")
+            self._search_failed()
             if cut := truncated_name(self._result_texts, name):
                 raise UIError(f"搜索结果里群名显示不全（只看到「{cut}」），无法确认是不是「{name}」，未发送。"
                               "请在发送电脑的 config.ini 里把 window_width 调大后重新校准")
             raise UIError(f"在企业微信里搜不到群「{name}」（客服账号可能不在这个群里，或群名改了），未发送")
         if len(hits) > 1:
-            self._keys("esc")
+            self._search_failed()
             raise UIError(f"搜索「{name}」有 {len(hits)} 个同名结果，无法确定是哪个群，未发送")
         self.gui.click(*hits[0].center)
         self._wait_header(rect, name)

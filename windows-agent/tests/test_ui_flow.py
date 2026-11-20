@@ -38,6 +38,8 @@ class FakeChat:
         self.send_broken = False
         self.switch_before_send = None
         self.seq = 0  # 剪贴板修改次数
+        self.popup = None  # 搜索下拉面板在屏幕上的位置；None = 这个版本没有单独的面板
+        self.list_rows: list[OcrLine] = []  # 左侧会话列表里、没被搜索面板盖住的行
         self.header_reads = 0  # 标题识字了几次
 
     # 鼠标键盘
@@ -112,7 +114,9 @@ class FakeChat:
             self.header_reads += 1
             count = self.groups.get(self.current)
             return [OcrLine(self.current + (f"({count})" if count else ""), 400, 20, 600, 40)]
-        return self.result_lines()
+        if box == self.popup:
+            return self.result_lines()
+        return self.result_lines() + self.list_rows  # 整列：搜索结果 + 露出来的会话列表
 
 
 @pytest.fixture(params=["快办法核对输入框", "慢办法核对输入框"])
@@ -129,7 +133,8 @@ def chat(monkeypatch, request):
     )
     clock = [0.0]
     monkeypatch.setattr(ui, "desktop_locked", lambda: False)
-    monkeypatch.setattr(ui, "find_main_window", lambda cfg: (object(), "ok"))
+    monkeypatch.setattr(ui, "find_main_window", lambda cfg: (types.SimpleNamespace(pid=1), "ok"))
+    monkeypatch.setattr(ui, "find_search_popup", lambda pid: fake.popup if fake.search else None)
     monkeypatch.setattr(ui, "window_alive", lambda win: True)
     monkeypatch.setattr(ui, "prepare_window", lambda win, cfg: RECT)
     monkeypatch.setattr(ui, "save_screen", lambda tag: None)
@@ -508,3 +513,54 @@ def test_keep_full_speed_asks_windows_not_to_throttle(monkeypatch):
 
     monkeypatch.setattr(ui.ctypes, "WinDLL", lambda name, use_last_error=False: Kernel32(set()), raising=False)
     assert ui.keep_full_speed() is False  # 设不了也不报错，只是慢一些
+
+
+POPUP = (10, 60, 320, 400)
+
+
+def test_conversation_list_row_is_not_a_search_result(chat):
+    # 真机上出现过：要发的群正好露在搜索面板下面的会话列表里，被数成了“2 个同名结果”。
+    # 只在搜索面板里找结果，会话列表里的那一行就不算。
+    chat.list_rows = [OcrLine("某客户-有数项目群(23)", 60, 500, 260, 520)]
+    r = chat.driver.send("某客户-有数项目群", "回复")
+    assert not r.ok and "2 个同名" in r.error  # 没有单独面板的版本：分不出来，宁可不发
+
+    chat.popup = POPUP
+    r = chat.driver.send("某客户-有数项目群", "回复")
+    assert r.ok, r.error
+    assert chat.sent == [("某客户-有数项目群", "回复")]
+
+
+def test_two_same_name_groups_in_popup_still_rejected(chat, monkeypatch):
+    chat.popup = POPUP
+    monkeypatch.setattr(chat, "result_lines", lambda: [OcrLine("同名群(3)", 20, 100, 200, 120),
+                                                        OcrLine("同名群(5)", 20, 140, 200, 160)])
+    r = chat.driver.send("同名群", "回复")
+    assert not r.ok and "2 个同名" in r.error and chat.sent == []
+
+
+def test_search_failure_keeps_what_was_seen(chat, monkeypatch, caplog):
+    import logging
+
+    events = []
+    real_press = chat.driver.gui.press
+    monkeypatch.setattr(ui, "save_screen", lambda tag: events.append(tag) or f"{tag}.png")
+    monkeypatch.setattr(chat.driver.gui, "press", lambda key: (events.append(key), real_press(key)))
+    chat.popup = POPUP
+    with caplog.at_level(logging.WARNING, logger="wecom_agent"):
+        r = chat.driver.send("某客户-有数", "回复")  # 只搜得到名字更长的群
+    assert not r.ok and "搜不到" in r.error
+    assert events[:2] == ["search", "esc"]  # 先截图，再关搜索面板
+    seen = next(rec.getMessage() for rec in caplog.records if "搜索没通过" in rec.getMessage())
+    assert "搜索面板" in seen and "某客户-有数项目群(23)@(20,100)" in seen and "search.png" in seen
+
+
+def test_timing_notes_when_popup_not_found(chat, caplog):
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="wecom_agent"):
+        assert chat.driver.send("某客户-有数项目群", "回复").ok
+        chat.popup = POPUP
+        assert chat.driver.send("某客户-有数项目群", "再回复").ok
+    first, second = [r.getMessage() for r in caplog.records if r.getMessage().startswith("用时")]
+    assert "没找到搜索面板" in first and "没找到搜索面板" not in second
