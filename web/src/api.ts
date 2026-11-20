@@ -43,6 +43,23 @@ export type SuggestionStatus =
   | "escalated"
   | "dismissed";
 
+/** 生成建议时从售后数字人查到的一条参考知识。 */
+export interface KnowledgeRef {
+  ref: string;
+  /** card 纠错卡 / manual 产品手册 / faq / ticket 历史工单 / bug 缺陷单 等 */
+  kind: string;
+  /** 适用分支：有数 / 知数 / 通用 */
+  branch: string;
+  title: string;
+  source_id: string;
+  url: string | null;
+  /** 纠错卡状态，draft 表示技术支持还没确认 */
+  card_status: string | null;
+  snippet: string;
+  /** 建议是否实际引用了这条 */
+  cited: boolean;
+}
+
 export interface Suggestion {
   id: string;
   message_id: string;
@@ -53,6 +70,10 @@ export interface Suggestion {
   reason: string | null;
   model: string | null;
   error: string | null;
+  /** 参考知识，引用的排在前面 */
+  knowledge: KnowledgeRef[];
+  /** 知识库没查成的原因 */
+  knowledge_error: string | null;
   final_content: string | null;
   delivery: string | null;
   send_status: SendStatus | null;

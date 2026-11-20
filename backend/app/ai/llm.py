@@ -22,6 +22,7 @@ class SuggestionDraft(BaseModel):
     confidence: Literal["high", "medium", "low"]
     reply: str = Field(description="可直接发到群里的回复草稿")
     reason: str = Field(description="一句话说明判断依据，或转人工时需要人工补充什么")
+    references: list[str] = Field(description="回复实际依据的参考资料编号，如 [\"K1\", \"K3\"]；没有依据参考资料时为空列表")
 
 
 class LLMError(Exception):
@@ -71,7 +72,8 @@ class ClaudeProvider:
 
 JSON_INSTRUCTION = (
     "\n\n只输出一个 JSON 对象，不要输出其他内容，字段为："
-    '{"can_answer": true/false, "confidence": "high"/"medium"/"low", "reply": "回复草稿", "reason": "判断依据"}'
+    '{"can_answer": true/false, "confidence": "high"/"medium"/"low", "reply": "回复草稿", "reason": "判断依据", '
+    '"references": ["回复依据的参考资料编号，如 K1；没有就是空列表"]}'
 )
 
 
@@ -81,7 +83,12 @@ def parse_draft(text: str) -> SuggestionDraft:
     if not match:
         raise LLMError("模型没有返回 JSON")
     try:
-        return SuggestionDraft.model_validate(json.loads(match.group(0)))
+        data = json.loads(match.group(0))
+        if isinstance(data, dict):
+            # 自有模型不一定按要求给出 references，缺了或格式不对按「没有引用」处理
+            refs = data.get("references")
+            data["references"] = [str(r) for r in refs] if isinstance(refs, list) else []
+        return SuggestionDraft.model_validate(data)
     except (ValueError, ValidationError) as exc:
         raise LLMError(f"模型输出格式不正确：{exc}") from exc
 

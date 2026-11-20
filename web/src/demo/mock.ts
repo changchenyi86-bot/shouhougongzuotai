@@ -1,5 +1,5 @@
 // 演示模式：不连后台，接口全部用内置的假数据应答，只用来看界面效果。
-import type { Attachment, Channel, Group, InboxItem, Message, SendTask, Suggestion } from "../api";
+import type { Attachment, Channel, Group, InboxItem, KnowledgeRef, Message, SendTask, Suggestion } from "../api";
 
 const at = (h: number, m: number) => {
   const d = new Date();
@@ -58,6 +58,12 @@ function say(r: Room, customer: string | null, h: number, m: number, content: st
   return message;
 }
 
+function kn(
+  ref: string, kind: string, branch: string, title: string, cited: boolean, url: string | null, card_status: string | null = null,
+): KnowledgeRef {
+  return { ref, kind, branch, title, source_id: `${ref}.md`, url, card_status, snippet: "", cited };
+}
+
 function suggest(r: Room, m: Message, status: Suggestion["status"], more: Partial<Suggestion> = {}) {
   const item = r.items.find((i) => i.message.id === m.id)!;
   item.suggestion = {
@@ -70,6 +76,8 @@ function suggest(r: Room, m: Message, status: Suggestion["status"], more: Partia
     reason: null,
     model: "demo",
     error: null,
+    knowledge: [],
+    knowledge_error: null,
     final_content: null,
     delivery: null,
     send_status: null,
@@ -118,7 +126,13 @@ function build(): Room[] {
       "您好，从日志看是导出请求超时（504）。这张报表数据量较大，建议先在「导出设置」里把导出方式改成「后台导出」，导出完成后会在消息中心提醒您下载。如果仍然失败，麻烦告诉我们报表名称，我们帮您排查。",
     can_answer: true,
     confidence: "high",
-    reason: "知识库命中：报表导出超时处理（3 次相似问题已解决）",
+    reason: "FAQ 里有导出超时的处理办法，日志里的 504 和它一致",
+    knowledge: [
+      kn("K2", "faq", "有数", "excel导出问题排查方法", true, "https://study.sf.163.com/documents/read/privatization/bgdc03"),
+      kn("K1", "manual", "有数", "导出", true, "https://study.sf.163.com/documents/read/manual/daochu.md"),
+      kn("K3", "card", "有数", "表格勾选显示序号后，导出不会带出序号", false, null, "draft"),
+      kn("K4", "bug", "知数", "导出Excel失效", false, null),
+    ],
   });
 
   const factory = room("dingtalk", "g2", "制造客户-知数交付群", true, 212);
@@ -129,7 +143,8 @@ function build(): Room[] {
       "您好，新账号默认没有看板的查看权限。请管理员在「权限管理 → 资源授权」里，把对应看板授权给这两位同事或他们所在的角色，授权后重新登录即可看到。",
     can_answer: true,
     confidence: "medium",
-    reason: "知识库命中：新用户看不到看板",
+    reason: "纠错卡写明新账号要单独授权看板（卡片还是草稿）",
+    knowledge: [kn("K1", "card", "知数", "新账号看不到看板：需要给账号或角色授权", true, null, "draft")],
   });
 
   const retail = room("feishu", "g3", "零售客户-有数运维群", true, 98);
@@ -150,6 +165,10 @@ function build(): Room[] {
     can_answer: false,
     confidence: "low",
     reason: "知识库里没有找到相似问题，建议转人工",
+    knowledge: [
+      kn("K1", "faq", "有数", "邮件订阅收不到邮件的排查", false, null),
+      kn("K2", "manual", "有数", "订阅与推送", false, null),
+    ],
   });
 
   const broker = room("wecom", "g4", "券商客户-知数实施群", true, 340);

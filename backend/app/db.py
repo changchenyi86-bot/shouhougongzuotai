@@ -27,7 +27,8 @@ def init_db() -> None:
 
 # 早期版本建的表缺少的列（create_all 不会给已有表加列）
 _NEW_COLUMNS = {
-    "suggestions": {"send_status": "VARCHAR(16)", "send_error": "TEXT", "sent_at": "TIMESTAMP WITH TIME ZONE"},
+    "suggestions": {"send_status": "VARCHAR(16)", "send_error": "TEXT", "sent_at": "TIMESTAMP WITH TIME ZONE",
+                    "knowledge": "JSON", "knowledge_error": "TEXT"},
     "messages": {"attachment_id": "UUID REFERENCES attachments(id) ON DELETE SET NULL", "media_error": "TEXT"},
     "send_tasks": {"attachment_ids": "JSON", "replaced_by": "UUID"},
 }

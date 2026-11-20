@@ -178,7 +178,7 @@ def test_claude_provider_request():
 
     def handler(request):
         seen["body"], seen["beta"] = json.loads(request.read()), request.headers.get("anthropic-beta")
-        text = json.dumps({"can_answer": True, "confidence": "high", "reply": "您好", "reason": "r"})
+        text = json.dumps({"can_answer": True, "confidence": "high", "reply": "您好", "reason": "r", "references": []})
         return httpx2.Response(200, json={
             "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
             "stop_reason": "end_turn", "stop_sequence": None, "content": [{"type": "text", "text": text}],
@@ -191,3 +191,4 @@ def test_claude_provider_request():
     assert seen["beta"] == "server-side-fallback-2026-07-01" and seen["body"]["fallbacks"] == "default"
     assert seen["body"]["output_config"]["effort"] == "medium"
     assert seen["body"]["output_config"]["format"]["type"] == "json_schema"
+    assert "references" in seen["body"]["output_config"]["format"]["schema"]["required"]

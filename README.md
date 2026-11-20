@@ -22,7 +22,7 @@ backend/
     api/messages.py  消息写入、查询、渠道回调入口
     ingest.py        消息入库统一入口（去重 + 触发 AI 建议）
     send_queue.py    自动发送队列（确认发送 → 电脑端发送程序领取 → 回报结果）、频率限制
-    ai/              AI 回复建议：llm.py 模型接口（可切换）、suggest.py 提示词、worker.py 后台生成
+    ai/              AI 回复建议：llm.py 模型接口（可切换）、suggest.py 提示词、knowledge.py 查售后数字人知识、worker.py 后台生成
     api/suggestions.py  AI 建议：采纳 / 修改 / 转人工 / 忽略 / 重新生成
     api/conversations.py 会话：群列表、聊天记录、在会话里发文字 / 图片 / 文件
     api/attachments.py  图片、文件上传和下载（客户发来的也会下载保存）
@@ -138,7 +138,19 @@ npm run demo
 - `claude`（默认）：Anthropic Claude，密钥放在 `ANTHROPIC_API_KEY`
 - `openai_compatible`：任何兼容 OpenAI Chat Completions 协议的接口，如公司自有模型网关，配置 `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL`
 
-知识库检索的接入点在 `app/ai/suggest.py` 的 `retrieve_knowledge()`。
+### 参考售后数字人的知识
+
+生成建议前，工作台先到售后数字人（自建实例，不接生产）的检索服务查这条客户问题的参考知识，
+数字人是知识的唯一来源，工作台不另存一份。在 `backend/.env` 配置 `KNOWLEDGE_MCP_URL`（检索服务的 `/messages` 地址），留空表示不查。
+
+- 查什么：BI 纠错卡（技术支持对常答错问题的更正，覆盖度够才用）；产品手册、FAQ、历史工单按「限定手册、限定 FAQ、不限类型」三路检索，
+  合并去重后取前 `KNOWLEDGE_TOP` 篇，前 `KNOWLEDGE_READ_FULL` 篇把全文带给模型，其余只带摘要。和知数里售后数字人技能的查法一致。
+- 每条标出适用分支（有数 / 知数）。`KNOWLEDGE_PRODUCT=bi` 查有数，检索服务会自动带上知数。
+- 模型在建议里列出实际依据的条目，工作台在建议下方显示「依据售后数字人知识 N 条」，可点开原文；纠错卡还是草稿的会标出来。
+- 寒暄、确认类消息（好的、谢谢、收到）不查。检索服务连不上时照常生成建议，只是没有参考资料，并在建议下方提示原因。
+- 检索服务没有登录验证、返回内容含客户工单，只经本机隧道访问，不要对外开放。
+
+接入点在 `app/ai/suggest.py` 的 `retrieve_knowledge()`，检索逻辑在 `app/ai/knowledge.py`。以后可以在这里再加一路「相似的历史问答」。
 
 ### 知识库向量模型（embedding）
 
@@ -156,6 +168,7 @@ npm run demo
 - [x] AI 预处理与回复建议
 - [x] 企业微信自动发送原型（电脑端发送程序操作客户端；发文字、图片、文件已在一台真机上测通，和工作台的整条流程待联调）
 - [ ] 转技术支持协助
-- [ ] 知识库沉淀与自迭代（pgvector）
+- [x] 回复建议参考售后数字人的知识（纠错卡、手册、FAQ、工单），并标出引用
+- [ ] 知识库沉淀与自迭代（技术支持的答案经 BI 纠错卡回写到售后数字人）
 - [ ] 内部工单
 - [ ] 技术支持积分排名
