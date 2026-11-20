@@ -1,10 +1,12 @@
 """自动发送：工作台查看发送程序状态、重发/取消/改为手动；电脑端发送程序的心跳、领取任务、回报结果。"""
 
+import asyncio
 import hmac
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -167,33 +169,50 @@ CLAIM_POLL_SECONDS = 0.1  # 发送程序等任务时，服务端多久看一次�
 CLAIM_SWEEP_SECONDS = 5  # 等任务期间多久清理一次过期任务
 
 
+async def _nap(seconds: float) -> None:
+    await asyncio.sleep(seconds)
+
+
 @agent_router.post("/claim", response_model=AgentClaimOut)
-def claim(body: AgentClaimIn, session: Session = Depends(get_session)) -> AgentClaimOut:
+async def claim(body: AgentClaimIn, request: Request, session: Session = Depends(get_session)) -> AgentClaimOut:
     """领取下一条任务。wait > 0 时没有任务不立刻返回，最多等 wait 秒：一有任务（并且限速允许）马上交给发送程序。
 
     这样确认发送后不用等发送程序下一次来问（原来每 3 秒问一次，平均要多等 1.5 秒）。
+    等待期间发送程序要是断开了（比如被关掉），就不再领任务，免得把任务交给一个已经不在的程序。
     """
+
+    def attempt() -> tuple[AgentTask | None, float]:
+        task, retry_after = send_queue.claim(session, body.agent_id)
+        if task is None:
+            session.rollback()  # 等待期间不占着数据库事务
+            return None, retry_after
+        return AgentTask(id=task.id, channel=task.channel, group_id=task.group_id, group_name=task.group_name,
+                         content=task.content, created_at=task.created_at,
+                         attachments=[AttachmentOut.model_validate(a) for a in attachments_of(session, task)]), 0
+
+    def has_queued() -> bool:
+        found = send_queue.has_queued(session)
+        session.rollback()
+        return found
+
     deadline = time.monotonic() + body.wait
     swept = time.monotonic()
     while True:
-        task, retry_after = send_queue.claim(session, body.agent_id)
-        if task is not None:
-            break
+        out, retry_after = await run_in_threadpool(attempt)
+        if out is not None:
+            return AgentClaimOut(task=out, retry_after=0)
         while True:
-            session.rollback()  # 等待期间不占着数据库事务
             left = deadline - time.monotonic()
             if left <= 0:
                 return AgentClaimOut(task=None, retry_after=retry_after)
-            time.sleep(min(left, retry_after if retry_after > 0 else CLAIM_POLL_SECONDS))
+            await _nap(min(left, retry_after if retry_after > 0 else CLAIM_POLL_SECONDS))
+            if await request.is_disconnected():
+                return AgentClaimOut(task=None, retry_after=0)
             # 限速的时间到了、来了新任务、或者该清理过期任务了，才去认真领一次
-            if (retry_after > 0 or send_queue.has_queued(session)
-                    or time.monotonic() - swept >= CLAIM_SWEEP_SECONDS):
+            if (retry_after > 0 or time.monotonic() - swept >= CLAIM_SWEEP_SECONDS
+                    or await run_in_threadpool(has_queued)):
                 swept = time.monotonic()
                 break
-    out = AgentTask(id=task.id, channel=task.channel, group_id=task.group_id, group_name=task.group_name,
-                    content=task.content, created_at=task.created_at,
-                    attachments=[AttachmentOut.model_validate(a) for a in attachments_of(session, task)])
-    return AgentClaimOut(task=out, retry_after=retry_after)
 
 
 @agent_router.post("/tasks/{task_id}/result")

@@ -245,18 +245,22 @@ def test_heartbeat_offline_after_timeout(sending, monkeypatch):
 
 def test_claim_waits_for_new_task(sending, monkeypatch):
     """发送程序带着 wait 来领任务：没有任务时服务端先等着，任务一来马上交出去。"""
+    from app import send_queue
     from app.api import sending as sending_api
+    from app.models import Channel
 
     _online(sending)
-    sid = _msg(sending)
+    _msg(sending)
     naps = []
 
-    def nap(seconds):
+    async def nap(seconds):
         naps.append(seconds)
         if len(naps) == 3:  # 等到第 3 下时，技术支持点了确认发送
-            assert _adopt_send(sending, sid, content="稍等，马上处理").status_code == 200
+            with db.SessionLocal() as s:
+                send_queue.enqueue(s, Channel.WECOM, GROUP["group_id"], "稍等，马上处理", [], "李四")
+                s.commit()
 
-    monkeypatch.setattr(sending_api.time, "sleep", nap)
+    monkeypatch.setattr(sending_api, "_nap", nap)
     r = sending.post("/api/agent/claim", headers=AUTH, json={"agent_id": "pc1", "wait": 20})
     assert r.status_code == 200 and r.json()["task"]["content"] == "稍等，马上处理"
     assert len(naps) == 3 and max(naps) <= sending_api.CLAIM_POLL_SECONDS
@@ -266,8 +270,12 @@ def test_claim_wait_gives_up_after_wait_seconds(sending, monkeypatch):
     from app.api import sending as sending_api
 
     clock = [0.0]
+
+    async def nap(seconds):
+        clock[0] += seconds
+
     monkeypatch.setattr(sending_api.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(sending_api.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    monkeypatch.setattr(sending_api, "_nap", nap)
     _online(sending)
     r = sending.post("/api/agent/claim", headers=AUTH, json={"agent_id": "pc1", "wait": 2})
     assert r.status_code == 200 and r.json() == {"task": None, "retry_after": 0}
@@ -287,7 +295,7 @@ def test_claim_wait_respects_min_interval(sending, monkeypatch):
     assert _claim(sending)["task"] is not None
     naps = []
 
-    def nap(seconds):
+    async def nap(seconds):
         naps.append(seconds)
         with db.SessionLocal() as s:  # 假装时间过去了：把上一条的领取时间往前拨
             for t in s.scalars(select(SendTask)).all():
@@ -295,7 +303,31 @@ def test_claim_wait_respects_min_interval(sending, monkeypatch):
                     t.claimed_at -= timedelta(seconds=seconds + 0.01)
             s.commit()
 
-    monkeypatch.setattr(sending_api.time, "sleep", nap)
+    monkeypatch.setattr(sending_api, "_nap", nap)
     r = sending.post("/api/agent/claim", headers=AUTH, json={"agent_id": "pc1", "wait": 20})
     assert r.json()["task"] is not None
     assert len(naps) == 1 and 4 < naps[0] <= 5
+
+
+def test_claim_wait_stops_when_agent_gone(sending, monkeypatch):
+    """发送程序在等任务时断开了：之后来的任务不能交给它（否则任务会卡在「发送中」没人发）。"""
+    from starlette.requests import Request
+
+    from app.api import sending as sending_api
+
+    _online(sending)
+    sid = _msg(sending)
+    gone = []
+
+    async def nap(seconds):
+        gone.append(True)
+
+    async def is_disconnected(self):
+        return bool(gone)
+
+    monkeypatch.setattr(sending_api, "_nap", nap)
+    monkeypatch.setattr(Request, "is_disconnected", is_disconnected)
+    r = sending.post("/api/agent/claim", headers=AUTH, json={"agent_id": "pc1", "wait": 20})
+    assert r.json()["task"] is None and len(gone) == 1
+    assert _adopt_send(sending, sid).status_code == 200
+    assert _sug(sending, sid)["send_status"] == "queued"
