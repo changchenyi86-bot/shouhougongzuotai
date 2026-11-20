@@ -78,16 +78,22 @@ class Runner:
             if wait > 0:
                 return wait
 
+        asked = self.clock()
         try:
-            task, retry_after = self.server.claim()
+            task, retry_after = self.server.claim(self.cfg.long_poll_seconds)
         except (ServerError, ServerRejected) as exc:
             log.warning("领取任务失败：%s", exc)
             return max(self.cfg.poll_seconds, 10)
         if task is None:
+            if self.cfg.long_poll_seconds > 0 and self.clock() - asked >= self.cfg.long_poll_seconds / 2:
+                return retry_after  # 工作台已经替我们等过了，马上接着问
+            # 工作台立刻回了“没有任务”（旧版工作台，或限速中）：隔一会儿再问
             return max(self.cfg.poll_seconds, retry_after)
 
+        started = self.clock()
         self.pending = (task.id, self._send(task))
         self.last_send = self.clock()
+        log.info("从领到任务到发送完成用了 %.2f 秒", self.last_send - started)
         return 0
 
     def _send(self, task: Task) -> SendResult:

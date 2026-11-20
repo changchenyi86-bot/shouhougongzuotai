@@ -18,6 +18,9 @@ CFG = UIConfig(search_x=0.15, search_y=0.05, input_x=0.6, input_y=0.9,
                require_member_count=True, calibrated=True, search_wait=0, open_wait=0)
 
 
+HEADER = RECT.box(CFG.header_left, CFG.header_top, CFG.header_right, CFG.header_bottom)
+
+
 class FakeChat:
     """模拟企业微信：搜索框、当前打开的群、各群输入框、已发出的消息。"""
 
@@ -34,6 +37,8 @@ class FakeChat:
         self.input_broken = False
         self.send_broken = False
         self.switch_before_send = None
+        self.seq = 0  # 剪贴板修改次数
+        self.header_reads = 0  # 标题识字了几次
 
     # 鼠标键盘
     def click(self, x, y):
@@ -76,6 +81,8 @@ class FakeChat:
                 self.clipboard = value
             elif value:
                 self.clipboard = ("text", value)
+            if value:
+                self.seq += 1
         else:
             self.selected = False
 
@@ -90,34 +97,57 @@ class FakeChat:
         label = {g: g + (f"({self.groups[g]})" if self.groups[g] else "") for g in hits}
         return [OcrLine(label[g], 20, 100 + 40 * i, 200, 120 + 40 * i) for i, g in enumerate(hits)]
 
-    def ocr(self, box):
-        if box == RECT.box(CFG.header_left, CFG.header_top, CFG.header_right, CFG.header_bottom):
+    def frame(self, box):
+        """这块区域现在的样子（代替截图）。"""
+        if box == HEADER:
+            return ("标题", self.current)
+        return (box, self.search, self.current, repr(self.inputs), len(self.sent))
+
+    def copy(self, kind, value):
+        self.clipboard = (kind, value)
+        self.seq += 1
+
+    def ocr(self, box, image=None, like=None):
+        if box == HEADER:
+            self.header_reads += 1
             count = self.groups.get(self.current)
             return [OcrLine(self.current + (f"({count})" if count else ""), 400, 20, 600, 40)]
         return self.result_lines()
 
 
-@pytest.fixture()
-def chat(monkeypatch):
+@pytest.fixture(params=["快办法核对输入框", "慢办法核对输入框"])
+def chat(monkeypatch, request):
     fake = FakeChat({"某客户-有数项目群": 23, "某客户-有数项目群二期": 8, "张三": None})
     gui = types.SimpleNamespace(click=fake.click, press=fake.press, hotkey=fake.hotkey,
                                 FailSafeException=type("FailSafe", (Exception,), {}))
     clip = types.SimpleNamespace(
-        set_text=lambda t: setattr(fake, "clipboard", ("text", t)),
+        set_text=lambda t: fake.copy("text", t),
         get_text=lambda: fake.clipboard[1] if fake.clipboard[0] == "text" else None,
-        set_image=lambda p: setattr(fake, "clipboard", ("图片", p.name)),
-        set_files=lambda ps: setattr(fake, "clipboard", ("文件", ps[0].name)),
+        set_image=lambda p: fake.copy("图片", p.name),
+        set_files=lambda ps: fake.copy("文件", ps[0].name),
+        sequence=lambda: fake.seq,
     )
+    clock = [0.0]
     monkeypatch.setattr(ui, "desktop_locked", lambda: False)
     monkeypatch.setattr(ui, "find_main_window", lambda cfg: (object(), "ok"))
+    monkeypatch.setattr(ui, "window_alive", lambda win: True)
     monkeypatch.setattr(ui, "prepare_window", lambda win, cfg: RECT)
     monkeypatch.setattr(ui, "save_screen", lambda tag: None)
-    monkeypatch.setattr(ui.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ui, "differs", lambda a, b: a != b)
+    monkeypatch.setattr(ui, "same_pixels", lambda a, b: a == b)
+    # 假时钟：等待不真的花时间，但“最多等多久”的逻辑照常走
+    monkeypatch.setattr(ui.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    monkeypatch.setattr(ui.time, "monotonic", lambda: clock[0])
     driver = WeComDriver.__new__(WeComDriver)
     driver.gui, driver.cfg = gui, CFG
-    driver.ocr = types.SimpleNamespace(read=fake.ocr)
+    driver.ocr = types.SimpleNamespace(read=fake.ocr, spent=0.0)
     driver.clip = clip
+    driver._reset()
+    driver._grab = lambda *boxes: [fake.frame(b) for b in boxes]
+    # 快办法：认得出剪贴板是企业微信写的；慢办法：认不出，退回用占位文字读输入框
+    driver._copied_by_wecom = lambda: request.param.startswith("快")
     fake.driver = driver
+    fake.fast = request.param.startswith("快")
     return fake
 
 
@@ -327,14 +357,116 @@ def test_error_before_send_key_reported_as_not_sent(chat, monkeypatch):
 
 def test_error_after_send_key_reported_as_unknown(chat, monkeypatch):
     real = chat.driver.clip.set_text
-    calls = []
 
     def set_text(text):
-        calls.append(text)
-        if text == ui.CLIP_SENTINEL and len([c for c in calls if c == ui.CLIP_SENTINEL]) == 2:
-            raise OSError("剪贴板被占用")  # 第 2 次读输入框是在按下发送键之后
+        if text == ui.CLIP_SENTINEL and chat.sent:
+            raise OSError("剪贴板被占用")  # 按下发送键之后读输入框时出错
         real(text)
 
     monkeypatch.setattr(chat.driver.clip, "set_text", set_text)
     r = chat.driver.send("某客户-有数项目群", "回复")
     assert not r.ok and "未确认最后一条是否发出" in r.error
+
+
+def test_chat_switched_before_send_key_not_sent(chat, monkeypatch):
+    # 回复已经填进输入框、还没按发送键时，界面被切到了别的聊天：按发送键前的核对要拦住
+    real = chat.driver.gui.hotkey
+
+    def hotkey(*keys):
+        real(*keys)
+        if keys == ("ctrl", "end"):
+            chat.current, chat.focus = "某客户-有数项目群二期", "input"
+
+    monkeypatch.setattr(chat.driver.gui, "hotkey", hotkey)
+    r = chat.driver.send("某客户-有数项目群", "回复")
+    assert not r.ok and "当前打开的聊天不是" in r.error
+    assert chat.sent == []
+
+
+def test_header_checked_again_before_every_send_key(chat):
+    # 每次按发送键前都重新截屏看标题：画面和刚识字核对过的一个像素都不差时不用重认，变了就必须重认
+    assert chat.driver.send("某客户-有数项目群", "回复").ok
+    assert chat.header_reads == 1
+
+    frames = iter(range(100))
+    real = chat.frame
+    chat.frame = lambda box: ("标题", next(frames)) if box == HEADER else real(box)  # 标题区每次截屏都不一样
+    chat.header_reads = 0
+    assert chat.driver.send("某客户-有数项目群", "再回复").ok
+    assert chat.header_reads >= 2
+
+
+def test_search_results_reread_until_stable(chat, monkeypatch):
+    # 识字期间搜索结果又多出一条同名的群：必须按新的列表重认，发现重名后拒绝发送
+    monkeypatch.setattr(chat.driver.cfg, "search_wait", 1.5)
+    one = [OcrLine("同名群(3)", 20, 100, 200, 120)]
+    two = one + [OcrLine("同名群(5)", 20, 140, 200, 160)]
+    reads = []
+
+    def result_lines():
+        return two if reads else one
+
+    real_ocr = chat.ocr
+
+    def ocr(box, image=None, like=None):
+        lines = real_ocr(box, image, like)
+        if box != HEADER:
+            reads.append(len(lines))  # 第一次识字完成后，第二条才显示出来
+        return lines
+
+    real_frame = chat.frame
+    monkeypatch.setattr(chat, "result_lines", result_lines)
+    monkeypatch.setattr(chat, "frame", lambda box: (real_frame(box), len(result_lines())))
+    chat.driver.ocr.read = ocr
+    r = chat.driver.send("同名群", "回复")
+    assert reads == [1, 2]
+    assert not r.ok and "2 个同名" in r.error and chat.sent == []
+
+
+def test_slow_search_still_found(chat, monkeypatch):
+    # 搜索结果出来得慢：没搜到时不立刻报错，等到列表出现变化再认（最多等 search_wait 秒）
+    monkeypatch.setattr(chat.driver.cfg, "search_wait", 1.5)
+    real_lines = chat.result_lines
+    started = ui.time.monotonic()
+    monkeypatch.setattr(chat, "result_lines", lambda: real_lines() if ui.time.monotonic() - started > 1.0 else [])
+    real_frame = chat.frame
+    monkeypatch.setattr(chat, "frame", lambda box: (real_frame(box), len(chat.result_lines())))
+    r = chat.driver.send("某客户-有数项目群", "回复")
+    assert r.ok, r.error
+    assert chat.sent == [("某客户-有数项目群", "回复")]
+
+
+def test_timing_logged(chat, caplog):
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="wecom_agent"):
+        assert chat.driver.send("某客户-有数项目群", "回复").ok
+    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("用时"))
+    for step in ("窗口", "等搜索结果", "识别结果", "打开群", "填写并核对", "核对群名并按发送", "确认已发出"):
+        assert step in line
+    assert ("慢办法" in line) == (not chat.fast)
+
+
+def test_window_placement_skipped_when_already_in_place(monkeypatch):
+    calls = []
+    rects = {7: (40, 40, 1280, 860)}
+    fake32 = types.SimpleNamespace(
+        IsWindowVisible=lambda h: True, IsIconic=lambda h: False, IsZoomed=lambda h: False,
+        SetWindowPos=lambda h, z, x, y, w, hh, f: (calls.append("move"), rects.__setitem__(h, (x, y, w - 6, hh))),
+        GetForegroundWindow=lambda: 7, GetAncestor=lambda h, f: h,
+    )
+    monkeypatch.setattr(ui, "user32", fake32, raising=False)
+    monkeypatch.setattr(ui, "_window_rect", lambda h: rects[h])
+    monkeypatch.setattr(ui, "_placed", {})
+    monkeypatch.setattr(ui.time, "sleep", lambda s: calls.append("sleep"))
+    win = ui.Window(7, "企业微信", "cls", True, 1280, 860, 99)
+    cfg = UIConfig()
+    assert ui.prepare_window(win, cfg) == Rect(40, 40, 1280, 860)
+    assert calls == []  # 已经在指定位置、已经在最前面：不移动、不等待
+
+    rects[7] = (300, 200, 900, 700)  # 窗口被人拖动过：摆回去。企业微信没完全接受指定的宽度
+    assert ui.prepare_window(win, cfg) == Rect(40, 40, 1274, 860)
+    assert calls == ["move", "sleep"]
+    calls.clear()
+    assert ui.prepare_window(win, cfg) == Rect(40, 40, 1274, 860)
+    assert calls == []  # 停在上次摆好的位置：不用每次都再摆一遍

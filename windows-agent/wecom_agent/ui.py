@@ -35,6 +35,8 @@ SWP_NOZORDER, SWP_NOACTIVATE = 0x0004, 0x0010
 GA_ROOTOWNER = 3
 MAIN_TITLE = "企业微信"
 CLIP_SENTINEL = "__wecom_agent_empty__"
+PASTE_SETTLE = 0.05  # 往剪贴板放好内容后稍等再粘贴，让系统里监听剪贴板的程序先读完
+RESULTS_STABLE = 0.5  # 搜索结果识字后，至少要这么久没有再变化才去点
 
 
 class UIError(Exception):
@@ -49,6 +51,7 @@ class Window:
     visible: bool
     width: int  # 还原状态下的大小（最小化时也能拿到）
     height: int
+    pid: int = 0
 
 
 @dataclass
@@ -165,7 +168,8 @@ def list_windows(process_name: str) -> tuple[bool, list[Window]]:
             user32.GetWindowPlacement(hwnd, ctypes.byref(wp))
             r = wp.rcNormalPosition
             windows.append(Window(hwnd, _text(user32.GetWindowTextW, hwnd), _text(user32.GetClassNameW, hwnd),
-                                  bool(user32.IsWindowVisible(hwnd)), r.right - r.left, r.bottom - r.top))
+                                  bool(user32.IsWindowVisible(hwnd)), r.right - r.left, r.bottom - r.top,
+                                  pid.value))
         return True
 
     user32.EnumWindows(WNDENUMPROC(callback), 0)
@@ -204,32 +208,70 @@ def find_main_window(cfg: UIConfig) -> tuple[Window | None, str]:
     return None, "企业微信窗口没有打开（可能缩到了托盘），请双击托盘图标打开"
 
 
+def window_alive(win: Window) -> bool:
+    """上次找到的企业微信主窗口还在不在（同一个窗口、同一个进程、标题没变、看得见）。
+
+    还在就不用每次发送都把所有进程和窗口重新找一遍。
+    """
+    hwnd = win.hwnd
+    if not win.pid or not user32.IsWindow(hwnd) or not user32.IsWindowVisible(hwnd):
+        return False
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return pid.value == win.pid and _text(user32.GetWindowTextW, hwnd) == win.title
+
+
+def _is_foreground(hwnd: int) -> bool:
+    fg = user32.GetForegroundWindow()
+    return fg == hwnd or user32.GetAncestor(fg, GA_ROOTOWNER) == hwnd
+
+
 def _foreground(hwnd: int) -> bool:
+    if _is_foreground(hwnd):
+        return True
     # 先按一下 Alt，Windows 才允许后台程序把别的窗口切到前面
     user32.keybd_event(0x12, 0, 0, 0)
     user32.keybd_event(0x12, 0, 2, 0)
     user32.SetForegroundWindow(hwnd)
     user32.BringWindowToTop(hwnd)
-    time.sleep(0.3)
-    fg = user32.GetForegroundWindow()
-    return fg == hwnd or user32.GetAncestor(fg, GA_ROOTOWNER) == hwnd
+    deadline = time.monotonic() + 0.6
+    while True:
+        time.sleep(0.05)
+        if _is_foreground(hwnd):
+            time.sleep(0.15)  # 刚切到前面，等它画完
+            return True
+        if time.monotonic() >= deadline:
+            return False
+
+
+def _window_rect(hwnd: int) -> tuple[int, int, int, int]:
+    r = wintypes.RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(r))
+    return r.left, r.top, r.right - r.left, r.bottom - r.top
+
+
+_placed: dict[int, tuple[int, int, int, int]] = {}  # 窗口上次摆好后实际停在哪（企业微信不一定接受指定的大小）
 
 
 def prepare_window(win: Window, cfg: UIConfig) -> Rect:
-    """把企业微信主窗口还原、摆到固定位置和大小、切到最前面。"""
+    """把企业微信主窗口还原、摆到固定位置和大小、切到最前面。已经摆好、已经在最前面时什么都不用等。"""
     hwnd = win.hwnd
-    if not win.visible:
+    target = (cfg.window_x, cfg.window_y, cfg.window_width, cfg.window_height)
+    shown = False
+    if not user32.IsWindowVisible(hwnd):
         user32.ShowWindow(hwnd, SW_SHOW)
+        shown = True
     if user32.IsIconic(hwnd) or user32.IsZoomed(hwnd):
         user32.ShowWindow(hwnd, SW_RESTORE)
-    user32.SetWindowPos(hwnd, 0, cfg.window_x, cfg.window_y, cfg.window_width, cfg.window_height,
-                        SWP_NOZORDER | SWP_NOACTIVATE)
-    time.sleep(0.3)
+        shown = True
+    current = _window_rect(hwnd)
+    if shown or (current != target and current != _placed.get(hwnd)):
+        user32.SetWindowPos(hwnd, 0, *target, SWP_NOZORDER | SWP_NOACTIVATE)
+        time.sleep(0.3)
+        _placed[hwnd] = _window_rect(hwnd)
     if not _foreground(hwnd):
         raise UIError("没能把企业微信窗口切到最前面（屏幕可能锁定，或被别的窗口挡住），未发送")
-    r = wintypes.RECT()
-    user32.GetWindowRect(hwnd, ctypes.byref(r))
-    return Rect(r.left, r.top, r.right - r.left, r.bottom - r.top)
+    return Rect(*_window_rect(hwnd))
 
 
 # ---------------- 截屏识字 ----------------
@@ -241,21 +283,76 @@ def screenshot(box: tuple[int, int, int, int] | None = None):
     return ImageGrab.grab(bbox=box, all_screens=True)
 
 
+def same_pixels(a, b) -> bool:
+    """两张截图是不是一模一样（每个像素都相同）。"""
+    return a.size == b.size and a.tobytes() == b.tobytes()
+
+
+def differs(a, b) -> bool:
+    """两张截图有没有看得出的差别。输入光标一闪一闪那样的小变化不算（不到万分之三的像素）。"""
+    if a.size != b.size:
+        return True
+    from PIL import ImageChops
+
+    diff = ImageChops.difference(a.convert("L"), b.convert("L")).point(lambda v: 255 if v > 32 else 0)
+    return diff.histogram()[255] > a.size[0] * a.size[1] * 0.0003
+
+
 class Ocr:
-    """离线识字（RapidOCR，不联网）。第一次使用时加载模型，约 1~2 秒。"""
+    """离线识字（RapidOCR，不联网）。模型在发送程序启动时加载好（约 1~2 秒），不占第一条消息的时间。"""
 
     def __init__(self):
         self._engine = None
+        self._kwargs: dict = {}
+        self.spent = 0.0  # 累计识字用时（秒），用于分步计时
+        self.fallbacks = 0  # 用了几次“放大后再认一遍”的慢办法
 
-    def read(self, box: tuple[int, int, int, int]) -> list[OcrLine]:
-        import numpy as np
-
+    def _load(self):
         if self._engine is None:
+            import inspect
+
             from rapidocr_onnxruntime import RapidOCR
 
             self._engine = RapidOCR()
-        img = screenshot(box)
-        result, _ = self._engine(np.array(img.convert("RGB")))
+            # 屏幕上的字都是正的，不需要“判断文字是否倒置”这一步
+            if "use_cls" in inspect.signature(self._engine.__call__).parameters:
+                self._kwargs = {"use_cls": False}
+        return self._engine
+
+    def warm(self) -> None:
+        """提前加载模型并空跑一次，第一条消息就不用等。"""
+        import numpy as np
+
+        self._load()(np.full((96, 320, 3), 255, dtype=np.uint8), **self._kwargs)
+
+    def read(self, box: tuple[int, int, int, int], image=None,
+             like: tuple[int, int] | None = None) -> list[OcrLine]:
+        """认出屏幕上一块区域里的文字。image 是这块区域已经截好的图，没给就现截。
+
+        like 是另一块区域（搜索结果区）的宽高。识字组件找字之前，会把窄的图放大到短边 736 像素：
+        聊天标题那样的窄条会被放大好几倍，一次要 1 秒左右，是整个发送过程里最慢的一步，而且没有必要——
+        标题和搜索结果在同一个窗口里，字一样大。给了 like，就按搜索结果区会被放大的倍数来处理这张图。
+        """
+        import numpy as np
+
+        engine = self._load()
+        img = image if image is not None else screenshot(box)
+        started = time.monotonic()
+        det = getattr(engine, "text_det", None)
+        default = getattr(det, "limit_side_len", None)
+        tuned = False
+        if (like and min(like) > 0 and isinstance(default, (int, float))
+                and getattr(det, "limit_type", None) == "min"):
+            ratio = max(1.0, default / min(like))
+            want = int(round(min(img.size) * ratio))
+            if 32 <= want < default:
+                det.limit_side_len, tuned = want, True
+        try:
+            result, _ = engine(np.array(img.convert("RGB")), **self._kwargs)
+        finally:
+            if tuned:
+                det.limit_side_len = default
+        self.spent += time.monotonic() - started
         lines = []
         for points, text, _score in result or []:
             xs, ys = [p[0] for p in points], [p[1] for p in points]
@@ -306,13 +403,21 @@ class WeComDriver:
         from wecom_agent.clipboard import Clipboard
 
         pyautogui.FAILSAFE = True  # 紧急停止：把鼠标甩到屏幕任意一个角
-        pyautogui.PAUSE = 0.08
+        # 每次点击、按键后的停顿。等界面反应靠下面各步“等到就绪再继续”，不靠这个停顿
+        pyautogui.PAUSE = 0.02
         self.gui = pyautogui
         self.cfg = cfg
         self.ocr = Ocr()
         self.clip = clipboard or Clipboard()
+        self._reset()
+
+    def _reset(self) -> None:
         self._result_texts: list[str] = []
         self._pressed = False
+        self._win: Window | None = None  # 上次找到的企业微信主窗口
+        self._header_seen: tuple[str, object] | None = None  # (群名, 已经识字核对过的标题截图)
+        self._marks: list[tuple[str, float]] = []  # 分步计时
+        self._notes: list[str] = []
 
     # ---- 状态 ----
 
@@ -324,6 +429,21 @@ class WeComDriver:
         win, detail = find_main_window(self.cfg)
         return win is not None, detail
 
+    # ---- 分步计时 ----
+
+    def _mark(self, label: str) -> None:
+        self._marks.append((label, time.monotonic()))
+
+    def timing(self) -> str:
+        """这次发送每一步用了多久，写进日志，方便看时间花在哪。"""
+        if len(self._marks) < 2:
+            return ""
+        steps = [f"{label} {t - self._marks[i][1]:.2f}" for i, (label, t) in enumerate(self._marks[1:])]
+        total = self._marks[-1][1] - self._marks[0][1]
+        extra = f"；其中识字 {self.ocr.spent:.2f}" if getattr(self.ocr, "spent", 0) else ""
+        notes = f"；{'、'.join(self._notes)}" if self._notes else ""
+        return f"共 {total:.2f} 秒：{'｜'.join(steps)}{extra}{notes}"
+
     # ---- 基本操作 ----
 
     def _keys(self, combo: str) -> None:
@@ -333,9 +453,25 @@ class WeComDriver:
         else:
             self.gui.hotkey(*keys)
 
+    def _grab(self, *boxes: tuple[int, int, int, int]) -> list:
+        """同一时刻截下屏幕上的几块区域（只截一次屏）。"""
+        left, top = min(b[0] for b in boxes), min(b[1] for b in boxes)
+        full = screenshot((left, top, max(b[2] for b in boxes), max(b[3] for b in boxes)))
+        return [full.crop((b[0] - left, b[1] - top, b[2] - left, b[3] - top)) for b in boxes]
+
+    def _wait_changed(self, box, before, timeout: float) -> bool:
+        """等屏幕上这块区域和 before 相比有了变化。最多等 timeout 秒。"""
+        deadline = time.monotonic() + timeout
+        while True:
+            time.sleep(0.05)
+            if differs(self._grab(box)[0], before):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+
     def _paste(self, text: str) -> None:
         self.clip.set_text(text)
-        time.sleep(0.1)
+        time.sleep(PASTE_SETTLE)
         self._keys("ctrl+v")
 
     def _read_input(self, x: int | None = None, y: int | None = None) -> str | None:
@@ -348,41 +484,163 @@ class WeComDriver:
             self.gui.click(x, y)
         self._keys("ctrl+a")
         self._keys("ctrl+c")
-        time.sleep(0.25)
-        text = self.clip.get_text()
-        return "" if text == CLIP_SENTINEL else text
+        # 输入框是空的时候剪贴板不会变，只能等满这段时间才能下结论；有内容时一复制出来就返回
+        deadline = time.monotonic() + 0.25
+        while True:
+            time.sleep(0.03)
+            if self.clip.get_text() != CLIP_SENTINEL:
+                time.sleep(0.03)  # 等它把剪贴板写完整再读
+                return self.clip.get_text()
+            if time.monotonic() >= deadline:
+                return ""
 
     def _clear_input(self, x: int, y: int) -> None:
         self.gui.click(x, y)
         self._keys("ctrl+a")
         self._keys("delete")
 
+    def _copied_by_wecom(self) -> bool:
+        """剪贴板里现在的内容是不是企业微信自己放进去的。"""
+        try:
+            pid = self.clip.owner_pid()
+            if not pid:
+                return False
+            import psutil
+
+            return psutil.Process(pid).name().lower() == self.cfg.process_name.lower()
+        except Exception:  # noqa: BLE001  查不出来就当作不是，走慢一点的核对办法
+            return False
+
+    def _paste_and_check(self, expect: str | None, slow_wait: float,
+                         x: int | None = None, y: int | None = None) -> bool:
+        """把剪贴板里的内容粘贴进输入框，并核对确实进去了。expect 是要发的文字；图片、文件传 None。
+
+        粘贴后紧接着按全选、复制。这三个按键企业微信是按顺序处理的，所以一看到企业微信往剪贴板里
+        写了东西，就知道粘贴已经做完，不用固定等一段时间；它复制出来的就是输入框里现在的全部内容，
+        和要发的文字一样才算通过（图片、文件：复制出了东西就说明输入框里有东西）。
+        认不出是不是企业微信写的剪贴板时，退回原来的办法：等够时间，再用占位文字读一遍输入框。
+        """
+        seq = self.clip.sequence()
+        started = time.monotonic()
+        self._keys("ctrl+v")
+        while self.clip.sequence() == seq and time.monotonic() - started < 1.0:
+            self._keys("ctrl+a")
+            self._keys("ctrl+c")
+            # 大图片粘贴得慢：这一轮没复制出东西就再全选、复制一轮
+            waited = time.monotonic()
+            while self.clip.sequence() == seq and time.monotonic() - waited < 0.2:
+                time.sleep(0.02)
+        if self.clip.sequence() != seq and self._copied_by_wecom():
+            if expect is None or _same_text(self.clip.get_text() or "", expect):
+                return True
+        if "输入框核对用了慢办法" not in self._notes:
+            self._notes.append("输入框核对用了慢办法")
+        left = slow_wait - (time.monotonic() - started)
+        if left > 0:
+            time.sleep(left)
+        got = self._read_input(x, y)
+        return got != "" if expect is None else _same_text(got or "", expect)
+
+    def _wait_sent(self, x: int | None, y: int | None, pane, before) -> bool:
+        """按发送键后核对输入框清空了（说明消息发出去了）。
+
+        先等聊天区的画面有变化——企业微信对发送键有反应了（最多等 1 秒），再读输入框；
+        还没清空就隔一会儿再读，总共最多约 3 秒。
+        """
+        self._wait_changed(pane, before, 1.0)
+        time.sleep(0.1)
+        deadline = time.monotonic() + 2.0
+        while True:
+            if self._read_input(x, y) == "":
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.2)
+
     # ---- 打开群并核对 ----
 
     def window(self) -> Rect:
         if desktop_locked():
             raise UIError("发送电脑的屏幕已锁定，无法操作企业微信，未发送")
-        win, detail = find_main_window(self.cfg)
+        win = self._win if self._win is not None and window_alive(self._win) else None
         if win is None:
-            raise UIError(f"{detail}，未发送")
+            win, detail = find_main_window(self.cfg)
+            if win is None:
+                raise UIError(f"{detail}，未发送")
+            self._win = win
         return prepare_window(win, self.cfg)
 
-    def header_lines(self, rect: Rect) -> list[OcrLine]:
+    def _header_box(self, rect: Rect) -> tuple[int, int, int, int]:
         c = self.cfg
-        return self.ocr.read(rect.box(c.header_left, c.header_top, c.header_right, c.header_bottom))
+        return rect.box(c.header_left, c.header_top, c.header_right, c.header_bottom)
 
-    def verify_header(self, rect: Rect, name: str) -> None:
-        texts = [line.text for line in self.header_lines(rect)]
-        if not find_title(texts, name, self.cfg.require_member_count, exact_name=True):
-            seen = "、".join(texts) or "没有识别到文字"
-            raise UIError(f"当前打开的聊天不是「{name}」（标题识别为：{seen}），未发送")
-
-    def search_results(self, rect: Rect, name: str) -> list[OcrLine]:
+    def _results_box(self, rect: Rect) -> tuple[int, int, int, int]:
         c = self.cfg
-        lines = self.ocr.read(rect.box(c.results_left, c.results_top, c.results_right, c.results_bottom))
+        return rect.box(c.results_left, c.results_top, c.results_right, c.results_bottom)
+
+    def _pane_box(self, rect: Rect) -> tuple[int, int, int, int]:
+        """聊天区：标题下面的消息和输入框。"""
+        return rect.box(self.cfg.header_left, self.cfg.header_bottom, 1, 1)
+
+    def header_lines(self, rect: Rect, frame=None, tuned: bool = True) -> list[OcrLine]:
+        box = self._header_box(rect)
+        x0, y0, x1, y1 = self._results_box(rect)
+        return self.ocr.read(box, image=frame, like=(x1 - x0, y1 - y0) if tuned else None)
+
+    def _header_is(self, rect: Rect, name: str, frame, slow: bool = True) -> tuple[bool, list[str]]:
+        """截好的标题图里是不是这个群。先用快办法识字；没对上再用原来的慢办法认一遍，两种都对不上才算不是。"""
+        texts = [line.text for line in self.header_lines(rect, frame)]
+        if find_title(texts, name, self.cfg.require_member_count, exact_name=True):
+            return True, texts
+        if slow:
+            again = [line.text for line in self.header_lines(rect, frame, tuned=False)]
+            if find_title(again, name, self.cfg.require_member_count, exact_name=True):
+                self.ocr.fallbacks = getattr(self.ocr, "fallbacks", 0) + 1
+                if "标题识字用了慢办法" not in self._notes:
+                    self._notes.append("标题识字用了慢办法")
+                return True, again
+        return False, texts
+
+    def verify_header(self, rect: Rect, name: str, frame=None) -> None:
+        """核对当前打开的聊天就是这个群，不是就报错。"""
+        if frame is None:
+            frame = self._grab(self._header_box(rect))[0]
+        seen = self._header_seen
+        if seen is not None and seen[0] == name and same_pixels(frame, seen[1]):
+            return  # 和这次发送里刚识字核对过的画面一个像素都不差，认出来的字不会变
+        ok, texts = self._header_is(rect, name, frame)
+        if not ok:
+            seen_text = "、".join(texts) or "没有识别到文字"
+            raise UIError(f"当前打开的聊天不是「{name}」（标题识别为：{seen_text}），未发送")
+        self._header_seen = (name, frame)
+
+    def _wait_header(self, rect: Rect, name: str) -> None:
+        """点开搜索结果后，等聊天标题变成这个群。每一次都是截屏识字后严格核对，最多等 open_wait 秒。"""
+        box = self._header_box(rect)
+        deadline = time.monotonic() + self.cfg.open_wait
+        last, slow_tried = None, False
+        while True:
+            time.sleep(0.08)
+            frame = self._grab(box)[0]
+            changed = last is None or not same_pixels(frame, last)
+            if changed or not slow_tried:
+                # 画面刚变：用快办法认。画面不再变了还没对上：再用慢办法认一遍
+                ok, _ = self._header_is(rect, name, frame, slow=not changed)
+                slow_tried = not changed
+                if ok:
+                    self._header_seen = (name, frame)
+                    return
+            last = frame
+            if time.monotonic() >= deadline:
+                break
+        self.verify_header(rect, name)  # 最后再完整核对一次，对不上就报错
+
+    def search_results(self, rect: Rect, name: str, frame=None) -> list[OcrLine]:
+        c = self.cfg
+        lines = self.ocr.read(self._results_box(rect), image=frame)
         self._result_texts = [line.text for line in lines]
         _, sy = rect.point(c.search_x, c.search_y)
-        hx0, hy0, hx1, hy1 = rect.box(c.header_left, c.header_top, c.header_right, c.header_bottom)
+        hx0, hy0, hx1, hy1 = self._header_box(rect)
 
         def is_result(line: OcrLine) -> bool:
             cx, cy = line.center
@@ -392,14 +650,55 @@ class WeComDriver:
 
         return [line for line in lines if is_result(line)]
 
+    def _settled_results(self, rect: Rect, name: str, before) -> list[OcrLine]:
+        """等搜索结果出齐，再识字找出和群名完全一样的结果。
+
+        原来是输入群名后固定等 search_wait 秒再识字。现在：
+        1. 等结果区变了样、并且连续两次截屏一样，就开始识字，不用等满；
+        2. 识字完再截一次屏：列表在这期间又变了（比如又加载出一条）就按新的重认一遍；
+        3. 还没搜到就接着等，直到列表有变化或者等满 search_wait 秒（和原来一样久）才算搜不到。
+        所以去点之前，认的那一版列表至少有约半秒没有变化；等满 search_wait 秒后和原来的做法完全一样。
+        """
+        box = self._results_box(rect)
+        deadline = time.monotonic() + self.cfg.search_wait
+        last = None
+        while True:
+            time.sleep(0.08)
+            frame = self._grab(box)[0]
+            if last is not None and not differs(frame, last) and differs(frame, before):
+                break
+            if time.monotonic() >= deadline:
+                break
+            last = frame
+        self._mark("等搜索结果")
+        while True:
+            started = time.monotonic()
+            hits = self.search_results(rect, name, frame)
+            if time.monotonic() >= deadline:
+                break
+            left = RESULTS_STABLE - (time.monotonic() - started)
+            if left > 0:
+                time.sleep(left)
+            latest = self._grab(box)[0]
+            if differs(latest, frame):
+                frame = latest
+                continue
+            if hits or not self._wait_changed(box, frame, deadline - time.monotonic()):
+                break
+            frame = self._grab(box)[0]
+        self._mark("识别结果")
+        return hits
+
     def open_group(self, name: str) -> Rect:
+        self._header_seen = None
         rect = self.window()
+        self._mark("窗口")
+        before = self._grab(self._results_box(rect))[0]
         self.gui.click(*rect.point(self.cfg.search_x, self.cfg.search_y))
-        time.sleep(0.3)
+        time.sleep(0.15)
         self._keys("ctrl+a")
         self._paste(name)
-        time.sleep(self.cfg.search_wait)
-        hits = self.search_results(rect, name)
+        hits = self._settled_results(rect, name, before)
         if not hits:
             self._keys("esc")
             if cut := truncated_name(self._result_texts, name):
@@ -410,8 +709,9 @@ class WeComDriver:
             self._keys("esc")
             raise UIError(f"搜索「{name}」有 {len(hits)} 个同名结果，无法确定是哪个群，未发送")
         self.gui.click(*hits[0].center)
-        time.sleep(self.cfg.open_wait)
-        self.verify_header(rect, name)
+        self._wait_header(rect, name)
+        time.sleep(0.1)  # 标题换过来了，稍等输入框也换好
+        self._mark("打开群")
         return rect
 
     # ---- 发送 ----
@@ -420,6 +720,8 @@ class WeComDriver:
         """先逐个发图片、文件（各算一条消息），再发文字。"""
         done: list[str] = []
         self._pressed = False  # 是否已按下发送键、还没核对结果
+        self._marks, self._notes = [("开始", time.monotonic())], []
+        self.ocr.spent = 0.0
         try:
             self._send(group_name, content, files or [], done)
             return SendResult(True)
@@ -438,61 +740,72 @@ class WeComDriver:
                 return SendResult(False, f"{prefix}发送程序出错，未确认最后一条是否发出，请到群里确认：{exc}")
             # 还没按发送键就出错了，这一条肯定没有发出去
             return SendResult(False, f"{prefix}发送程序出错，{'后面的' if done else ''}没有发送：{exc}")
+        finally:
+            if timing := self.timing():
+                log.info("用时%s", timing)
 
-    def _press_send(self, rect: Rect, name: str, ix: int, iy: int) -> None:
-        """按发送键前再核对一次群名（防止期间有弹窗或切换），对不上就清空输入框。"""
+    def _press_send(self, rect: Rect, name: str, ix: int, iy: int):
+        """按发送键前再核对一次群名（防止期间有弹窗或切换），对不上就清空输入框。
+
+        返回按发送键前一刻聊天区的截图，用来判断企业微信对发送键有没有反应。
+        """
+        header, pane = self._grab(self._header_box(rect), self._pane_box(rect))
         try:
-            self.verify_header(rect, name)
+            self.verify_header(rect, name, header)
         except UIError:
             self._clear_input(ix, iy)
             raise
         self._pressed = True
         self._keys(self.cfg.send_key)
+        return pane
 
     def _send(self, name: str, content: str, files: list[Path], done: list[str]) -> None:
         from wecom_agent.clipboard import is_image
 
         rect = self.open_group(name)
         ix, iy = rect.point(self.cfg.input_x, self.cfg.input_y)
+        pane = self._pane_box(rect)
         self._clear_input(ix, iy)  # 清掉输入框里可能残留的草稿
 
         for path in files:
-            label = f"{'图片' if is_image(path) else '文件'}「{path.name}」"
+            kind = "图片" if is_image(path) else "文件"
+            label = f"{kind}「{path.name}」"
             if is_image(path):
                 self.clip.set_image(path)
             else:
                 self.clip.set_files([path])
             self.gui.click(ix, iy)
-            self._keys("ctrl+v")
-            time.sleep(0.8)
+            time.sleep(0.1)
             # 核对：输入框里有东西了
-            if self._read_input() == "":
+            if not self._paste_and_check(None, 0.8):
                 raise UIError(f"没能把{label}放进企业微信的输入框，未发送")
-            self._press_send(rect, name, ix, iy)
-            time.sleep(1.5)
+            before = self._press_send(rect, name, ix, iy)
             # 核对：输入框空了，说明发出去了
-            if self._read_input() != "":
+            if not self._wait_sent(None, None, pane, before):
                 self._clear_input(ix, iy)
                 raise UIError(f"按了发送键，但{label}还留在输入框里，没有发出，未发送")
             done.append(label)
             self._pressed = False
+            self._mark(f"发{kind}")
 
         if not content:
             return
-        self._paste(content)
-        time.sleep(0.4)
+        self.clip.set_text(content)
+        time.sleep(PASTE_SETTLE)
         # 核对 1：回复确实进了输入框（而不是别处）
-        if not _same_text(self._read_input(ix, iy) or "", content):
+        if not self._paste_and_check(content, 0.4, ix, iy):
             self._clear_input(ix, iy)
             raise UIError("没能把回复填进企业微信的输入框，未发送")
         self._keys("ctrl+end")  # 取消全选
+        self._mark("填写并核对")
         # 核对 2：按发送键前再确认一次还是这个群
-        self._press_send(rect, name, ix, iy)
-        time.sleep(1.0)
+        before = self._press_send(rect, name, ix, iy)
+        self._mark("核对群名并按发送")
         # 核对 3：输入框清空了，说明消息发出去了
-        if self._read_input(ix, iy) != "":
+        if not self._wait_sent(ix, iy, pane, before):
             self._clear_input(ix, iy)
             raise UIError("按了发送键，但输入框没有清空。请到群里确认消息有没有发出，再检查企业微信的发送快捷键设置")
+        self._mark("确认已发出")
 
 
 __all__ = ["Ocr", "OcrLine", "Rect", "UIError", "WeComDriver", "find_main_window", "normalize", "save_screen"]

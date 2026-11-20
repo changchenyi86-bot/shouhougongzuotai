@@ -127,6 +127,7 @@ class AgentHeartbeatIn(BaseModel):
 
 class AgentClaimIn(BaseModel):
     agent_id: str = Field(min_length=1, max_length=64)
+    wait: float = Field(default=0, ge=0, le=30, description="没有任务时最多等多少秒再返回；0 表示立刻返回")
 
 
 class AgentTask(BaseModel):

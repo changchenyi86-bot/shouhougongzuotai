@@ -57,6 +57,26 @@ class Clipboard:
         finally:
             self._cb.CloseClipboard()
 
+    def sequence(self) -> int:
+        """剪贴板的“修改次数”。任何程序往剪贴板里放了新内容，这个数就会变。"""
+        import ctypes
+
+        return ctypes.windll.user32.GetClipboardSequenceNumber()
+
+    def owner_pid(self) -> int | None:
+        """最后一次往剪贴板里放内容的是哪个进程。查不出来返回 None（本程序自己放的也查不出来）。"""
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        user32.GetClipboardOwner.restype = wintypes.HWND
+        hwnd = user32.GetClipboardOwner()
+        if not hwnd:
+            return None
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(wintypes.HWND(hwnd), ctypes.byref(pid))
+        return pid.value or None
+
     def set_image(self, path: Path) -> None:
         """图片按位图放进剪贴板，粘贴到企业微信里是图片消息（不是文件）。"""
         from PIL import Image

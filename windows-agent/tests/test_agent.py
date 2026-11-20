@@ -55,13 +55,19 @@ class FakeServer:
         self.claim_error: Exception | None = None
         self.retry_after = 0.0
         self.heartbeats: list[tuple[bool, str]] = []
+        self.waits: list[float] = []
+        self.long_poll = False
+        self.clock = None
 
     def heartbeat(self, ready, detail):
         self.heartbeats.append((ready, detail))
 
-    def claim(self):
+    def claim(self, wait=0):
+        self.waits.append(wait)
         if self.claim_error:
             raise self.claim_error
+        if not self.tasks and self.long_poll and self.clock is not None:
+            self.clock.t += wait  # 新版工作台：没有任务时留着请求，等满 wait 秒才回
         return (self.tasks.pop(0) if self.tasks else None), self.retry_after
 
     def download(self, att, folder):
@@ -188,3 +194,21 @@ def test_attachments_downloaded_and_passed():
     runner.step()
     assert len(driver.sent) == 1  # 附件下载失败，不发送
     assert server.reports[-1][1] is False and "下载" in server.reports[-1][2]
+
+
+def test_long_poll_asks_again_immediately():
+    # 新版工作台会留着领任务的请求，一有任务马上返回：它等满了还没有任务，就立刻接着问，不再空等 3 秒
+    server, driver = FakeServer(), FakeDriver()
+    runner, clock = _runner(server, driver)
+    server.long_poll, server.clock = True, clock
+    assert runner.step() == 0
+    assert server.waits == [20]
+    # 旧版工作台不会等，立刻回“没有任务”：还是每 3 秒问一次，不会变成不停地问
+    server.long_poll = False
+    assert runner.step() == 3
+
+
+def test_long_poll_can_be_turned_off():
+    server, driver = FakeServer(), FakeDriver()
+    runner, _ = _runner(server, driver, long_poll_seconds=0)
+    assert runner.step() == 3 and server.waits == [0]
