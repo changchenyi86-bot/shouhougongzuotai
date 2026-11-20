@@ -65,6 +65,7 @@ def cmd_calibrate() -> int:
 def cmd_test() -> int:
     from wecom_agent.ui import UIError, WeComDriver
 
+    log = logging.getLogger("wecom_agent")
     cfg = config_mod.load()
     if not cfg.ui.calibrated:
         print("还没有校准，请先运行 2-calibrate.bat")
@@ -78,22 +79,34 @@ def cmd_test() -> int:
     try:
         driver.open_group(name)
     except UIError as exc:
-        print(f"打开群失败：{exc}")
+        log.error("打开群失败：%s", exc)
         return 1
-    print(f"已打开并核对群「{name}」，这一步没有发送任何消息。")
+    log.info("已打开并核对群「%s」，这一步没有发送任何消息。", name)
     if input("要真的发一条测试消息到这个群吗？输入 y 并回车确认，直接回车跳过：").strip().lower() != "y":
         return 0
     result = driver.send(name, "【测试】这是售后工作台自动发送的测试消息，请忽略。")
-    print("发送成功，请到企业微信群里看一下。" if result.ok else f"发送失败：{result.error}")
     if not result.ok:
+        log.error("测试文字发送失败：%s", result.error)
         return 1
-    if input("再试发一张测试图片和一个测试文件吗？输入 y 并回车确认，直接回车跳过：").strip().lower() != "y":
-        return 0
+    log.info("测试文字发送检查通过，请到企业微信群里看一下。")
+
     with tempfile.TemporaryDirectory(prefix="wecom-agent-test-") as tmp:
-        files = _test_files(Path(tmp))
-        result = driver.send(name, "【测试】上面是一张测试图片和一个测试文件，请忽略。", files)
-    print("发送成功，请到群里看图片、文件和文字是否都收到了。" if result.ok else f"发送失败：{result.error}")
-    return 0 if result.ok else 1
+        image, document = _test_files(Path(tmp))
+        remaining = [
+            ("测试图片", "", [image]),
+            ("测试文件", "", [document]),
+            ("说明文字", "【测试】上面是一张测试图片和一个测试文件，请忽略。", []),
+        ]
+        for label, content, files in remaining:
+            prompt = f"要发{label}到「{name}」吗？输入 y 并回车确认，直接回车结束测试："
+            if input(prompt).strip().lower() != "y":
+                return 0
+            result = driver.send(name, content, files)
+            if not result.ok:
+                log.error("%s发送失败：%s", label, result.error)
+                return 1
+            log.info("%s发送检查通过，请到企业微信群里看一下。", label)
+    return 0
 
 
 def _test_files(folder: Path) -> list[Path]:

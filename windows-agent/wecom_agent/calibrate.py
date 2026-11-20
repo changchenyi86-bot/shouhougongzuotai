@@ -10,7 +10,8 @@ import time
 from wecom_agent import config as config_mod
 from wecom_agent.config import DIAG_DIR, Config
 from wecom_agent.matching import find_title, match_title
-from wecom_agent.ui import OcrLine, Rect, UIError, WeComDriver, list_windows, screenshot
+from wecom_agent.ui import (DEFAULT_WINDOW_SIZE, OcrLine, Rect, UIError, WeComDriver, auto_window_size,
+                            list_windows, screenshot, truncated_name)
 
 
 def _ask_position(driver: WeComDriver, what: str, seconds: int = 5) -> tuple[int, int]:
@@ -62,6 +63,9 @@ def run(cfg: Config) -> bool:
     print("校准过程中请不要移动或缩放企业微信窗口。如果这个黑色窗口挡住了企业微信，先把它拖到旁边。")
     print("=" * 60)
 
+    # 窗口大小没有手动改过时，按这台电脑的屏幕缩放比例自动选（缩放 200% 的屏幕上默认大小太窄）
+    if (ui.window_width, ui.window_height) == DEFAULT_WINDOW_SIZE and (size := auto_window_size(ui)):
+        ui.window_width, ui.window_height = size
     rect = driver.window()
     print(f"\n第 1 步：已把企业微信窗口摆到固定位置（{rect.width}×{rect.height}）。")
     _dump_diagnostics(driver, rect)
@@ -76,10 +80,13 @@ def run(cfg: Config) -> bool:
     ui.input_x, ui.input_y = _frac(rect, *_ask_position(driver, "聊天输入框（打字的地方）"))
 
     name = input("\n第 4 步：请输入刚才点开的群的名字（和企业微信里显示的一字不差）：").strip()
+    if any(ch.isspace() for ch in name):
+        print("  注意：群名里有空格。截屏识字经常认不出空格，这个群可能核对不过；建议换一个名字里没有空格的群来校准。")
     rect = driver.window()
     full = (rect.left, rect.top, rect.left + rect.width, rect.top + rect.height)
     lines = driver.ocr.read(full)
-    top_area = [ln for ln in lines if match_title(ln.text, name) and ln.y1 < rect.top + rect.height * 0.3]
+    top_area = [ln for ln in lines if match_title(ln.text, name, exact_name=True)
+                and ln.y1 < rect.top + rect.height * 0.3]
     if not top_area:
         _dump_diagnostics(driver, rect, lines)
         print(f"\n没有在窗口上方找到群名「{name}」。识别到的文字已存到 {DIAG_DIR}，请把这个文件夹发给开发人员。")
@@ -90,7 +97,7 @@ def run(cfg: Config) -> bool:
     ui.header_right = round(min(1, (title.x1 - rect.left) / rect.width + 0.25), 4)
     ui.header_bottom = round(min(1, (title.y1 + 12 - rect.top) / rect.height), 4)
     header_texts = [ln.text for ln in driver.header_lines(rect)]
-    ui.require_member_count = find_title(header_texts, name, require_count=True) is not None
+    ui.require_member_count = find_title(header_texts, name, require_count=True, exact_name=True) is not None
     print(f"  已找到聊天标题：{'、'.join(header_texts)}"
           + ("（带人数，以后发送时会要求标题带人数，确保打开的是群聊）" if ui.require_member_count else ""))
 
@@ -106,13 +113,17 @@ def run(cfg: Config) -> bool:
     lines = driver.ocr.read(full)
     hx0, hy0, hx1, hy1 = rect.box(ui.header_left, ui.header_top, ui.header_right, ui.header_bottom)
     _, sy = rect.point(ui.search_x, ui.search_y)
-    hits = [ln for ln in lines if match_title(ln.text, name)
+    hits = [ln for ln in lines if match_title(ln.text, name, exact_name=True)
             and not (ln.y0 - 4 <= sy <= ln.y1 + 4)  # 搜索框本身
             and not (hx0 <= ln.center[0] <= hx1 and hy0 <= ln.center[1] <= hy1)]  # 聊天标题
     driver._keys("esc")
     if not hits:
         _dump_diagnostics(driver, rect, lines)
-        print(f"  搜索结果里没有识别到群名，识别到的文字已存到 {DIAG_DIR}，请把这个文件夹发给开发人员。")
+        if cut := truncated_name([ln.text for ln in lines if ln.center[0] < hx0], name):
+            print(f"  搜索结果里群名显示不全（只看到「{cut}」）。请打开 config.ini，把 [ui] 里的 window_width 调大"
+                  f"（现在是 {ui.window_width}），然后重新运行校准。")
+        else:
+            print(f"  搜索结果里没有识别到群名，识别到的文字已存到 {DIAG_DIR}，请把这个文件夹发给开发人员。")
         return False
     right = (max(h.x1 for h in hits) - rect.left) / rect.width + 0.05
     ui.results_right = round(min(1, max(ui.header_left, right)), 4)

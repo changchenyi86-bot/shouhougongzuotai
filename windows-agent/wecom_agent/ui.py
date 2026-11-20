@@ -93,6 +93,52 @@ def set_dpi_aware() -> None:
 
 # ---------------- 窗口 ----------------
 
+DEFAULT_WINDOW_SIZE = (1280, 860)  # UIConfig 里没改过时的窗口大小
+# 校准时自动选的窗口大小（缩放 100% 时的像素）。窗口窄了，搜索结果里长群名会显示不全（真机上
+# 缩放 200%、宽 1280 像素时 15 个字的群名就被截断），所以尽量宽。
+AUTO_WIDTH, AUTO_HEIGHT = 1600, 900
+
+
+def fit_window_size(scale: float, work_width: int, work_height: int, x: int, y: int) -> tuple[int, int]:
+    """按屏幕缩放比例算企业微信窗口的大小（实际像素），不超出屏幕可用区域。
+
+    work_width/work_height 是窗口左上角 (x, y) 所在屏幕可用区域的宽高，x、y 是窗口左上角相对可用区域的位置。
+    """
+    margin_x, margin_y = max(x, 0), max(y, 0)
+    width = min(round(AUTO_WIDTH * scale), work_width - 2 * margin_x)
+    height = min(round(AUTO_HEIGHT * scale), work_height - 2 * margin_y)
+    return max(width, DEFAULT_WINDOW_SIZE[0]), max(height, DEFAULT_WINDOW_SIZE[1])
+
+
+def auto_window_size(cfg: UIConfig) -> tuple[int, int] | None:
+    """读出窗口所在屏幕的缩放比例和可用区域，算出合适的窗口大小。读不到时返回 None（保持原来的大小）。"""
+    try:
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT), ("rcWork", wintypes.RECT),
+                        ("dwFlags", wintypes.DWORD)]
+
+        user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+        user32.MonitorFromPoint.restype = ctypes.c_void_p
+        user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.POINTER(MONITORINFO)]
+        monitor = user32.MonitorFromPoint(wintypes.POINT(cfg.window_x, cfg.window_y), 1)  # 找不到时用主屏
+        info = MONITORINFO()
+        info.cbSize = ctypes.sizeof(MONITORINFO)
+        if not monitor or not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return None
+        shcore = ctypes.WinDLL("shcore")
+        shcore.GetDpiForMonitor.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(wintypes.UINT),
+                                            ctypes.POINTER(wintypes.UINT)]
+        dpi_x, dpi_y = wintypes.UINT(), wintypes.UINT()
+        if shcore.GetDpiForMonitor(monitor, 0, ctypes.byref(dpi_x), ctypes.byref(dpi_y)) != 0 or not dpi_x.value:
+            return None
+        work = info.rcWork
+        return fit_window_size(dpi_x.value / 96, work.right - work.left, work.bottom - work.top,
+                               cfg.window_x - work.left, cfg.window_y - work.top)
+    except Exception:  # noqa: BLE001  读不到就不调整，不影响校准
+        log.exception("读取屏幕缩放比例失败，窗口大小保持不变")
+        return None
+
+
 
 def _text(func, hwnd) -> str:
     buf = ctypes.create_unicode_buffer(512)
@@ -240,6 +286,18 @@ def _same_text(a: str, b: str) -> bool:
 # ---------------- 发送 ----------------
 
 
+def truncated_name(texts: list[str], name: str) -> str | None:
+    """搜索结果里有没有一行是群名的开头一截（窗口太窄时企业微信用省略号截断长群名）。
+
+    只用来把失败原因说清楚：截断的结果不能确认是哪个群，不会去点。
+    """
+    for text in texts:
+        head = text.strip().rstrip(".…·。 ")
+        if head != name and len(head) >= max(4, len(name) // 2) and name.startswith(head):
+            return text.strip()
+    return None
+
+
 class WeComDriver:
     def __init__(self, cfg: UIConfig, clipboard=None):
         set_dpi_aware()
@@ -253,6 +311,7 @@ class WeComDriver:
         self.cfg = cfg
         self.ocr = Ocr()
         self.clip = clipboard or Clipboard()
+        self._result_texts: list[str] = []
 
     # ---- 状态 ----
 
@@ -313,19 +372,20 @@ class WeComDriver:
 
     def verify_header(self, rect: Rect, name: str) -> None:
         texts = [line.text for line in self.header_lines(rect)]
-        if not find_title(texts, name, self.cfg.require_member_count):
+        if not find_title(texts, name, self.cfg.require_member_count, exact_name=True):
             seen = "、".join(texts) or "没有识别到文字"
             raise UIError(f"当前打开的聊天不是「{name}」（标题识别为：{seen}），未发送")
 
     def search_results(self, rect: Rect, name: str) -> list[OcrLine]:
         c = self.cfg
         lines = self.ocr.read(rect.box(c.results_left, c.results_top, c.results_right, c.results_bottom))
+        self._result_texts = [line.text for line in lines]
         _, sy = rect.point(c.search_x, c.search_y)
         hx0, hy0, hx1, hy1 = rect.box(c.header_left, c.header_top, c.header_right, c.header_bottom)
 
         def is_result(line: OcrLine) -> bool:
             cx, cy = line.center
-            return (bool(match_title(line.text, name))
+            return (bool(match_title(line.text, name, exact_name=True))
                     and not (line.y0 - 4 <= sy <= line.y1 + 4)  # 搜索框里就是刚输入的群名
                     and not (hx0 <= cx <= hx1 and hy0 <= cy <= hy1))  # 当前打开的聊天标题
 
@@ -341,6 +401,9 @@ class WeComDriver:
         hits = self.search_results(rect, name)
         if not hits:
             self._keys("esc")
+            if cut := truncated_name(self._result_texts, name):
+                raise UIError(f"搜索结果里群名显示不全（只看到「{cut}」），无法确认是不是「{name}」，未发送。"
+                              "请在发送电脑的 config.ini 里把 window_width 调大后重新校准")
             raise UIError(f"在企业微信里搜不到群「{name}」（客服账号可能不在这个群里，或群名改了），未发送")
         if len(hits) > 1:
             self._keys("esc")
@@ -415,9 +478,9 @@ class WeComDriver:
         self._press_send(rect, name, ix, iy)
         time.sleep(1.0)
         # 核对 3：输入框清空了，说明消息发出去了
-        if _same_text(self._read_input(ix, iy) or "", content):
+        if self._read_input(ix, iy) != "":
             self._clear_input(ix, iy)
-            raise UIError("按了发送键，但回复还留在输入框里，消息没有发出（请检查企业微信的发送快捷键设置），未发送")
+            raise UIError("按了发送键，但输入框没有清空。请到群里确认消息有没有发出，再检查企业微信的发送快捷键设置")
 
 
 __all__ = ["Ocr", "OcrLine", "Rect", "UIError", "WeComDriver", "find_main_window", "normalize", "save_screen"]
