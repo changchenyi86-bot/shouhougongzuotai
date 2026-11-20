@@ -55,6 +55,7 @@ class UIConfig:
     send_key: str = "enter"  # 企业微信设置里如果改成了 Ctrl+Enter 发送，这里填 ctrl+enter
     search_wait: float = 1.5  # 输入群名后最多等搜索结果多少秒（结果出来并稳定后就继续，不用等满）
     open_wait: float = 1.2  # 点开群后最多等聊天窗口切换多少秒（标题换过来就继续，不用等满）
+    ocr_threads: int = 4  # 识字用几个线程。大小核的 CPU 上填大核的个数最快；0 = 每个核心一个（通常更慢）
     calibrated: bool = False
 
 

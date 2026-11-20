@@ -94,6 +94,34 @@ def set_dpi_aware() -> None:
             pass
 
 
+def keep_full_speed() -> bool:
+    """告诉 Windows 不要给本程序限速。成功返回 True。
+
+    发送时企业微信在最前面，本程序的窗口在后面。Windows 11 会把这样的后台程序放进省电模式（EcoQoS），
+    挪到小核上慢慢跑。真机（大小核 CPU）上实测：识一次搜索结果的字，被限速时约 5 秒，不限速约 0.3 秒。
+    这里只是让本程序自己退出省电模式，不影响别的程序。
+    """
+    try:
+        class Throttling(ctypes.Structure):
+            _fields_ = [("Version", wintypes.ULONG), ("ControlMask", wintypes.ULONG), ("StateMask", wintypes.ULONG)]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.SetProcessInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        kernel32.SetProcessInformation.restype = wintypes.BOOL
+        # 4 = ProcessPowerThrottling。ControlMask 里点名要管的项目，StateMask 为 0 表示这些项目都不限。
+        # 0x1 运行速度，0x4 计时精度（旧一些的系统不认识 0x4，那就只设运行速度）
+        for mask in (0x1 | 0x4, 0x1):
+            state = Throttling(1, mask, 0)
+            if kernel32.SetProcessInformation(kernel32.GetCurrentProcess(), 4, ctypes.byref(state),
+                                              ctypes.sizeof(state)):
+                return True
+        return False
+    except Exception:  # noqa: BLE001  设不了只是慢一些，不影响发送
+        log.exception("关闭后台限速失败")
+        return False
+
+
 # ---------------- 窗口 ----------------
 
 DEFAULT_WINDOW_SIZE = (1280, 860)  # UIConfig 里没改过时的窗口大小
@@ -301,9 +329,10 @@ def differs(a, b) -> bool:
 class Ocr:
     """离线识字（RapidOCR，不联网）。模型在发送程序启动时加载好（约 1~2 秒），不占第一条消息的时间。"""
 
-    def __init__(self):
+    def __init__(self, threads: int = 0):
         self._engine = None
         self._kwargs: dict = {}
+        self.threads = threads  # 识字用几个线程，0 = 用识字组件的默认值（全部核心）
         self.spent = 0.0  # 累计识字用时（秒），用于分步计时
         self.fallbacks = 0  # 用了几次“放大后再认一遍”的慢办法
 
@@ -313,7 +342,9 @@ class Ocr:
 
             from rapidocr_onnxruntime import RapidOCR
 
-            self._engine = RapidOCR()
+            # 默认每个核心开一个线程。大小核的 CPU 上这样反而慢：真机 16 核，默认 16 线程识一次 1 秒多，
+            # 4 个线程 0.38 秒，6 个线程 0.31 秒
+            self._engine = RapidOCR(intra_op_num_threads=self.threads) if self.threads > 0 else RapidOCR()
             # 屏幕上的字都是正的，不需要“判断文字是否倒置”这一步
             if "use_cls" in inspect.signature(self._engine.__call__).parameters:
                 self._kwargs = {"use_cls": False}
@@ -407,7 +438,8 @@ class WeComDriver:
         pyautogui.PAUSE = 0.02
         self.gui = pyautogui
         self.cfg = cfg
-        self.ocr = Ocr()
+        self.full_speed = keep_full_speed()
+        self.ocr = Ocr(cfg.ocr_threads)
         self.clip = clipboard or Clipboard()
         self._reset()
 
