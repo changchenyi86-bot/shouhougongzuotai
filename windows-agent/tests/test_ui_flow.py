@@ -285,3 +285,56 @@ def test_truncated_name_only_matches_real_prefix():
 ])
 def test_fit_window_size(scale, work, expected):
     assert ui.fit_window_size(scale, *work, 40, 40) == expected
+
+
+@pytest.mark.parametrize("text", ["1233321", "666", "测试 123", "", " 42 ", "１２３"])
+def test_clipboard_text_never_looks_like_a_handle(monkeypatch, text):
+    # 真机联调：回复「1233321」时 pywin32 把纯数字的文字当成句柄编号，报「句柄无效」。
+    # 现在交给它的是带结尾符的 UTF-16 字节，int() 认不出来，就不会被误当成句柄。
+    import sys
+
+    from wecom_agent.clipboard import Clipboard
+
+    stored = {}
+    fake_cb = types.SimpleNamespace(OpenClipboard=lambda: None, EmptyClipboard=lambda: None,
+                                    CloseClipboard=lambda: None,
+                                    SetClipboardData=lambda fmt, data: stored.update(fmt=fmt, data=data))
+    monkeypatch.setitem(sys.modules, "win32clipboard", fake_cb)
+    monkeypatch.setitem(sys.modules, "win32con", types.SimpleNamespace(CF_UNICODETEXT=13, CF_DIB=8, CF_HDROP=15))
+    Clipboard().set_text(text)
+    data = stored["data"]
+    assert stored["fmt"] == 13 and isinstance(data, bytes)
+    assert data.decode("utf-16-le") == text + "\0"
+    with pytest.raises(ValueError):
+        int(data)
+
+
+def test_error_before_send_key_reported_as_not_sent(chat, monkeypatch):
+    real = chat.driver.clip.set_text
+
+    def set_text(text):
+        if text == "1233321":
+            raise OSError(6, "SetClipboardData", "句柄无效。")
+        real(text)
+
+    monkeypatch.setattr(chat.driver.clip, "set_text", set_text)
+    r = chat.driver.send("某客户-有数项目群", "1233321", [Path("a.png")])
+    assert not r.ok and r.error.startswith("已发出：图片「a.png」；发送程序出错，后面的没有发送")
+    assert chat.sent == [("某客户-有数项目群", ("图片", "a.png"))]
+    r = chat.driver.send("某客户-有数项目群", "1233321")
+    assert not r.ok and r.error.startswith("发送程序出错，没有发送") and "未确认" not in r.error
+
+
+def test_error_after_send_key_reported_as_unknown(chat, monkeypatch):
+    real = chat.driver.clip.set_text
+    calls = []
+
+    def set_text(text):
+        calls.append(text)
+        if text == ui.CLIP_SENTINEL and len([c for c in calls if c == ui.CLIP_SENTINEL]) == 2:
+            raise OSError("剪贴板被占用")  # 第 2 次读输入框是在按下发送键之后
+        real(text)
+
+    monkeypatch.setattr(chat.driver.clip, "set_text", set_text)
+    r = chat.driver.send("某客户-有数项目群", "回复")
+    assert not r.ok and "未确认最后一条是否发出" in r.error

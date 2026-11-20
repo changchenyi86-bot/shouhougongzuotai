@@ -42,7 +42,10 @@ class Clipboard:
             self._cb.CloseClipboard()
 
     def set_text(self, text: str) -> None:
-        self._set(self._con.CF_UNICODETEXT, text)
+        # 不能直接把 str 交给 pywin32：它会先试着把内容当成「句柄编号」，于是「1233321」「666」这类
+        # 纯数字的文字被当成一个不存在的句柄，报「句柄无效」（pywin32 #2132，真机联调时遇到）。
+        # 自己编码成带结尾符的 UTF-16 字节就不会被误认：里面一定有 0 字节，不可能被当成数字。
+        self._set(self._con.CF_UNICODETEXT, text.encode("utf-16-le") + b"\x00\x00")
 
     def get_text(self) -> str | None:
         """剪贴板里的文字；里面是图片、文件等非文字内容时返回 None。"""
