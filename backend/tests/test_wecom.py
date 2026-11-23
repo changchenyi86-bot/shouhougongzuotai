@@ -146,6 +146,40 @@ def test_archive_missing_key_stops_without_advancing(client):
         assert s.get(SyncCursor, "wecom_archive_seq").value == "1"
 
 
+def test_archive_skips_versions_without_key(client):
+    """旧版本私钥只在七鱼手里：跳过版本 1 的消息、推进 seq，版本 2 正常解密入库。"""
+    key2 = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+    def item_v2(seq, record):
+        it = _item(seq, record, ver=2)
+        it["encrypt_random_key"] = base64.b64encode(
+            key2.public_key().encrypt(f"rk{seq}".encode(), padding.PKCS1v15())).decode()
+        return it
+
+    archive = FakeArchive([_item(1, rec("m1", CUST, "旧消息")), _item(2, rec("m2", CUST, "旧消息2")),
+                           item_v2(3, rec("m3", CUST, "换钥后的新消息"))])
+    syncer = ArchiveSyncer(lambda: archive, {"2": key2}, batch_size=2, skip_versions=["1"])
+    assert syncer.sync_once() == 1
+    with db.SessionLocal() as s:
+        assert [m.external_id for m in s.query(Message).all()] == ["m3"]
+        assert s.get(SyncCursor, "wecom_archive_seq").value == "3"
+
+    # 配了私钥的版本即使也列在跳过里，仍然解密
+    archive.items.append(_item(4, rec("m4", CUST, "版本 1 也有私钥")))
+    syncer = ArchiveSyncer(lambda: archive, {"1": KEY, "2": key2}, batch_size=10, skip_versions=["1"])
+    assert syncer.sync_once() == 1
+
+
+def test_skip_versions_setting_accepts_numbers(monkeypatch):
+    from app.config import Settings
+
+    monkeypatch.setenv("WECOM_ARCHIVE_SKIP_KEY_VERSIONS", "[1]")
+    monkeypatch.setenv("WECOM_ARCHIVE_PRIVATE_KEY_FILES", '{"2": "/opt/wecom/archive_v2.pem"}')
+    s = Settings()
+    assert s.wecom_archive_skip_key_versions == ["1"]
+    assert s.wecom_archive_private_key_files == {"2": "/opt/wecom/archive_v2.pem"}
+
+
 def test_to_message_in_types():
     g = GroupInfo(None, None)
     m = to_message_in(rec("a", CUST, msgtype="file", file={"filename": "日志.zip"}), g)

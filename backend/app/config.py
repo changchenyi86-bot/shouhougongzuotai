@@ -1,5 +1,6 @@
 import os
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -43,8 +44,12 @@ class Settings(BaseSettings):
     # ---- 企业微信 会话内容存档 ----
     wecom_corp_id: str = ""
     wecom_archive_secret: str = ""  # 「会话内容存档」应用的 Secret
-    # 消息加密私钥，按 publickey_ver 映射到 PEM 文件路径，JSON 格式：{"1": "/run/secrets/wecom_v1.pem"}
+    # 消息加密私钥，按 publickey_ver 映射到 PEM 文件路径，JSON 格式：{"2": "/opt/wecom/archive_v2.pem"}
+    # 更换公钥后企业微信的版本号加 1，新旧版本的私钥都可以配在这里
     wecom_archive_private_key_files: dict[str, str] = {}
+    # 没有私钥、直接跳过的公钥版本，JSON 格式：["1"]。
+    # 用于明知解不开的旧消息（如旧版本私钥只在七鱼手里）；没配私钥也没列在这里的版本会停止拉取，避免悄悄丢消息
+    wecom_archive_skip_key_versions: list[str] = []
     wecom_sdk_lib_path: str = "/opt/wecom/libWeWorkFinanceSdk_C.so"
     wecom_archive_proxy: str = ""
     wecom_archive_proxy_password: str = ""
@@ -67,6 +72,12 @@ class Settings(BaseSettings):
     send_queue_timeout_minutes: int = 10  # 排队超过这个时间仍未被领取则取消，避免很久以后才发出过时的回复
     send_result_timeout_minutes: int = 3  # 发送中超过这个时间没回报结果，标记为结果未知
     send_agent_offline_seconds: int = 60  # 超过这个时间没有心跳视为离线
+
+    @field_validator("wecom_archive_skip_key_versions", mode="before")
+    @classmethod
+    def _versions_as_str(cls, v):
+        # 允许写成 [1] 或 ["1"]
+        return [str(x) for x in v] if isinstance(v, (list, tuple, set)) else v
 
     @property
     def wecom_archive_enabled(self) -> bool:
