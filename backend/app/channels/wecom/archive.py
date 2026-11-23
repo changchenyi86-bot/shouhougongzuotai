@@ -4,7 +4,7 @@ import base64
 import json
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -101,10 +101,13 @@ def to_message_in(record: dict, group: GroupInfo) -> MessageIn | None:
 
 class ArchiveSyncer:
     def __init__(self, client_factory: Callable[[], ArchiveClient], private_keys: dict[str, RSAPrivateKey],
-                 directory: GroupDirectory | None = None, batch_size: int = 100):
+                 directory: GroupDirectory | None = None, batch_size: int = 100,
+                 skip_versions: Iterable[str] = ()):
         self._client_factory = client_factory
         self._client: ArchiveClient | None = None
         self._keys = private_keys
+        # 有私钥的版本照常解密；没有私钥且列在这里的版本直接跳过
+        self._skip_versions = {str(v) for v in skip_versions} - set(private_keys)
         self._directory = directory
         self._batch_size = batch_size
         self._lock = threading.Lock()
@@ -121,7 +124,8 @@ class ArchiveSyncer:
         key = self._keys.get(ver)
         if key is None:
             # 不推进 seq，等管理员补上对应版本的私钥后重拉，避免丢消息
-            raise MissingKeyError(f"缺少 publickey_ver={ver} 对应的私钥，请在 WECOM_ARCHIVE_PRIVATE_KEY_FILES 中配置")
+            raise MissingKeyError(f"缺少 publickey_ver={ver} 对应的私钥，请在 WECOM_ARCHIVE_PRIVATE_KEY_FILES 中配置；"
+                                  f"确定不要这个版本的消息时，可加到 WECOM_ARCHIVE_SKIP_KEY_VERSIONS")
         random_key = key.decrypt(base64.b64decode(item["encrypt_random_key"]), padding.PKCS1v15()).decode()
         return json.loads(self.client.decrypt(random_key, item["encrypt_chat_msg"]))
 
@@ -146,7 +150,7 @@ class ArchiveSyncer:
     def _sync(self) -> int:
         from app.ingest import ingest
 
-        created = 0
+        created = skipped = 0
         with db.SessionLocal() as session:
             cursor = session.get(SyncCursor, CURSOR_KEY) or SyncCursor(key=CURSOR_KEY, value="0")
             seq = int(cursor.value)
@@ -155,13 +159,21 @@ class ArchiveSyncer:
                 if not items:
                     break
                 for item in items:
-                    try:
-                        record = self._decrypt(item)
-                    except MissingKeyError:
-                        raise
-                    except Exception as exc:  # noqa: BLE001  单条损坏的消息跳过，不阻塞后续
-                        log.exception("会话存档消息解密失败 seq=%s msgid=%s: %s", item.get("seq"), item.get("msgid"), exc)
+                    if str(item.get("publickey_ver")) in self._skip_versions:
+                        skipped += 1
+                        record = None
                     else:
+                        try:
+                            record = self._decrypt(item)
+                        except MissingKeyError:
+                            if skipped:
+                                log.info("会话存档跳过旧公钥版本加密的消息 %d 条，seq=%d", skipped, seq)
+                            raise
+                        except Exception as exc:  # noqa: BLE001  单条损坏的消息跳过，不阻塞后续
+                            log.exception("会话存档消息解密失败 seq=%s msgid=%s: %s",
+                                          item.get("seq"), item.get("msgid"), exc)
+                            record = None
+                    if record is not None:
                         data = to_message_in(record, self._group(record["roomid"])) if record.get("roomid") else None
                         if data is not None:
                             msg, is_new = ingest(session, data)
@@ -174,6 +186,8 @@ class ArchiveSyncer:
                     session.commit()
                 if len(items) < self._batch_size:
                     break
+        if skipped:
+            log.info("会话存档跳过旧公钥版本加密的消息 %d 条，seq=%d", skipped, seq)
         if created:
             log.info("会话存档拉取新消息 %d 条，seq=%d", created, seq)
         return created
@@ -199,7 +213,10 @@ def get_syncer() -> ArchiveSyncer | None:
             directory=GroupDirectory(settings.wecom_corp_id, settings.wecom_archive_secret,
                                      settings.wecom_contact_secret),
             batch_size=settings.wecom_archive_batch_size,
+            skip_versions=settings.wecom_archive_skip_key_versions,
         )
+        log.info("会话存档已启用：可解密的公钥版本 %s，跳过的版本 %s",
+                 sorted(settings.wecom_archive_private_key_files), sorted(settings.wecom_archive_skip_key_versions))
     return _syncer
 
 

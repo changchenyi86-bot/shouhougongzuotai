@@ -117,6 +117,22 @@ npm run demo
 4. 可选：存档应用「接收事件服务器」填 `https://<域名>/webhooks/wecom` 并配置 `WECOM_CALLBACK_TOKEN` / `WECOM_CALLBACK_AES_KEY`，有新消息时会立即拉取。
 5. 可选：填写 `WECOM_CONTACT_SECRET`（客户联系 Secret），工作台可显示外部客户群名称。
 
+### 消息加密密钥（和七鱼共用）
+
+企业微信用「消息加密公钥」加密存档消息，每条消息带 `publickey_ver`（公钥版本号），每更换一次公钥版本号加 1。
+版本 1 的公钥是网易七鱼生成的，私钥只在七鱼手里，所以工作台自己生成一对新密钥，公钥上传到企业微信成为新版本，
+私钥同时交给七鱼（七鱼后台「会话存档设置 → 保留已有消息加密公钥，设置解密私钥」），两边都能解新消息。
+
+- 生成（RSA 2048，私钥 PKCS#1，即 `BEGIN RSA PRIVATE KEY`）：
+  `openssl genrsa -traditional -out secrets/wecom/archive_v2.pem 2048`（OpenSSL 1.x / LibreSSL 去掉 `-traditional`），
+  `openssl rsa -in secrets/wecom/archive_v2.pem -pubout -out secrets/wecom/archive_v2_public.pem`。
+- 顺序：先在企业微信管理后台上传公钥，再马上把私钥填进七鱼，中间尽量不超过一分钟，选群里没人说话的时候。
+  反过来先改七鱼的话，企业微信还在用旧公钥加密，七鱼换了私钥后可能解不开这段时间的消息。
+- `backend/.env`：`WECOM_ARCHIVE_PRIVATE_KEY_FILES={"2": "/opt/wecom/archive_v2.pem"}`，
+  `WECOM_ARCHIVE_SKIP_KEY_VERSIONS=["1"]`（版本 1 的旧消息工作台解不开，直接跳过）。
+  上传后后台显示的版本号不是 2 的话按实际版本号改。没配私钥、也没列在跳过里的版本会让拉取停住并在日志里提示，不会悄悄丢消息。
+- 不要在企业微信后台重置会话存档 Secret，七鱼也在用它。
+
 发送人 ID 以 `wm` / `wo` 开头的是客户，只有客户的文本消息会生成 AI 建议；员工发言也入库，作为上下文。
 群里的图片和文件会在后台下载，保存在 `ATTACHMENT_DIR`（docker-compose 里是 `attachments` 卷），单个上限 `ATTACHMENT_MAX_MB`（默认 20MB），下载失败可在工作台重试。
 会话存档不能通过 API 发消息，所以回复有两种发法（客户群回复都保留人工确认）：
