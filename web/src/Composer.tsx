@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   adopt,
+  attachmentUrl,
   dismiss,
   escalate,
   regenerate,
@@ -11,7 +12,8 @@ import {
 } from "./api";
 import AiChat from "./AiChat";
 import Knowledge from "./Knowledge";
-import { FileIcon, formatSize } from "./MessageBody";
+import { useImageViewer } from "./ImageViewer";
+import { FileIcon, formatSize, isImage } from "./MessageBody";
 import { senderName } from "./Sender";
 import { MOD, SEND_KEYS, loadSendKey, saveSendKey, type SendKey } from "./sendKey";
 
@@ -69,6 +71,8 @@ export default function Composer(props: Props) {
 
   const uploading = files.some((f) => !f.att && !f.error);
   const ready = files.filter((f) => f.att).map((f) => f.att!);
+  const readyImages = ready.filter(isImage);
+  const viewImage = useImageViewer();
   const hasContent = !!text.trim() || ready.length > 0;
   const canSend = canAutoSend && hasContent && !uploading && !!groupName;
 
@@ -238,8 +242,8 @@ export default function Composer(props: Props) {
   const maybeNoReply = !!s && s.status === "ready" && s.needs_reply === false && !s.reopened_by;
   const what = [
     text.trim() && "文字",
-    ready.filter((a) => a.mime.startsWith("image/")).length && `${ready.filter((a) => a.mime.startsWith("image/")).length} 张图片`,
-    ready.filter((a) => !a.mime.startsWith("image/")).length && `${ready.filter((a) => !a.mime.startsWith("image/")).length} 个文件`,
+    readyImages.length && `${readyImages.length} 张图片`,
+    ready.length - readyImages.length && `${ready.length - readyImages.length} 个文件`,
   ].filter(Boolean).join("、");
 
   return (
@@ -367,8 +371,17 @@ export default function Composer(props: Props) {
         <div className="chips">
           {files.map((f) => (
             <span key={f.key} className={`chip ${f.error ? "err" : ""}`} title={f.error}>
-              <FileIcon name={f.name} size={14} />
-              {f.name}
+              {f.att && isImage(f.att) ? (
+                <button type="button" className="chip-img" onClick={() => viewImage(f.att!, readyImages)} title="点击查看大图">
+                  <img src={attachmentUrl(f.att.id)} alt="" />
+                  {f.name}
+                </button>
+              ) : (
+                <>
+                  <FileIcon name={f.name} size={14} />
+                  {f.name}
+                </>
+              )}
               {f.att && <small>{formatSize(f.att.size)}</small>}
               {!f.att && !f.error && <small>上传中…</small>}
               {f.error && <small>上传失败：{f.error}</small>}

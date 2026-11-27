@@ -154,9 +154,22 @@ const SCREENSHOT = `<svg xmlns="http://www.w3.org/2000/svg" width="560" height="
 <text x="64" y="150" font-family="sans-serif" font-size="13" fill="#333">报表：2026 年 Q3 网点经营日报</text>
 <circle cx="280" cy="220" r="22" fill="none" stroke="#2f6bff" stroke-width="4" stroke-dasharray="100 40"/></svg>`;
 
+// 第二张图：竖版的手机截图，看大图时可以左右切换
+const PHONE_SHOT = `<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+<rect width="720" height="1280" fill="#f4f6fb"/><rect width="720" height="120" fill="#2f6bff"/>
+<text x="40" y="78" font-family="sans-serif" font-size="34" fill="#fff">有数 · 移动看板</text>
+<rect x="40" y="170" width="640" height="300" rx="20" fill="#fff"/>
+<text x="72" y="230" font-family="sans-serif" font-size="28" fill="#333">本月销售额</text>
+<text x="72" y="300" font-family="sans-serif" font-size="56" font-weight="700" fill="#17171c">--</text>
+<text x="72" y="360" font-family="sans-serif" font-size="24" fill="#d63c3c">数据加载失败，请稍后重试</text>
+<rect x="40" y="510" width="640" height="520" rx="20" fill="#fff"/>
+<polyline points="80,960 180,880 280,910 380,800 480,830 580,700 640,720" fill="none" stroke="#c7cbd6" stroke-width="6"/>
+</svg>`;
+
 /** 附件内容：演示里图片、文件都放在内存里。 */
 const files = new Map<string, string>([
   ["demo-img", `data:image/svg+xml;charset=utf-8,${encodeURIComponent(SCREENSHOT)}`],
+  ["demo-img2", `data:image/svg+xml;charset=utf-8,${encodeURIComponent(PHONE_SHOT)}`],
   ["demo-log", `data:text/plain;charset=utf-8,${encodeURIComponent("2026-11-19 10:07:12 ERROR export timeout (504)\n")}`],
   ...["demo-xlsx", "demo-docx", "demo-zip"].map((id): [string, string] => [id, `data:text/plain;charset=utf-8,${encodeURIComponent("演示文件")}`]),
 ]);
@@ -242,6 +255,10 @@ function build(): Room[] {
   say(bank, "p3Lm", 10, 9, "[文件] 6231416b-e7b9-424f-a3c3-47c21ba522c3.zip", {
     msg_type: "file",
     attachment: { id: "demo-zip", filename: "6231416b-e7b9-424f-a3c3-47c21ba522c3.zip", mime: "application/zip", size: 19_503_000 },
+  });
+  say(bank, "p3Lm", 10, 9, "[图片]", {
+    msg_type: "image",
+    attachment: { id: "demo-img2", filename: "手机看板截图.png", mime: "image/png", size: 96_000 },
   });
   say(bank, "p3Lm", 10, 9, "[文件] 元数据库全量备份.tar.gz", {
     msg_type: "file",

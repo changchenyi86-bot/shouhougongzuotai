@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { attachmentUrl, fetchMedia, type Attachment, type Message } from "./api";
+import { useImageViewer } from "./ImageViewer";
 
 export function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -7,7 +8,7 @@ export function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-const isImage = (a: Attachment) => a.mime.startsWith("image/");
+export const isImage = (a: Attachment) => a.mime.startsWith("image/");
 
 type FileKind = "excel" | "word" | "ppt" | "pdf" | "zip" | "image" | "video" | "audio" | "text" | "other";
 
@@ -147,11 +148,12 @@ function FileCard({ name, size, href, foot }: { name: string; size?: number; hre
 }
 
 export function AttachmentView({ att }: { att: Attachment }) {
+  const view = useImageViewer();
   if (isImage(att))
     return (
-      <a className="att-img" href={attachmentUrl(att.id)} target="_blank" rel="noreferrer" title="点击查看原图">
+      <button type="button" className="att-img" onClick={() => view(att)} title="点击查看大图">
         <img src={attachmentUrl(att.id)} alt={att.filename} loading="lazy" />
-      </a>
+      </button>
     );
   return <FileCard name={att.filename} size={att.size} href={attachmentUrl(att.id, true)} />;
 }
