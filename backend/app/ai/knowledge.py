@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel
 
+from app.ai import embedding
 from app.config import settings
 
 log = logging.getLogger(__name__)
@@ -133,6 +134,61 @@ def _clean_article(text: str) -> tuple[str, str | None]:
     return text, url
 
 
+# ---- 重排序 ----
+# 三路各取前 RERANK_POOL 篇、轮流合并去重后，按三个名次融合重排，再取前几篇给模型：
+#   原合并名次 + 问题与「标题+摘要」的 bge-m3 向量相似度名次 + 0.5 × 标题被问题覆盖的比例名次（RRF，k=60）。
+# 依据：2026-11-27 评测（有数/知数 120 题、数据中台 36 题，奇偶两半交叉留出），正确文档进前 6
+# 从 74→84、23→27，没有原来前 3 掉出前 6 的题；检索服务建索引不算标题，标题几乎等于问题的手册常排在第 10 名开外。
+# 向量模型没配置或调用失败时保持原合并顺序。
+RERANK_POOL = 20
+_RRF_K = 60
+_TITLE_WEIGHT = 0.5
+_TITLE_PREFIX = re.compile(r"^(faq|info|demo)[-：: ]*")
+_WORD_PARTS = re.compile(r"[\u4e00-\u9fff]+|[a-z0-9]+")
+
+
+def _words(text: str | None) -> set[str]:
+    """中文切成相邻两字、英文数字按词，去掉 FAQ/INFO/DEMO 这类标题前缀。"""
+    out: set[str] = set()
+    for part in _WORD_PARTS.findall(_TITLE_PREFIX.sub("", (text or "").lower())):
+        if "\u4e00" <= part[0] <= "\u9fff" and len(part) > 1:
+            out.update(part[i:i + 2] for i in range(len(part) - 1))
+        else:
+            out.add(part)
+    return out
+
+
+def _ranks(scores: list[float]) -> list[int]:
+    """分数从高到低的名次（1 起），同分按原顺序。"""
+    order = sorted(range(len(scores)), key=lambda i: (-scores[i], i))
+    ranks = [0] * len(scores)
+    for pos, i in enumerate(order, 1):
+        ranks[i] = pos
+    return ranks
+
+
+def rerank(query: str, rows: list[dict]) -> list[dict]:
+    if len(rows) < 2:
+        return rows
+    client = embedding.get_client()
+    if client is None:
+        return rows
+    texts = [query[:1500]] + [f"{(r.get('title') or '').strip()}\n{(r.get('snippet') or '').strip()}"[:1500] for r in rows]
+    try:
+        qv, *vecs = client.embed(texts)
+    except embedding.EmbeddingError as exc:
+        log.warning("重排序用的向量模型调用失败，按原顺序：%s", exc)
+        return rows
+    qn = sum(x * x for x in qv) ** 0.5 or 1.0
+    sims = [sum(a * b for a, b in zip(qv, v)) / (qn * ((sum(x * x for x in v) ** 0.5) or 1.0)) for v in vecs]
+    q = _words(query)
+    cover = [len(t & q) / len(t) if (t := _words(r.get("title"))) else 0.0 for r in rows]
+    v_rank, t_rank = _ranks(sims), _ranks(cover)
+    score = [1 / (_RRF_K + i + 1) + 1 / (_RRF_K + v_rank[i]) + _TITLE_WEIGHT / (_RRF_K + t_rank[i])
+             for i in range(len(rows))]
+    return [rows[i] for i in sorted(range(len(rows)), key=lambda i: (-score[i], i))]
+
+
 class KnowledgeClient:
     def __init__(self, url: str, timeout: float = 15, client: httpx.Client | None = None):
         self.url = url
@@ -189,7 +245,7 @@ class KnowledgeClient:
     def documents(self, query: str, product: str, top: int, read_full: int, max_chars: int) -> list[KnowledgeItem]:
         routes = []
         for source_type in ("manual", "faq", ""):
-            res = self.call("search", {"query": query, "top": top, "product": product, "type": source_type})
+            res = self.call("search", {"query": query, "top": RERANK_POOL, "product": product, "type": source_type})
             routes.append((res.get("results") if isinstance(res, dict) else None) or [])
         # 三路轮流取，按文件去重
         merged, seen = [], set()
@@ -201,6 +257,7 @@ class KnowledgeClient:
                     if f and f not in seen:
                         seen.add(f)
                         merged.append(r)
+        merged = rerank(query, merged)
         items = []
         for i, r in enumerate(merged[:top]):
             item = KnowledgeItem(
