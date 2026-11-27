@@ -57,6 +57,20 @@ class Clipboard:
         finally:
             self._cb.CloseClipboard()
 
+    def formats(self) -> list[str]:
+        """剪贴板里现在有哪些格式（排查用：看企业微信复制出 @ 时带了什么）。"""
+        self._open()
+        try:
+            names, fmt = [], 0
+            while fmt := self._cb.EnumClipboardFormats(fmt):
+                try:
+                    names.append(self._cb.GetClipboardFormatName(fmt))
+                except Exception:  # noqa: BLE001  系统自带格式没有名字
+                    names.append(str(fmt))
+            return names
+        finally:
+            self._cb.CloseClipboard()
+
     def sequence(self) -> int:
         """剪贴板的“修改次数”。任何程序往剪贴板里放了新内容，这个数就会变。"""
         import ctypes

@@ -31,6 +31,7 @@ import { ImageGallery } from "./ImageViewer";
 import MessageBody, { AttachmentView, isImage } from "./MessageBody";
 import { Avatar, SenderLine, senderName } from "./Sender";
 import ReflowTip from "./ReflowTip";
+import { MentionText } from "./Mentions";
 
 export interface ChatTarget {
   channel: Channel;
@@ -188,10 +189,15 @@ function OutboxBubble({ task, busy, onAction }: { task: SendTask; busy: boolean;
         {task.attachments.map((a) => (
           <AttachmentView key={a.id} att={a} />
         ))}
-        {task.content && <div className="bubble">{task.content}</div>}
+        {task.content && (
+          <div className="bubble">
+            <MentionText text={task.content} mentions={task.mentions} />
+          </div>
+        )}
         <div className="outbox-status">
           {status}
           {task.status === "failed" && task.error && <span className="send-error">{task.error}</span>}
+          {task.status !== "failed" && task.warning && <span className="send-warn">{task.warning}</span>}
           {task.status === "queued" && (
             <button className="link" disabled={busy} onClick={() => onAction("cancel")}>取消发送</button>
           )}
@@ -384,6 +390,16 @@ export default function Conversations({ me, canAutoSend, notify, onOpenKnowledge
     },
     [target, items, moreAfter, outbox.length, notify],
   );
+
+  // 发出去了、但有人没 @ 上：提示一次（气泡上也一直写着，直到它出现在聊天记录里）
+  const warned = useRef(new Set<string>());
+  useEffect(() => {
+    for (const t of outbox) {
+      if (t.status !== "sent" || !t.warning || warned.current.has(t.id)) continue;
+      warned.current.add(t.id);
+      if (t.finished_at && Date.now() - new Date(t.finished_at).getTime() < 60_000) notify(`已发出。${t.warning}`);
+    }
+  }, [outbox, notify]);
 
   const sending = outbox.some((t) => t.status === "queued" || t.status === "sending");
   useEffect(() => {

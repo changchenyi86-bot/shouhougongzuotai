@@ -41,9 +41,30 @@ class FakeChat:
         self.popup = None  # 搜索下拉面板在屏幕上的位置；None = 这个版本没有单独的面板
         self.list_rows: list[OcrLine] = []  # 左侧会话列表里、没被搜索面板盖住的行
         self.header_reads = 0  # 标题识字了几次
+        # @ 群成员
+        self.members: list[str] = []  # @ 成员列表里显示的各行（外部联系人后面带来源标签，如「张三@微信」）
+        self.at_query: str | None = None  # 成员列表开着时：@ 后面已经输入的筛选文字
+        self.at_keys = {"unicode", "shift2"}  # 哪种按键打出的 @ 能弹出成员列表
+        self.at_space = "\u2005"  # 选中成员后企业微信加在名字后面的空格
+        self.at_insert = None  # 选中成员后插进输入框的名字（None = 和列表里的名字一样）
+        self.at_box = (500, 500, 700, 700)
+        self.picked: list[str] = []  # 在成员列表里点中过谁
 
     # 鼠标键盘
     def click(self, x, y):
+        if self.at_query is not None:
+            for line in self.at_lines():
+                if line.center == (x, y):
+                    name = line.text.split("@")[0]
+                    text = self.inputs.get(self.current, "")
+                    typed = "@" + self.at_query
+                    if text.endswith(typed):
+                        text = text[: -len(typed)]
+                    self.inputs[self.current] = text + "@" + (self.at_insert or name) + self.at_space
+                    self.picked.append(name)
+                    self.at_query = None
+                    return
+            self.at_query = None
         if (x, y) == RECT.point(CFG.search_x, CFG.search_y):
             self.focus = "search"
         elif (x, y) == RECT.point(CFG.input_x, CFG.input_y):
@@ -55,6 +76,13 @@ class FakeChat:
         self.selected = False
 
     def press(self, key):
+        if key == "esc" and self.at_query is not None:
+            self.at_query = None
+            self.selected = False
+            return
+        if key == "backspace" and self.focus == "input":
+            text = self.inputs.get(self.current, "")
+            self.inputs[self.current] = "" if self.selected else text[:-1]
         if key == "delete" and self.selected:
             self._set("")
         if key == "enter" and self.focus == "input" and not self.send_broken:
@@ -68,12 +96,38 @@ class FakeChat:
             self.search = ""
         self.selected = False
 
+    def type(self, text, way="unicode"):
+        """逐字输入（Unicode 键盘消息，或 Shift+2 打出的 @）。"""
+        if self.focus != "input":
+            return
+        text_now = self.inputs.get(self.current, "")
+        if self.selected or not isinstance(text_now, str):
+            text_now = ""
+        self.selected = False
+        for ch in text:
+            if self.at_query is not None:
+                self.at_query = None if ch.isspace() else self.at_query + ch
+            text_now += ch
+            if ch == "@" and way in self.at_keys:
+                self.at_query = ""
+        self.inputs[self.current] = text_now
+
+    def at_lines(self):
+        rows = [m for m in self.members if (self.at_query or "") in m]
+        return [OcrLine(m, 510, 510 + 30 * i, 650, 530 + 30 * i) for i, m in enumerate(rows)]
+
     def hotkey(self, *keys):
-        if keys == ("ctrl", "a"):
+        if keys == ("shift", "2"):
+            self.type("@", way="shift2")
+        elif keys == ("ctrl", "a"):
             self.selected = True
         elif keys == ("ctrl", "v"):
             kind, value = self.clipboard
             if kind == "text" and not (self.focus == "input" and self.input_broken):
+                text_now = self.inputs.get(self.current, "")
+                # 粘贴插在光标处（光标总在末尾）；全选时替换掉选中的内容
+                if self.focus == "input" and not self.selected and isinstance(text_now, str):
+                    value = text_now + value
                 self._set(value)
             elif kind != "text" and self.focus == "input" and not self.paste_media_broken:
                 self._set((kind, value))
@@ -101,6 +155,8 @@ class FakeChat:
 
     def frame(self, box):
         """这块区域现在的样子（代替截图）。"""
+        if box == self.at_box:
+            return ("成员列表", self.at_query, tuple(line.text for line in self.at_lines()))
         if box == HEADER:
             return ("标题", self.current)
         return (box, self.search, self.current, repr(self.inputs), len(self.sent))
@@ -110,6 +166,8 @@ class FakeChat:
         self.seq += 1
 
     def ocr(self, box, image=None, like=None):
+        if box == self.at_box:
+            return self.at_lines() if self.at_query is not None else []
         if box == HEADER:
             self.header_reads += 1
             count = self.groups.get(self.current)
@@ -133,7 +191,11 @@ def chat(monkeypatch, request):
     )
     clock = [0.0]
     monkeypatch.setattr(ui, "desktop_locked", lambda: False)
-    monkeypatch.setattr(ui, "find_main_window", lambda cfg: (types.SimpleNamespace(pid=1), "ok"))
+    monkeypatch.setattr(ui, "find_main_window", lambda cfg: (types.SimpleNamespace(pid=1, hwnd=1), "ok"))
+    monkeypatch.setattr(ui, "type_unicode", fake.type)
+    monkeypatch.setattr(ui, "list_popups",
+                        lambda pid, main: {99: ("AtListWnd", fake.at_box)} if fake.at_query is not None else {})
+    monkeypatch.setattr(ui, "popup_box", lambda hwnd: fake.at_box if fake.at_query is not None else None)
     monkeypatch.setattr(ui, "find_search_popup", lambda pid: fake.popup if fake.search else None)
     monkeypatch.setattr(ui, "window_alive", lambda win: True)
     monkeypatch.setattr(ui, "prepare_window", lambda win, cfg: RECT)
@@ -564,3 +626,92 @@ def test_timing_notes_when_popup_not_found(chat, caplog):
         assert chat.driver.send("某客户-有数项目群", "再回复").ok
     first, second = [r.getMessage() for r in caplog.records if r.getMessage().startswith("用时")]
     assert "没找到搜索面板" in first and "没找到搜索面板" not in second
+
+
+# ---------- @ 群成员 ----------
+
+G = "某客户-有数项目群"
+
+
+def at(name, kind=""):
+    from wecom_agent.mention import Mention
+
+    return Mention(name, kind)
+
+
+def test_mention_picked_from_member_list(chat):
+    # 筛「张三」时「张三丰」排在前面，要点的是「张三@微信」那一行
+    chat.members = ["张三丰", "张三@微信", "李四"]
+    r = chat.driver.send(G, "@张三 您好，请清理缓存", mentions=[at("张三", "wechat")])
+    assert r.ok and r.warning is None, (r.error, r.warning)
+    assert chat.picked == ["张三"]
+    # 企业微信 @ 完自己加了空格，回复里名字后面的空格不再重复
+    assert chat.sent == [(G, "@张三 您好，请清理缓存")]
+
+
+def test_two_mentions_in_the_middle(chat):
+    chat.members = ["李四", "张三@微信"]
+    r = chat.driver.send(G, "好的 @李四 @张三 麻烦看下", mentions=[at("李四", "internal"), at("张三", "wechat")])
+    assert r.ok and r.warning is None
+    assert chat.picked == ["李四", "张三"]
+    assert chat.sent == [(G, "好的 @李四 @张三 麻烦看下")]
+
+
+def test_mention_when_wecom_adds_no_space(chat):
+    chat.members = ["张三"]
+    chat.at_space = ""
+    r = chat.driver.send(G, "@张三 您好", mentions=[at("张三")])
+    assert r.ok and r.warning is None and chat.sent == [(G, "@张三 您好")]
+
+
+@pytest.mark.parametrize("kind, row", [("wechat", "张三@微信"), ("internal", "张三"), ("wecom", "张三@某某科技")])
+def test_same_name_told_apart_by_source(chat, kind, row):
+    chat.members = ["张三", "张三@微信", "张三@某某科技"]
+    r = chat.driver.send(G, "@张三 您好", mentions=[at("张三", kind)])
+    assert r.ok and r.warning is None
+    assert chat.picked == [row.split("@")[0]] and len(chat.sent) == 1
+
+
+def test_same_name_cannot_tell_sends_plain_text_and_warns(chat):
+    chat.members = ["张三@微信", "张三@微信"]
+    r = chat.driver.send(G, "@张三 您好", mentions=[at("张三", "wechat")])
+    assert r.ok
+    assert r.warning == "「张三」（群里有 2 个叫「张三」的人，分不清是哪一个）没 @ 上，按普通文字发出，对方收不到 @ 提醒"
+    assert chat.picked == [] and chat.sent == [(G, "@张三 您好")]
+
+
+def test_member_not_in_list_sends_plain_text(chat):
+    chat.members = ["李四"]
+    r = chat.driver.send(G, "@张三 您好", mentions=[at("张三")])
+    assert r.ok and "没有找到「张三」" in r.warning
+    assert chat.sent == [(G, "@张三 您好")]
+
+
+def test_no_member_list_sends_plain_text(chat):
+    chat.members = ["张三"]
+    chat.at_keys = set()
+    r = chat.driver.send(G, "@张三 您好", mentions=[at("张三")])
+    assert r.ok and "没有弹出成员列表" in r.warning
+    assert chat.sent == [(G, "@张三 您好")]
+
+
+def test_at_typed_with_shift2_when_unicode_does_not_pop_up(chat):
+    chat.members = ["张三"]
+    chat.at_keys = {"shift2"}
+    r = chat.driver.send(G, "@张三 您好", mentions=[at("张三")])
+    assert r.ok and r.warning is None and chat.sent == [(G, "@张三 您好")]
+    assert chat.driver._at_keys == "shift2"  # 记住了，下次直接用
+
+
+def test_unexpected_input_falls_back_to_plain_text(chat):
+    # 企业微信插进来的不是这个名字：整段按普通文字重新粘贴，所有人都算没 @ 上
+    chat.members = ["张三"]
+    chat.at_insert = "张三（销售）"
+    r = chat.driver.send(G, "@张三 您好", mentions=[at("张三")])
+    assert r.ok and "「张三」" in r.warning
+    assert chat.sent == [(G, "@张三 您好")]
+
+
+def test_mention_missing_from_text(chat):
+    r = chat.driver.send(G, "您好", mentions=[at("王五")])
+    assert r.ok and "找不到「@王五」" in r.warning and chat.sent == [(G, "您好")]

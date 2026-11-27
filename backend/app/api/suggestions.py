@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app import routing, send_queue
+from app import mentions, routing, send_queue
 from app.ai import reflow, worker
 from app.auth import current_staff
 from app.db import get_session
@@ -98,15 +98,20 @@ def adopt(suggestion_id: uuid.UUID, body: AdoptIn, staff: Staff = Depends(curren
     content = (body.content if body.content is not None else sug.content or "").strip()
     if not content:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "回复内容为空")
-    edited = content != (sug.content or "").strip()
+    message = session.get(Message, sug.message_id)
+    try:
+        at = mentions.check(message.channel, content, body.mentions)
+    except mentions.MentionError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    plain = mentions.without_mentions(content, [m.name for m in body.mentions])  # 自动加上的「@客户」不算改动
+    edited = plain != (sug.content or "").strip()
     _mark(sug, S.EDITED if edited else S.ADOPTED, staff)
     sug.final_content, sug.delivery = content, "manual"
-    reflow.record(session, sug, content, body.via_chat)
+    reflow.record(session, sug, plain, body.via_chat)
     detail = "请复制后在客户端发送"
     if body.send:
-        message = session.get(Message, sug.message_id)
         try:
-            send_queue.enqueue(session, message.channel, message.group_id, content, [], staff.name, sug)
+            send_queue.enqueue(session, message.channel, message.group_id, content, [], staff.name, sug, at)
         except send_queue.SendRejected as exc:
             session.rollback()
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc

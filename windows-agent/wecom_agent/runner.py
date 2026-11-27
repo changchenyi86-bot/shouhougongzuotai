@@ -21,14 +21,17 @@ log = logging.getLogger("wecom_agent")
 class SendResult:
     ok: bool
     error: str | None = None
+    warning: str | None = None  # 发出去了，但有没做到的（如有人没 @ 上），工作台会提示
 
 
 class Driver(Protocol):
     def status(self) -> tuple[bool, str]:
         """(企业微信是否可用, 说明)。"""
 
-    def send(self, group_name: str, content: str, files: list[Path] | None = None) -> SendResult:
-        """打开群、核对群名、先发图片和文件再发文字。任何一步不确定都要返回失败，不能发错群。"""
+    def send(self, group_name: str, content: str, files: list[Path] | None = None,
+             mentions: list | None = None) -> SendResult:
+        """打开群、核对群名、先发图片和文件再发文字（文字里要 @ 的人在企业微信里真正 @）。
+        任何一步不确定都要返回失败，不能发错群。"""
 
 
 class Runner:
@@ -65,7 +68,7 @@ class Runner:
         if self.pending:
             task_id, result = self.pending
             try:
-                self.server.report(task_id, result.ok, result.error)
+                self.server.report(task_id, result.ok, result.error, result.warning)
             except ServerError as exc:
                 log.warning("回报结果失败，稍后重试：%s", exc)
                 return self.cfg.poll_seconds
@@ -106,12 +109,12 @@ class Runner:
                 return SendResult(False, f"发送电脑下载图片或文件失败，未发送：{exc}")
             with self.ui_lock:
                 try:
-                    result = self.driver.send(task.group_name, task.content, files)
+                    result = self.driver.send(task.group_name, task.content, files, task.mentions)
                 except Exception as exc:  # noqa: BLE001
                     log.exception("发送出错")
                     result = SendResult(False, f"发送程序出错，未确认是否发出，请到群里确认：{exc}")
         if result.ok:
-            log.info("已发送 %s", task.id)
+            log.info("已发送 %s%s", task.id, f"（{result.warning}）" if result.warning else "")
         else:
             log.warning("发送失败 %s：%s", task.id, result.error)
         return result

@@ -132,10 +132,21 @@ class InboxItem(BaseModel):
     suggestion: SuggestionOut | None
 
 
+class MentionIn(BaseModel):
+    """回复里要真正 @ 的一个群成员。回复文字里要有「@名字」。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    user_id: str = Field(default="", max_length=128)
+    name: str = Field(min_length=1, max_length=128, description="群里显示的名字，和企业微信 @ 列表里的一致")
+    kind: str = Field(default="", max_length=16, description="internal / wechat / wecom，同名时发送程序靠它区分")
+
+
 class AdoptIn(BaseModel):
     content: str | None = Field(default=None, description="修改后的回复；不传则原样采纳 AI 建议")
     send: bool = Field(default=False, description="true：交给电脑端发送程序自动发到群里；false：复制后人工发送")
     via_chat: bool = Field(default=False, description="回复是从和 AI 的对话里填入的")
+    mentions: list[MentionIn] = Field(default=[], max_length=20, description="回复里 @ 的群成员（比较采纳情况时去掉）")
 
 
 class HandleIn(BaseModel):
@@ -167,6 +178,15 @@ class SendStatusOut(BaseModel):
     agents: list[AgentOut]
 
 
+class MemberOut(BaseModel):
+    id: str
+    name: str
+    kind: Literal["internal", "wechat", "wecom", "external"]
+    customer: bool
+    last_spoke_at: datetime | None = Field(description="最近一次在这个群里说话的时间")
+    duplicate: bool = Field(description="群里还有别人也叫这个名字（发送程序可能分不清，分不清时按普通文字发出）")
+
+
 class AgentHeartbeatIn(BaseModel):
     agent_id: str = Field(min_length=1, max_length=64)
     wecom_ready: bool
@@ -177,6 +197,8 @@ class AgentHeartbeatIn(BaseModel):
 class AgentClaimIn(BaseModel):
     agent_id: str = Field(min_length=1, max_length=64)
     wait: float = Field(default=0, ge=0, le=30, description="没有任务时最多等多少秒再返回；0 表示立刻返回")
+    features: list[str] = Field(default=[], max_length=20,
+                                description="发送程序会做的事。mentions：能在企业微信里真正 @ 人（旧版本没有）")
 
 
 class AgentTask(BaseModel):
@@ -186,6 +208,7 @@ class AgentTask(BaseModel):
     group_name: str
     content: str
     attachments: list[AttachmentOut] = Field(description="先逐个发出附件，再发文字")
+    mentions: list[MentionIn] = Field(default=[], description="文字里要真正 @ 的人，按出现的先后")
     created_at: datetime
 
 
@@ -198,6 +221,7 @@ class AgentResultIn(BaseModel):
     agent_id: str = Field(min_length=1, max_length=64)
     ok: bool
     error: str | None = Field(default=None, max_length=2000)
+    warning: str | None = Field(default=None, max_length=2000, description="发出去了，但有没做到的（如有人没 @ 上）")
 
 
 # ---------- 群聊记录 ----------
@@ -230,8 +254,10 @@ class SendTaskOut(BaseModel):
     suggestion_id: uuid.UUID | None
     content: str
     attachments: list[AttachmentOut]
+    mentions: list[MentionIn] = []
     status: SendStatus
     error: str | None
+    warning: str | None = None
     created_by: str | None
     created_at: datetime
     finished_at: datetime | None
@@ -302,6 +328,8 @@ class SendIn(BaseModel):
     attachment_ids: list[uuid.UUID] = Field(default=[], max_length=9)
     suggestion_id: uuid.UUID | None = Field(default=None, description="回复的是哪条 AI 建议，发送后该建议记为已采纳")
     via_chat: bool = Field(default=False, description="回复是从和 AI 的对话里填入的")
+    mentions: list[MentionIn] = Field(default=[], max_length=20,
+                                      description="文字里要真正 @ 的群成员，按在文字里出现的先后（文字里写「@名字」）")
 
 
 # ---------- 登录、成员 ----------

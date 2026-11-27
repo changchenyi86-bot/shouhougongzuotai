@@ -1,20 +1,32 @@
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   adopt,
   attachmentUrl,
   dismiss,
   escalate,
+  fetchMembers,
   regenerate,
   sendToGroup,
   uploadAttachment,
   type Attachment,
   type InboxItem,
+  type Member,
 } from "./api";
 import AiChat from "./AiChat";
 import Knowledge from "./Knowledge";
 import { useImageViewer } from "./ImageViewer";
 import { FileIcon, formatSize, isImage } from "./MessageBody";
 import { senderName } from "./Sender";
+import {
+  MentionBackdrop,
+  MentionMenu,
+  activeQuery,
+  filterMembers,
+  findMentions,
+  memberOf,
+  toRefs,
+  type Picked,
+} from "./Mentions";
 import { MOD, SEND_KEYS, loadSendKey, saveSendKey, type SendKey } from "./sendKey";
 
 const CONFIDENCE: Record<string, string> = { high: "把握高", medium: "把握一般", low: "把握低" };
@@ -70,6 +82,94 @@ export default function Composer(props: Props) {
   const textInput = useRef<HTMLTextAreaElement>(null);
   const keyMenuBox = useRef<HTMLDivElement>(null);
   const seq = useRef(0);
+  // @ 群成员
+  const canMention = channel === "wecom"; // 目前只有企业微信能由发送电脑真正 @ 人
+  const [members, setMembers] = useState<Member[] | null>(null);
+  const [membersError, setMembersError] = useState<string | null>(null);
+  const [picked, setPicked] = useState<Picked>({});
+  const [caret, setCaret] = useState(0);
+  const [dismissedAt, setDismissedAt] = useState<number | null>(null); // 按 Esc 关掉的那个 @ 不再弹
+  const [menuIndex, setMenuIndex] = useState(0);
+  const [menuLeft, setMenuLeft] = useState(0);
+  const backdrop = useRef<HTMLDivElement>(null);
+  const caretMark = useRef<HTMLSpanElement>(null);
+  const inputBox = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!canMention) return;
+    let alive = true;
+    fetchMembers(channel, groupId)
+      .then((list) => alive && setMembers(list))
+      .catch((e: Error) => alive && setMembersError(e.message));
+    return () => {
+      alive = false;
+    };
+  }, [canMention, channel, groupId]);
+
+  const spans = canMention ? findMentions(text, members ?? [], picked) : [];
+  const typing = canMention && caret >= 0 ? activeQuery(text, caret) : null;
+  const menuOpen = !!typing && typing.start !== dismissedAt;
+  const menuList = menuOpen && members ? filterMembers(members, typing!.query) : [];
+
+  // 成员列表对齐到 @ 所在的位置
+  useLayoutEffect(() => {
+    if (!menuOpen) return;
+    const mark = caretMark.current;
+    const width = inputBox.current?.clientWidth ?? 0;
+    if (mark) setMenuLeft(Math.max(0, Math.min(mark.offsetLeft - (backdrop.current?.scrollLeft ?? 0), width - 320)));
+  }, [menuOpen, typing?.start, text]);
+
+  useEffect(() => setMenuIndex(0), [typing?.query, typing?.start]);
+
+  const syncCaret = () => {
+    const el = textInput.current;
+    if (el) setCaret(el.selectionStart === el.selectionEnd ? el.selectionStart : -1);
+  };
+
+  /** 把光标前正在输入的「@筛选文字」换成「@名字 」 */
+  const pickMember = (m: Member) => {
+    const el = textInput.current;
+    if (!typing || !el) return;
+    const end = caret;
+    const insert = `@${m.name} `;
+    const next = text.slice(0, typing.start) + insert + text.slice(end);
+    const pos = typing.start + insert.length;
+    setPicked((prev) => ({ ...prev, [m.name]: m }));
+    onType(next);
+    setCaret(pos);
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(pos, pos);
+      setCaret(pos); // 程序改的光标不一定触发 select 事件
+    });
+  };
+
+  /** 在光标处打一个 @，弹出成员列表 */
+  const startMention = () => {
+    const el = textInput.current;
+    if (!el) return;
+    const at = el.selectionStart ?? text.length;
+    const before = text.slice(0, at);
+    const insert = before && !/\s$/.test(before) ? " @" : "@";
+    const next = before + insert + text.slice(el.selectionEnd ?? at);
+    const pos = at + insert.length;
+    setDismissedAt(null);
+    onType(next);
+    setCaret(pos);
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(pos, pos);
+      setCaret(pos); // 程序改的光标不一定触发 select 事件
+    });
+  };
+
+  /** 在回复开头 @ 这位客户（已经 @ 了就不重复） */
+  const withAt = (content: string, item: InboxItem | null): string => {
+    const who = canMention && item ? memberOf(item.message, members ?? []) : null;
+    if (!who || content.includes(`@${who.name}`)) return content;
+    setPicked((prev) => ({ ...prev, [who.name]: who }));
+    return `@${who.name} ${content}`;
+  };
 
   const uploading = files.some((f) => !f.att && !f.error);
   const ready = files.filter((f) => f.att).map((f) => f.att!);
@@ -131,6 +231,8 @@ export default function Composer(props: Props) {
 
   const reset = () => {
     setText("");
+    setPicked({});
+    setDismissedAt(null);
     setFiles([]);
     setLinked(null);
     setBasis(null);
@@ -156,6 +258,7 @@ export default function Composer(props: Props) {
         attachment_ids: ready.map((a) => a.id),
         suggestion_id: linked?.suggestion?.id ?? null,
         via_chat: basis === "chat",
+        mentions: toRefs(spans),
       });
       reset();
       notify("已确认，正在发送到群里");
@@ -165,14 +268,56 @@ export default function Composer(props: Props) {
   const copyOnly = () =>
     run(async () => {
       const content = text.trim();
-      if (linked?.suggestion) await adopt(linked.suggestion.id, content, false, basis === "chat");
+      const at = toRefs(findMentions(content, members ?? [], picked));
+      if (linked?.suggestion) await adopt(linked.suggestion.id, content, false, basis === "chat", at);
       const ok = await copy(content);
       reset();
-      notify(ok ? "已复制，请到企业微信群里粘贴发送" : "复制失败，请手动选择文字复制");
+      notify(
+        !ok
+          ? "复制失败，请手动选择文字复制"
+          : at.length
+            ? "已复制。粘贴的「@名字」不会提醒对方，要提醒请在企业微信里重新打 @ 选人"
+            : "已复制，请到企业微信群里粘贴发送",
+      );
     });
 
   // 按发送键：第一次弹出确认条，确认条在时再按一次才真正发出
   const onKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    const composing = e.nativeEvent.isComposing || e.keyCode === 229;
+    // 成员列表开着：上下选人，Enter / Tab 选中，Esc 关掉
+    if (menuOpen && !composing) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setDismissedAt(typing!.start);
+        return;
+      }
+      if (menuList.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+        e.preventDefault();
+        const d = e.key === "ArrowDown" ? 1 : -1;
+        setMenuIndex((i) => (i + d + menuList.length) % menuList.length);
+        return;
+      }
+      if (menuList.length && (e.key === "Enter" || e.key === "Tab") && !e.shiftKey) {
+        e.preventDefault();
+        pickMember(menuList[Math.min(menuIndex, menuList.length - 1)]);
+        return;
+      }
+    }
+    // 退格紧跟在「@名字」后面：整个删掉，和企业微信里一样
+    if (e.key === "Backspace" && !composing && !e.altKey && !e.metaKey && !e.ctrlKey) {
+      const el = e.currentTarget;
+      const pos = el.selectionStart;
+      if (pos === el.selectionEnd) {
+        const hit = spans.find((s) => s.end === pos || (s.end + 1 === pos && text[s.end] === " "));
+        if (hit) {
+          e.preventDefault();
+          onType(text.slice(0, hit.start) + text.slice(pos));
+          setCaret(hit.start);
+          requestAnimationFrame(() => el.setSelectionRange(hit.start, hit.start));
+          return;
+        }
+      }
+    }
     if (e.key === "Escape" && confirming) {
       e.preventDefault();
       setConfirming(false);
@@ -206,7 +351,7 @@ export default function Composer(props: Props) {
   };
 
   const applySuggestion = (item: InboxItem) => {
-    setText(item.suggestion?.content ?? "");
+    setText(withAt(item.suggestion?.content ?? "", item));
     setLinked(item);
     setBasis("suggestion");
     setFilledChat(null);
@@ -215,7 +360,7 @@ export default function Composer(props: Props) {
 
   const fillFromChat = (content: string) => {
     if (!focus) return;
-    setText(content);
+    setText(withAt(content, focus));
     setLinked(focus);
     setBasis("chat");
     setConfirming(false);
@@ -242,6 +387,11 @@ export default function Composer(props: Props) {
   const s = focus?.suggestion;
   const inUse = !!s && linked?.suggestion?.id === s.id && basis === "suggestion"; // 建议已填进输入框，面板收起
   const maybeNoReply = !!s && s.status === "ready" && s.needs_reply === false && !s.reopened_by;
+  const atNames = [...new Set(spans.map((sp) => sp.member.name))];
+  const atDup = [...new Set(spans.filter((sp) => sp.member.duplicate).map((sp) => sp.member.name))];
+  const asker = canMention && linked ? memberOf(linked.message, members ?? []) : null;
+  const focusAsker = canMention && focus ? memberOf(focus.message, members ?? []) : null;
+  const askerAt = !!asker && spans.some((sp) => sp.member.name === asker.name);
   const what = [
     text.trim() && "文字",
     readyImages.length && `${readyImages.length} 张图片`,
@@ -299,7 +449,17 @@ export default function Composer(props: Props) {
                 {s.reason && <span className="reason">{s.reason}</span>}
               </div>
               {s.note && <p className="note">转人工备注：{s.note}</p>}
-              {s.content && <p className="ai-text">{s.content}</p>}
+              {s.content && (
+                <p className="ai-text">
+                  {focusAsker && !s.content.includes(`@${focusAsker.name}`) && (
+                    <mark className="mention" title="用这条建议时会在开头 @ 这位客户，发出后对方会收到 @ 提醒">
+                      @{focusAsker.name}
+                    </mark>
+                  )}
+                  {focusAsker && !s.content.includes(`@${focusAsker.name}`) && " "}
+                  {s.content}
+                </p>
+              )}
               <Knowledge s={s} />
               {props.alerts && props.alerts.length > 0 && (
                 <p className="inner-warn">
@@ -364,6 +524,19 @@ export default function Composer(props: Props) {
         <div className="reply-to">
           回复 {senderName(linked.message)}：「{linked.message.content.slice(0, 30)}」
           <span className="muted">（发出后这条消息记为已处理）</span>
+          {asker && !askerAt && (
+            <button
+              className="at-asker"
+              title={`在回复开头 @ ${asker.name}，对方会收到 @ 提醒`}
+              onClick={() => {
+                setPicked((prev) => ({ ...prev, [asker.name]: asker }));
+                onType(`@${asker.name} ${text.replace(/^\s+/, "")}`);
+                textInput.current?.focus();
+              }}
+            >
+              @ {asker.name}
+            </button>
+          )}
           <button
             className="link"
             onClick={() => {
@@ -401,6 +574,21 @@ export default function Composer(props: Props) {
         </div>
       )}
 
+      <div className={`composer-input ${spans.length ? "has-mention" : ""}`} ref={inputBox}>
+        {canMention && (
+          <MentionBackdrop ref={backdrop} text={text} spans={spans} caretAt={menuOpen ? typing!.start : null} caretRef={caretMark} />
+        )}
+        {menuOpen && (
+          <MentionMenu
+            members={members}
+            error={membersError}
+            query={typing!.query}
+            index={Math.min(menuIndex, Math.max(0, menuList.length - 1))}
+            left={menuLeft}
+            onPick={pickMember}
+            onHover={setMenuIndex}
+          />
+        )}
       <textarea
         ref={textInput}
         value={text}
@@ -410,7 +598,16 @@ export default function Composer(props: Props) {
             : "输入回复。发送电脑不在线，只能复制文字后到企业微信里手动发"
         }
         rows={Math.min(8, Math.max(3, text.split("\n").length + 1))}
-        onChange={(e) => onType(e.target.value)}
+        onChange={(e) => {
+          onType(e.target.value);
+          setCaret(e.target.selectionStart === e.target.selectionEnd ? e.target.selectionStart : -1);
+        }}
+        onSelect={syncCaret}
+        onBlur={() => setCaret(-1)}
+        onFocus={syncCaret}
+        onScroll={(e) => {
+          if (backdrop.current) backdrop.current.scrollTop = e.currentTarget.scrollTop;
+        }}
         onPaste={(e) => {
           if (canAutoSend && e.clipboardData.files.length) {
             e.preventDefault();
@@ -419,11 +616,18 @@ export default function Composer(props: Props) {
         }}
         onKeyDown={onKeyDown}
       />
+      </div>
 
       {confirming && (
         <div className="confirm-send">
           <span>
-            将以客服账号把{what}发到企业微信群「<b>{groupName}</b>」，确认发送？
+            将以客服账号把{what}发到企业微信群「<b>{groupName}</b>」
+            {atNames.length > 0 && <>，并 @ {atNames.join("、")}</>}，确认发送？
+            {atDup.length > 0 && (
+              <small className="confirm-warn">
+                群里不止一个人叫「{atDup.join("」「")}」，发送电脑分不清时会按普通文字发出，对方收不到 @ 提醒。
+              </small>
+            )}
           </span>
           <button className="primary" disabled={busy} onClick={send}>确认发送</button>
           <button disabled={busy} onClick={() => setConfirming(false)}>取消</button>
@@ -449,6 +653,11 @@ export default function Composer(props: Props) {
         >
           📎 图片 / 文件
         </button>
+        {canMention && (
+          <button className="tool" title="@ 群里的人，对方会收到 @ 提醒（输入框里打 @ 也可以）" onClick={startMention}>
+            @ 群成员
+          </button>
+        )}
         <span className="spacer" />
         {(text || files.length > 0) && (
           <button className="plain" disabled={busy} onClick={reset}>清空</button>

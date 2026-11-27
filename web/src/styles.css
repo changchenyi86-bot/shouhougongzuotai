@@ -1166,6 +1166,90 @@ button.chip-status { cursor: pointer; font: inherit; font-size: 12px; }
   background: var(--sunken);
 }
 .composer-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+/* @ 群成员：输入框后面垫一层同样排版的文字，把 @ 的人标上底色 */
+.composer-input { position: relative; }
+.composer-input textarea { position: relative; z-index: 1; background: transparent; }
+.mention-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--sunken);
+  font-size: 14px;
+  line-height: 1.6;
+  color: transparent;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  overflow-y: auto;
+  pointer-events: none;
+  user-select: none;
+}
+mark.mention {
+  color: var(--accent-text);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.mention-backdrop mark.mention { color: transparent; }
+.mention-backdrop mark.mention.dup {
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--warn) 16%, transparent);
+}
+[data-theme="aurora"] .bubble-row.staff .bubble mark.mention { color: #fff; background: rgba(255, 255, 255, .22); box-shadow: none; }
+
+.mention-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  z-index: 30;
+  width: 320px;
+  max-width: 100%;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-pop);
+}
+.mention-head { display: flex; align-items: baseline; gap: 8px; padding: 4px 8px 6px; font-size: 12.5px; font-weight: 600; color: var(--text-2); }
+.mention-head small { margin-left: auto; font-weight: 400; color: var(--text-3); font-size: 11.5px; }
+.mention-menu ul { list-style: none; margin: 0; padding: 0; max-height: 252px; overflow-y: auto; }
+.mention-menu li button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.mention-menu li button.on { background: var(--active); }
+.mention-menu .avatar { width: 26px; height: 26px; margin: 0; font-size: 12px; }
+.mention-menu .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.mention-menu .meta { margin-left: auto; font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
+.mention-empty { margin: 0; padding: 10px 8px 12px; font-size: 13px; color: var(--text-3); }
+.dup-tag { flex: none; font-size: 11px; line-height: 16px; padding: 0 5px; border-radius: 4px; color: var(--warn); background: var(--warn-soft); }
+
+.reply-to .at-asker {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--ai-border);
+  border-radius: 11px;
+  background: var(--panel);
+  color: var(--accent-text);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.reply-to .at-asker:hover { background: var(--accent-soft); }
+.confirm-warn { display: block; margin-top: 2px; font-size: 12.5px; color: var(--warn); }
+.send-warn { flex-basis: 100%; text-align: right; color: var(--warn); font-size: 13px; }
+
 .composer-bar .spacer { flex: 1; }
 .composer-bar button.tool { border-style: dashed; color: var(--text-2); }
 .composer-bar button.primary { min-width: 84px; margin-left: auto; }

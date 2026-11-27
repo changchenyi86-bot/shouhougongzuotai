@@ -50,6 +50,7 @@ class FakeServer:
     def __init__(self):
         self.tasks: list[Task] = []
         self.reports: list[tuple[str, bool, str | None]] = []
+        self.warnings: list[tuple[str, str]] = []
         self.fail_reports = 0
         self.reject_report = False
         self.claim_error: Exception | None = None
@@ -77,7 +78,9 @@ class FakeServer:
         path.write_bytes(b"x")
         return path
 
-    def report(self, task_id, ok, error):
+    def report(self, task_id, ok, error, warning=None):
+        if warning:
+            self.warnings.append((task_id, warning))
         if self.reject_report:
             raise ServerRejected("409")
         if self.fail_reports:
@@ -89,13 +92,15 @@ class FakeServer:
 class FakeDriver:
     def __init__(self, results=None):
         self.sent: list[tuple[str, str]] = []
+        self.mentions: list = []
         self.results = results or []
 
     def status(self):
         return True, "企业微信已就绪"
 
-    def send(self, group_name, content, files=None):
+    def send(self, group_name, content, files=None, mentions=None):
         self.sent.append((group_name, content) if not files else (group_name, content, [f.name for f in files]))
+        self.mentions.append(mentions)
         r = self.results.pop(0) if self.results else SendResult(True)
         if isinstance(r, Exception):
             raise r
@@ -212,3 +217,82 @@ def test_long_poll_can_be_turned_off():
     server, driver = FakeServer(), FakeDriver()
     runner, _ = _runner(server, driver, long_poll_seconds=0)
     assert runner.step() == 3 and server.waits == [0]
+
+
+def test_mentions_passed_to_driver_and_warning_reported():
+    from wecom_agent.mention import Mention
+
+    server = FakeServer()
+    driver = FakeDriver([SendResult(True, warning="「张三」（群里有 2 个叫「张三」的人，分不清是哪一个）没 @ 上")])
+    at = [Mention("张三", "wechat", "wmA")]
+    server.tasks = [Task("t1", "群A", "@张三 你好", mentions=at)]
+    runner, clock = _runner(server, driver)
+    runner.step()
+    assert driver.mentions == [at]
+    clock.t += 5
+    runner.step()
+    assert server.reports == [("t1", True, None)]
+    assert server.warnings == [("t1", "「张三」（群里有 2 个叫「张三」的人，分不清是哪一个）没 @ 上")]
+
+
+def test_claim_says_it_can_mention_and_reads_mentions(monkeypatch):
+    from wecom_agent.config import ServerConfig
+    from wecom_agent.server import Server
+
+    sent = []
+
+    def post(path, body, timeout=None):
+        sent.append((path, body))
+        if path.endswith("/claim"):
+            return {"task": {"id": "t1", "group_name": "群A", "content": "@张三 你好",
+                             "mentions": [{"name": "张三", "kind": "wechat", "user_id": "wmA"}, {"name": ""}]},
+                    "retry_after": 0}
+        return {}
+
+    server = Server(ServerConfig())
+    monkeypatch.setattr(server, "_post", post)
+    task, _ = server.claim(5)
+    assert sent[0][1]["features"] == ["mentions"]
+    assert [(m.name, m.kind, m.user_id) for m in task.mentions] == [("张三", "wechat", "wmA")]
+    server.report("t1", True, None, "没 @ 上")
+    assert sent[-1][1]["warning"] == "没 @ 上" and sent[-1][1]["error"] is None
+
+
+# ---------- @ 群成员的文字处理 ----------
+
+
+def test_split_mentions_in_order_and_repeated():
+    from wecom_agent.mention import Mention, split
+
+    a, b = Mention("张三"), Mention("李四")
+    parts, missing = split("@张三 你好，@李四 和 @张三 看下", [a, b, a, Mention("王五")])
+    assert parts == [a, " 你好，", b, " 和 ", a, " 看下"]
+    assert [m.name for m in missing] == ["王五"]
+
+
+def test_query_stops_at_space_and_is_short():
+    from wecom_agent.mention import query_of
+
+    assert query_of("John Smith") == "John"
+    assert query_of("国投证券_朱燕军") == "国投证券_朱燕军"
+    assert len(query_of("一" * 30)) == 12
+
+
+def test_pick_prefers_exact_and_tolerates_width_differences():
+    from wecom_agent.mention import Mention, pick
+
+    m = Mention("国投证券_朱燕军", "wechat")
+    # 识字把半角下划线认成全角：只差全角半角也认
+    assert pick(["国投证券＿朱燕军@微信", "朱燕军"], m) == (0, "")
+    # 逐字相同的优先
+    assert pick(["国投证券＿朱燕军", "国投证券_朱燕军@微信"], m) == (1, "")
+    # 名字只是开头一样的不算
+    assert pick(["国投证券_朱燕军2"], m)[0] is None
+
+
+def test_comparable_ignores_wecom_space_after_mention():
+    from wecom_agent.mention import same_text
+
+    assert same_text("@张三 您好", "@张三 您好", ["张三"])
+    assert same_text("@张三 您好\r\n第二行", "@张三您好\n第二行", ["张三"])
+    assert not same_text("@张三 您好", "@张三 你好", ["张三"])

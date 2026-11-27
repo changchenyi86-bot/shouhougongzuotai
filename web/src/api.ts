@@ -166,11 +166,12 @@ async function call<T>(url: string, init?: RequestInit): Promise<T> {
 const post = <T>(url: string, body: unknown = {}) =>
   call<T>(url, { method: "POST", body: JSON.stringify(body) });
 
-export const adopt = (id: string, content: string, send = false, viaChat = false) =>
+export const adopt = (id: string, content: string, send = false, viaChat = false, mentions: MentionRef[] = []) =>
   post<{ suggestion: Suggestion; delivery: string; detail: string }>(`/api/suggestions/${id}/adopt`, {
     content,
     send,
     via_chat: viaChat,
+    mentions,
   });
 export const fetchSendState = () => call<SendState>("/api/send/status");
 export const escalate = (id: string, note: string) =>
@@ -217,13 +218,38 @@ export interface StaffBrief {
   name: string;
 }
 
+/** 回复里要真正 @ 的一个群成员（回复文字里写「@名字」） */
+export interface MentionRef {
+  user_id: string;
+  name: string;
+  kind: string;
+}
+
+/** 群里能 @ 的人 */
+export interface Member {
+  id: string;
+  /** 群里显示的名字（群昵称优先），和企业微信 @ 列表里的一致 */
+  name: string;
+  kind: SenderKind;
+  customer: boolean;
+  last_spoke_at: string | null;
+  /** 群里还有别人也叫这个名字 */
+  duplicate: boolean;
+}
+
+export const fetchMembers = (channel: Channel, group_id: string) =>
+  call<Member[]>(`/api/conversation/members?${new URLSearchParams({ channel, group_id })}`);
+
 export interface SendTask {
   id: string;
   suggestion_id: string | null;
   content: string;
   attachments: Attachment[];
+  mentions?: MentionRef[];
   status: SendStatus;
   error: string | null;
+  /** 发出去了，但有没做到的（如有人没 @ 上） */
+  warning?: string | null;
   created_by: string | null;
   created_at: string;
   finished_at: string | null;
@@ -285,6 +311,7 @@ export const sendToGroup = (body: {
   attachment_ids: string[];
   suggestion_id: string | null;
   via_chat?: boolean;
+  mentions?: MentionRef[];
 }) => post<SendTask>("/api/conversations/send", body);
 
 /** 结束会话：没回复的客户消息不再算待处理，客户再发消息时重新回到待处理 */

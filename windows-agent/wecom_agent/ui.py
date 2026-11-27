@@ -7,14 +7,18 @@
 
 import ctypes
 import logging
+import re
+import struct
 import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from wecom_agent import mention as mentions
 from wecom_agent.config import LOG_DIR, UIConfig
 from wecom_agent.matching import find_title, match_title, normalize
+from wecom_agent.mention import Mention
 from wecom_agent.runner import SendResult
 
 log = logging.getLogger("wecom_agent")
@@ -37,6 +41,9 @@ MAIN_TITLE = "企业微信"
 CLIP_SENTINEL = "__wecom_agent_empty__"
 PASTE_SETTLE = 0.05  # 往剪贴板放好内容后稍等再粘贴，让系统里监听剪贴板的程序先读完
 RESULTS_STABLE = 0.5  # 搜索结果识字后，至少要这么久没有再变化才去点
+AT_POPUP_WAIT = 0.8  # 打 @ 后最多等成员列表弹出多少秒
+AT_FILTER_WAIT = 1.0  # 输入名字后最多等成员列表筛选好多少秒
+AT_CLOSE_WAIT = 0.6  # 选中成员后最多等成员列表收起多少秒
 
 
 class UIError(Exception):
@@ -272,6 +279,71 @@ def find_search_popup(pid: int) -> tuple[int, int, int, int] | None:
     return found[0] if len(found) == 1 else None
 
 
+def list_popups(pid: int, main_hwnd: int) -> dict[int, tuple[str, tuple[int, int, int, int]]]:
+    """企业微信除主窗口以外、现在看得见的小窗口：{窗口: (类名, (左, 上, 右, 下))}。
+
+    打 @ 后弹出的成员列表是单独的小窗口（和搜索下拉面板一样），对比打 @ 前后多出来的那个就是它。
+    """
+    found: dict[int, tuple[str, tuple[int, int, int, int]]] = {}
+
+    def callback(hwnd, _):
+        if hwnd != main_hwnd and user32.IsWindowVisible(hwnd):
+            owner = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+            if owner.value == pid:
+                x, y, w, h = _window_rect(hwnd)
+                if w >= 60 and h >= 30:
+                    found[hwnd] = (_text(user32.GetClassNameW, hwnd), (x, y, x + w, y + h))
+        return True
+
+    user32.EnumWindows(WNDENUMPROC(callback), 0)
+    return found
+
+
+def popup_box(hwnd: int) -> tuple[int, int, int, int] | None:
+    """这个小窗口现在在屏幕上的位置；已经关掉或看不见了返回 None。"""
+    if not user32.IsWindow(hwnd) or not user32.IsWindowVisible(hwnd):
+        return None
+    x, y, w, h = _window_rect(hwnd)
+    return (x, y, x + w, y + h) if w > 0 and h > 0 else None
+
+
+def type_unicode(text: str) -> None:
+    """逐字输入文字（Unicode 键盘消息）。不经过输入法，中文也能直接打进去；用来在 @ 后输入名字筛选成员。"""
+    if not text:
+        return
+
+    class KEYBDINPUT(ctypes.Structure):
+        _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD),
+                    ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    class MOUSEINPUT(ctypes.Structure):
+        _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG), ("mouseData", wintypes.DWORD),
+                    ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    class HARDWAREINPUT(ctypes.Structure):
+        _fields_ = [("uMsg", wintypes.DWORD), ("wParamL", wintypes.WORD), ("wParamH", wintypes.WORD)]
+
+    class _U(ctypes.Union):
+        _fields_ = [("ki", KEYBDINPUT), ("mi", MOUSEINPUT), ("hi", HARDWAREINPUT)]
+
+    class INPUT(ctypes.Structure):
+        _fields_ = [("type", wintypes.DWORD), ("u", _U)]
+
+    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE = 0x0002, 0x0004
+    units = struct.unpack(f"<{len(text.encode('utf-16-le')) // 2}H", text.encode("utf-16-le"))
+    events = []
+    for unit in units:
+        for flags in (KEYEVENTF_UNICODE, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP):
+            ev = INPUT(type=1)  # INPUT_KEYBOARD
+            ev.u.ki = KEYBDINPUT(0, unit, flags, 0, 0)
+            events.append(ev)
+    array = (INPUT * len(events))(*events)
+    sent = user32.SendInput(len(events), array, ctypes.sizeof(INPUT))
+    if sent != len(events):
+        raise UIError(f"输入文字失败（只送出了 {sent}/{len(events)} 个按键），未发送")
+
+
 def _is_foreground(hwnd: int) -> bool:
     fg = user32.GetForegroundWindow()
     return fg == hwnd or user32.GetAncestor(fg, GA_ROOTOWNER) == hwnd
@@ -475,6 +547,9 @@ class WeComDriver:
         self._header_seen: tuple[str, object] | None = None  # (群名, 已经识字核对过的标题截图)
         self._marks: list[tuple[str, float]] = []  # 分步计时
         self._notes: list[str] = []
+        self._warnings: list[str] = []  # 发出去了、但有没做到的（如没 @ 上），回报给工作台
+        self._at_keys: str | None = None  # 打 @ 用哪种按键能弹出成员列表：unicode / shift2（第一次试出来后记住）
+        self._at_space: bool | None = None  # 企业微信 @ 完一个人后会不会自己在名字后面加空格（第一次看出来后记住）
 
     # ---- 状态 ----
 
@@ -806,15 +881,16 @@ class WeComDriver:
 
     # ---- 发送 ----
 
-    def send(self, group_name: str, content: str, files: list[Path] | None = None) -> SendResult:
-        """先逐个发图片、文件（各算一条消息），再发文字。"""
+    def send(self, group_name: str, content: str, files: list[Path] | None = None,
+             mentions: list[Mention] | None = None) -> SendResult:
+        """先逐个发图片、文件（各算一条消息），再发文字。mentions 是文字里要真正 @ 的人，按出现的先后。"""
         done: list[str] = []
         self._pressed = False  # 是否已按下发送键、还没核对结果
-        self._marks, self._notes = [("开始", time.monotonic())], []
+        self._marks, self._notes, self._warnings = [("开始", time.monotonic())], [], []
         self.ocr.spent = 0.0
         try:
-            self._send(group_name, content, files or [], done)
-            return SendResult(True)
+            self._send(group_name, content, files or [], done, mentions or [])
+            return SendResult(True, warning="；".join(self._warnings) or None)
         except UIError as exc:
             shot = save_screen("failed")
             log.warning("未发送：%s（截图 %s）", exc, shot)
@@ -849,7 +925,7 @@ class WeComDriver:
         self._keys(self.cfg.send_key)
         return pane
 
-    def _send(self, name: str, content: str, files: list[Path], done: list[str]) -> None:
+    def _send(self, name: str, content: str, files: list[Path], done: list[str], at: list[Mention]) -> None:
         from wecom_agent.clipboard import is_image
 
         rect = self.open_group(name)
@@ -880,13 +956,11 @@ class WeComDriver:
 
         if not content:
             return
-        self.clip.set_text(content)
-        time.sleep(PASTE_SETTLE)
         # 核对 1：回复确实进了输入框（而不是别处）
-        if not self._paste_and_check(content, 0.4, ix, iy):
-            self._clear_input(ix, iy)
-            raise UIError("没能把回复填进企业微信的输入框，未发送")
-        self._keys("ctrl+end")  # 取消全选
+        if at:
+            self._fill_with_mentions(rect, content, at, ix, iy)
+        else:
+            self._fill_plain(content, ix, iy)
         self._mark("填写并核对")
         # 核对 2：按发送键前再确认一次还是这个群
         before = self._press_send(rect, name, ix, iy)
@@ -896,6 +970,197 @@ class WeComDriver:
             self._clear_input(ix, iy)
             raise UIError("按了发送键，但输入框没有清空。请到群里确认消息有没有发出，再检查企业微信的发送快捷键设置")
         self._mark("确认已发出")
+
+    # ---- 填写回复、@ 群成员 ----
+
+    def _fill_plain(self, content: str, ix: int, iy: int) -> None:
+        """整段回复粘贴进输入框并核对。"""
+        self.clip.set_text(content)
+        time.sleep(PASTE_SETTLE)
+        if not self._paste_and_check(content, 0.4, ix, iy):
+            self._clear_input(ix, iy)
+            raise UIError("没能把回复填进企业微信的输入框，未发送")
+        self._keys("ctrl+end")  # 取消全选
+
+    def _fill_with_mentions(self, rect: Rect, content: str, at: list[Mention], ix: int, iy: int) -> None:
+        """一段一段填：文字用粘贴，要 @ 的人和手打一样——输入 @、输入名字、在弹出的成员列表里点中他。
+
+        这样对方收到的是真正的 @ 提醒。某个人没 @ 上（成员列表没弹出、找不到、同名分不清），
+        就把他的名字按普通文字补上，照常发出，并把原因报给工作台。
+        最后整段核对；对不上就清空输入框，整段按普通文字重新粘贴（所有人都算没 @ 上），还对不上才不发。
+        """
+        parts, missing = mentions.split(content, at)
+        names = [m.name for m in at]
+        failed: list[str] = [f"「{m.name}」（回复里找不到「@{m.name}」）" for m in missing]
+        real: list[str] = []
+        self.gui.click(ix, iy)
+        time.sleep(0.1)
+        after_at = False
+        for part in parts:
+            if isinstance(part, str):
+                # 企业微信 @ 完会自己加一个空格，回复里名字后面的空格就不再重复输入
+                if after_at and self._at_space and part[:1] == " ":
+                    part = part[1:]
+                after_at = False
+                if part:
+                    self.clip.set_text(part)
+                    time.sleep(PASTE_SETTLE)
+                    self._keys("ctrl+v")
+                continue
+            problem = self._mention(rect, part)
+            if problem:
+                failed.append(f"「{part.name}」（{problem}）")
+                after_at = False
+                continue
+            real.append(part.name)
+            after_at = True
+            if self._at_space is None:
+                self._at_space = bool(re.search(r"\s$", self._input_now()))
+                log.info("企业微信 @ 完一个人后%s自动加空格", "会" if self._at_space else "不会")
+        got = self._input_now()
+        if getattr(self.cfg, "mention_debug", False):
+            try:
+                log.info("@ 后输入框复制出：%r；剪贴板格式：%s", got, self.clip.formats())
+            except Exception:  # noqa: BLE001  只是排查信息
+                log.exception("读剪贴板格式失败")
+        if not mentions.same_text(got or "", content, names):
+            log.warning("@ 之后输入框里的内容和回复对不上，改为整段按普通文字发出。输入框：%r；回复：%r", got, content)
+            self._clear_input(ix, iy)
+            self._fill_plain(content, ix, iy)
+            failed = [f"「{n}」" for n in names]
+            real = []
+            if "@ 后核对没通过，按普通文字发出" not in self._notes:
+                self._notes.append("@ 后核对没通过，按普通文字发出")
+        self._keys("ctrl+end")
+        if real:
+            log.info("已在企业微信里 @：%s", "、".join(real))
+        if failed:
+            self._warnings.append(f"{'、'.join(failed)}没 @ 上，按普通文字发出，对方收不到 @ 提醒")
+
+    def _input_now(self, timeout: float = 1.0) -> str:
+        """全选、复制输入框现在的内容。不先动剪贴板，所以前面还没处理完的粘贴不会被打乱。
+
+        复制出来就返回文字（企业微信按顺序处理按键，复制到的一定是之前的粘贴、输入都做完以后的内容）；
+        一直复制不出东西（输入框是空的）返回 ""。最后把光标放回末尾。
+        """
+        seq = self.clip.sequence()
+        started = time.monotonic()
+        text = ""
+        while time.monotonic() - started < timeout:
+            self._keys("ctrl+a")
+            self._keys("ctrl+c")
+            waited = time.monotonic()
+            while self.clip.sequence() == seq and time.monotonic() - waited < 0.2:
+                time.sleep(0.02)
+            if self.clip.sequence() != seq:
+                time.sleep(0.03)  # 等它把剪贴板写完整再读
+                text = self.clip.get_text() or ""
+                break
+        self._keys("ctrl+end")
+        return text
+
+    def _popups(self) -> dict[int, tuple[str, tuple[int, int, int, int]]]:
+        win = self._win
+        return list_popups(win.pid, win.hwnd) if win is not None and win.pid else {}
+
+    def _wait_popup(self, before: dict, timeout: float) -> tuple[int, str] | None:
+        """等打 @ 后多出来的成员列表小窗口。返回 (窗口, 类名)。"""
+        deadline = time.monotonic() + timeout
+        while True:
+            time.sleep(0.05)
+            new = {h: v for h, v in self._popups().items() if h not in before or before[h] != v}
+            if new:
+                # 一般只多出一个；多出几个时取最大的那个（小的可能是提示气泡）
+                hwnd = max(new, key=lambda h: (new[h][1][2] - new[h][1][0]) * (new[h][1][3] - new[h][1][1]))
+                return hwnd, new[hwnd][0]
+            if time.monotonic() >= deadline:
+                return None
+
+    def _type_at(self) -> tuple[int, str] | None:
+        """在输入框里打一个 @，等成员列表弹出来。返回 (成员列表窗口, 类名)；没弹出返回 None。
+
+        先用 Unicode 键盘消息打 @（不受输入法影响）；没弹出就删掉它，改按 Shift+2 再打一次。
+        哪种能弹出来记住，下次直接用。
+        """
+        ways = [self._at_keys] if self._at_keys else ["unicode", "shift2"]
+        for way in ways:
+            before = self._popups()
+            if way == "unicode":
+                type_unicode("@")
+            else:
+                self.gui.hotkey("shift", "2")
+            popup = self._wait_popup(before, AT_POPUP_WAIT)
+            if popup is not None:
+                if self._at_keys != way:
+                    log.info("打 @ 用 %s 能弹出成员列表（窗口类名 %s）", way, popup[1])
+                self._at_keys = way
+                return popup
+            if way != ways[-1]:
+                # 没弹出：删掉刚打的 @（确实打进去了才删），换一种按键再试
+                if self._input_now().endswith("@"):
+                    self._keys("backspace")
+        return None
+
+    def _close_popup(self, hwnd: int) -> None:
+        if popup_box(hwnd) is not None:
+            self._keys("esc")
+            deadline = time.monotonic() + AT_CLOSE_WAIT
+            while popup_box(hwnd) is not None and time.monotonic() < deadline:
+                time.sleep(0.05)
+
+    def _popup_lines(self, rect: Rect, hwnd: int, before) -> list[OcrLine]:
+        """输入名字后，等成员列表筛选好（和输入前不一样、并且连续两次截屏一样）再识字。"""
+        deadline = time.monotonic() + AT_FILTER_WAIT
+        last = None
+        while True:
+            time.sleep(0.06)
+            box = popup_box(hwnd)
+            if box is None:
+                return []
+            view = (box, self._grab(box)[0])
+            if last is not None and not self._view_differs(view, last) and self._view_differs(view, before):
+                break
+            if time.monotonic() >= deadline:
+                break
+            last = view
+        whole = self._results_box(rect)
+        return self.ocr.read(view[0], image=view[1], like=(whole[2] - whole[0], whole[3] - whole[1]))
+
+    def _mention(self, rect: Rect, m: Mention) -> str | None:
+        """在输入框当前位置真正 @ 这个人。做到了返回 None；没做到返回原因，并把名字按普通文字补齐。"""
+        query = mentions.query_of(m.name)
+        popup = self._type_at()
+        if popup is None:
+            self._debug_shot("mention-nopopup")
+            type_unicode(m.name)  # 名字按普通文字补上
+            return "企业微信没有弹出成员列表"
+        hwnd, cls = popup
+        box = popup_box(hwnd)
+        before = (box, self._grab(box)[0]) if box else None
+        type_unicode(query)
+        lines = self._popup_lines(rect, hwnd, before) if before else []
+        texts = [line.text for line in lines]
+        index, why = mentions.pick(texts, m)
+        log.info("@%s：成员列表（%s）里识别到：%s", m.name, cls, "；".join(texts) or "没有识别到文字")
+        self._debug_shot("mention-list")
+        if index is None:
+            self._close_popup(hwnd)
+            type_unicode(m.name[len(query):])
+            return why
+        self.gui.click(*lines[index].center)
+        deadline = time.monotonic() + AT_CLOSE_WAIT
+        while popup_box(hwnd) is not None and time.monotonic() < deadline:
+            time.sleep(0.04)
+        if popup_box(hwnd) is not None:
+            self._close_popup(hwnd)
+            type_unicode(m.name[len(query):])
+            return "点了成员列表里的名字，但列表没有收起"
+        return None
+
+    def _debug_shot(self, tag: str) -> None:
+        """调试 @ 时（config.ini 里 mention_debug = true）留一张截图。平时不截，不耽误发送。"""
+        if getattr(self.cfg, "mention_debug", False):
+            save_screen(tag)
 
 
 __all__ = ["Ocr", "OcrLine", "Rect", "UIError", "WeComDriver", "find_main_window", "normalize", "save_screen"]
