@@ -19,8 +19,8 @@ class AttachmentTooLarge(Exception):
     pass
 
 
-def max_bytes() -> int:
-    return settings.attachment_max_mb * 1024 * 1024
+def max_bytes(video: bool = False) -> int:
+    return (settings.video_max_mb if video else settings.attachment_max_mb) * 1024 * 1024
 
 
 def path_of(att_id: uuid.UUID) -> Path:
@@ -34,6 +34,9 @@ def sniff(data: bytes, filename: str) -> tuple[str, str]:
             if not Path(filename).suffix:
                 filename += ext
             return mime, filename
+    if data[4:8] == b"ftyp":  # MP4 / MOV 视频
+        mime, ext = ("video/quicktime", ".mov") if data[8:12] == b"qt  " else ("video/mp4", ".mp4")
+        return mime, filename if Path(filename).suffix else filename + ext
     if data[8:12] == b"WEBP":
         return "image/webp", filename if Path(filename).suffix else filename + ".webp"
     return mimetypes.guess_type(filename)[0] or "application/octet-stream", filename
@@ -44,10 +47,12 @@ def clean_name(filename: str) -> str:
     return name[:200]
 
 
-def save(session: Session, data: bytes, filename: str, source: str, operator: str | None = None) -> Attachment:
-    """保存附件（调用方负责 commit）。"""
-    if len(data) > max_bytes():
-        raise AttachmentTooLarge(f"文件超过 {settings.attachment_max_mb}MB")
+def save(session: Session, data: bytes, filename: str, source: str, operator: str | None = None,
+         limit: int | None = None) -> Attachment:
+    """保存附件（调用方负责 commit）。limit 为字节上限，默认 attachment_max_mb。"""
+    limit = limit or max_bytes()
+    if len(data) > limit:
+        raise AttachmentTooLarge(f"文件超过 {limit // (1024 * 1024)}MB")
     mime, filename = sniff(data, clean_name(filename))
     att = Attachment(id=uuid.uuid4(), filename=filename, mime=mime, size=len(data),
                      sha256=hashlib.sha256(data).hexdigest(), source=source, created_by=operator)

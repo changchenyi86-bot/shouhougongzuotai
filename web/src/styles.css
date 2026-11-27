@@ -893,6 +893,20 @@ input.group-search {
   transition: filter .15s;
 }
 .att-img:hover img { filter: brightness(.94); }
+/* 视频：直接播放，下方一行下载 */
+.att-video { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.att-video video {
+  display: block;
+  width: min(320px, 64vw);
+  max-height: 360px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: #000;
+}
+.att-video-dl { font-size: 12px; color: var(--text-3); text-decoration: none; }
+.att-video-dl:hover { color: var(--accent-text); text-decoration: underline; }
+.media-pending { font-style: normal; font-size: 12px; color: var(--text-3); margin-top: 4px; }
+.media-pending .link { margin: 0 0 0 8px; font-size: 12px; }
 /* 文件：类型图标、文件名、大小、下载 */
 .file-card {
   display: flex;
