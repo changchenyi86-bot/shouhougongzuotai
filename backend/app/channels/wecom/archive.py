@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import threading
+import time
 from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +12,7 @@ from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
+from sqlalchemy import select, update
 
 from app import db
 from app.channels.wecom import media
@@ -20,12 +22,13 @@ from app.channels.wecom.sdk import ArchiveClient, ArchiveError
 
 class MissingKeyError(ArchiveError):
     """缺少某个版本的解密私钥：停止拉取且不推进 seq，避免丢消息。"""
-from app.models import Channel, MessageType, SyncCursor
+from app.models import Channel, Message, MessageType, SyncCursor
 from app.schemas import MessageIn
 
 log = logging.getLogger(__name__)
 
 CURSOR_KEY = "wecom_archive_seq"
+BACKFILL_INTERVAL = 600  # 秒
 
 # 外部联系人（客户）的 external_userid 以 wo / wm 开头，且是 30 位左右的随机串；
 # 员工 userid 由企业自定义，可能恰好以 wm/wo 开头（如 wmeng），所以同时检查长度
@@ -112,6 +115,7 @@ class ArchiveSyncer:
         self._batch_size = batch_size
         self._lock = threading.Lock()
         self._rerun = threading.Event()
+        self._names_checked_at = 0.0
 
     @property
     def client(self) -> ArchiveClient:
@@ -147,11 +151,39 @@ class ArchiveSyncer:
         finally:
             self._lock.release()
 
+    def backfill_group_names(self, session) -> int:
+        """已入库但没有群名的群（如当时查群名失败）再查一次，查到就补上。最多每 10 分钟一轮。"""
+        if self._directory is None or time.monotonic() - self._names_checked_at < BACKFILL_INTERVAL:
+            return 0
+        self._names_checked_at = time.monotonic()
+        room_ids = session.scalars(
+            select(Message.group_id).where(Message.channel == Channel.WECOM, Message.group_name.is_(None))
+            .distinct().limit(50)
+        ).all()
+        filled = 0
+        for room_id in room_ids:
+            info = self._directory.lookup(room_id)
+            if info.name:
+                session.execute(
+                    update(Message).where(Message.channel == Channel.WECOM, Message.group_id == room_id,
+                                          Message.group_name.is_(None)).values(group_name=info.name)
+                )
+                filled += 1
+        if filled:
+            session.commit()
+            log.info("补上了 %d 个群的群名", filled)
+        return filled
+
     def _sync(self) -> int:
         from app.ingest import ingest
 
         created = skipped = 0
         with db.SessionLocal() as session:
+            try:
+                self.backfill_group_names(session)
+            except Exception:  # noqa: BLE001  补群名失败不影响拉消息
+                session.rollback()
+                log.exception("补群名失败")
             cursor = session.get(SyncCursor, CURSOR_KEY) or SyncCursor(key=CURSOR_KEY, value="0")
             seq = int(cursor.value)
             while True:
@@ -211,7 +243,7 @@ def get_syncer() -> ArchiveSyncer | None:
             ),
             private_keys=load_private_keys(settings.wecom_archive_private_key_files),
             directory=GroupDirectory(settings.wecom_corp_id, settings.wecom_archive_secret,
-                                     settings.wecom_contact_secret),
+                                     settings.wecom_contact_secret, contact_proxy=settings.wecom_contact_proxy),
             batch_size=settings.wecom_archive_batch_size,
             skip_versions=settings.wecom_archive_skip_key_versions,
         )

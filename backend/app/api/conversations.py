@@ -4,7 +4,7 @@ import uuid
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, distinct, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from datetime import datetime, timedelta, timezone
@@ -12,8 +12,9 @@ from datetime import datetime, timedelta, timezone
 from app import send_queue
 from app.api.sending import task_out
 from app.db import get_session
-from app.models import Attachment, Channel, Message, SendStatus, SendTask, Suggestion, SuggestionStatus
-from app.schemas import ConversationOut, GroupOut, InboxItem, MessageOut, SendIn, SendTaskOut, SuggestionOut
+from app.models import Attachment, Channel, GroupName, Message, SendStatus, SendTask, Suggestion, SuggestionStatus
+from app.schemas import (ConversationOut, GroupNameIn, GroupNameOut, GroupOut, InboxItem, MessageOut, SendIn,
+                         SendTaskOut, SuggestionOut)
 
 router = APIRouter(prefix="/api")
 
@@ -91,6 +92,33 @@ def list_groups(
     elif view == "escalated":
         result = [g for g in result if g.escalated_count]
     return result[:limit]
+
+
+@router.put("/groups/name", response_model=GroupNameOut)
+def set_group_name(body: GroupNameIn, session: Session = Depends(get_session)) -> GroupNameOut:
+    """手动填写群名（渠道接口查不到群名时用）。已入库的消息一并改成这个名字，之后进来的消息查不到群名时也用它。"""
+    exists = session.scalar(
+        select(Message.id).where(Message.channel == body.channel, Message.group_id == body.group_id).limit(1)
+    )
+    if exists is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "没有这个群的消息")
+    row = session.get(GroupName, (body.channel, body.group_id))
+    if row is None:
+        row = GroupName(channel=body.channel, group_id=body.group_id, name=body.name)
+        session.add(row)
+    row.name, row.updated_by = body.name, body.operator
+    session.execute(
+        update(Message).where(Message.channel == body.channel, Message.group_id == body.group_id)
+        .values(group_name=body.name)
+    )
+    session.commit()
+    # 同名的群自动发送会拒绝（怕发错群），提前提醒
+    same = session.scalar(
+        select(func.count(distinct(Message.group_id))).where(
+            Message.channel == body.channel, Message.group_name == body.name, Message.group_id != body.group_id
+        )
+    )
+    return GroupNameOut(channel=body.channel, group_id=body.group_id, name=body.name, duplicate=bool(same))
 
 
 def _page(session: Session, base, direction: Literal["before", "after"], pivot: Message | None, limit: int):

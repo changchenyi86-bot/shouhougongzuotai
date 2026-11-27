@@ -174,6 +174,19 @@ class SendAgent(Base):
     version: Mapped[str | None] = mapped_column(String(32))
 
 
+class GroupName(Base):
+    """技术支持在工作台里手动填写的群名。渠道接口查不到群名时（如外部群没有查询权限）用它，
+    要和群在客户端里显示的名字一致，自动发送靠它找群。"""
+
+    __tablename__ = "group_names"
+
+    channel: Mapped[Channel] = mapped_column(Enum(Channel, native_enum=False, length=16), primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    name: Mapped[str] = mapped_column(String(256))
+    updated_by: Mapped[str | None] = mapped_column(String(64))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
 class SyncCursor(Base):
     """渠道拉取进度（如企业微信会话存档的 seq）。"""
 

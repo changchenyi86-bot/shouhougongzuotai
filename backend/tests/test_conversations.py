@@ -85,3 +85,37 @@ def test_groups_list(client):
     assert a["group_name"] == "客户A群" and a["message_count"] == 2 and a["pending_count"] == 1
     assert a["last_content"] == "员工回复"
     assert [g["group_id"] for g in client.get("/api/groups", params={"q": "b群"}).json()] == ["wrB"]
+
+
+def test_set_group_name_when_channel_has_none(client):
+    """外部群查不到群名时，技术支持在工作台里填写：已入库的消息改名，之后进来的消息也带上，自动发送能用它找群。"""
+    from app import db, send_queue
+    from app.models import Channel
+
+    _msg(client, 1, group="wrX", name=None)
+    groups = {g["group_id"]: g for g in client.get("/api/groups").json()}
+    assert groups["wrX"]["group_name"] is None
+
+    r = client.put("/api/groups/name", json={"channel": "wecom", "group_id": "wrX", "name": "  某客户-有数项目群 ",
+                                             "operator": "小王"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"channel": "wecom", "group_id": "wrX", "name": "某客户-有数项目群", "duplicate": False}
+    groups = {g["group_id"]: g for g in client.get("/api/groups").json()}
+    assert groups["wrX"]["group_name"] == "某客户-有数项目群"
+
+    _msg(client, 2, group="wrX", name=None)  # 之后进来、渠道仍查不到群名的消息
+    assert all(i["message"]["group_name"] == "某客户-有数项目群"
+               for i in _conv(client, group_id="wrX")["items"])
+    with db.SessionLocal() as s:
+        assert send_queue.target_group_name(s, Channel.WECOM, "wrX") == "某客户-有数项目群"
+
+    # 和别的群同名时提醒（这两个群自动发送会被拒绝）
+    _msg(client, 1, group="wrY", name=None)
+    r = client.put("/api/groups/name", json={"channel": "wecom", "group_id": "wrY", "name": "某客户-有数项目群"})
+    assert r.json()["duplicate"] is True
+
+
+def test_set_group_name_validation(client):
+    _msg(client, 1, group="wrX", name=None)
+    assert client.put("/api/groups/name", json={"channel": "wecom", "group_id": "wrX", "name": "   "}).status_code == 422
+    assert client.put("/api/groups/name", json={"channel": "wecom", "group_id": "nope", "name": "x"}).status_code == 404

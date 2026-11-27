@@ -6,6 +6,7 @@ import {
   fetchConversation,
   fetchGroups,
   resendTask,
+  setGroupName,
   type Channel,
   type Group,
   type GroupView,
@@ -35,6 +36,9 @@ const VIEWS: { key: GroupView; label: string }[] = [
 const OPEN: Suggestion["status"][] = ["generating", "ready", "failed", "escalated"];
 
 const sameGroup = (a: ChatTarget | null, b: ChatTarget) => !!a && a.channel === b.channel && a.group_id === b.group_id;
+
+/** 查不到群名的群（如外部客户群没有查询权限）显示成「未命名的群」，带上群 ID 末几位方便区分 */
+const groupLabel = (name: string | null, id: string) => name ?? `未命名的群 · ${id.slice(-4)}`;
 
 function day(iso: string) {
   return new Date(iso).toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "short" });
@@ -121,6 +125,7 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
   const [loading, setLoading] = useState(false);
   const [focusId, setFocusId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [nameDraft, setNameDraft] = useState<string | null>(null); // 正在填写的群名
   const listRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true); // 停在最底部时，图片加载完撑高了页面也保持在底部
   const scrollPlan = useRef<{ kind: "bottom" } | { kind: "keep"; height: number; top: number } | null>(null);
@@ -142,6 +147,7 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
 
   // 打开一个群：显示最新的 50 条
   useEffect(() => {
+    setNameDraft(null);
     if (!target) return;
     setItems([]);
     setOutbox([]);
@@ -234,6 +240,21 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
     loadGroups();
   };
 
+  const saveName = async () => {
+    if (!target || nameDraft === null || !nameDraft.trim()) return;
+    setBusy(true);
+    try {
+      const r = await setGroupName(target.channel, target.group_id, nameDraft, operator);
+      notify(r.duplicate ? `群名已保存。还有别的群也叫「${r.name}」，为防发错群，这些群不能自动发送` : "群名已保存");
+      setNameDraft(null);
+      changed();
+    } catch (e) {
+      notify(`保存失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const taskAction = async (task: SendTask, kind: "resend" | "cancel" | "dismiss") => {
     setBusy(true);
     try {
@@ -253,7 +274,7 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
   const focus = open.find((i) => i.suggestion!.id === focusId) ?? open[open.length - 1] ?? null;
   const shownIndex = focus ? open.indexOf(focus) : 0;
 
-  const shown = groups.filter((g) => !search.trim() || (g.group_name ?? g.group_id).includes(search.trim()));
+  const shown = groups.filter((g) => !search.trim() || groupLabel(g.group_name, g.group_id).includes(search.trim()));
   const current = target ? groups.find((g) => sameGroup(target, g)) : undefined;
   const groupName =
     current?.group_name ?? [...items].reverse().find((i) => i.message.group_name)?.message.group_name ?? null;
@@ -283,11 +304,11 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
               onClick={() => !sameGroup(target, g) && setTarget({ channel: g.channel, group_id: g.group_id })}
             >
               <span className={`g-avatar ${g.channel}`} aria-hidden>
-                {(g.group_name ?? g.group_id).trim().slice(0, 1)}
+                {(g.group_name ?? "群").trim().slice(0, 1)}
               </span>
               <div className="g-main">
                 <div className="g-top">
-                  <span className="g-name">{g.group_name ?? g.group_id}</span>
+                  <span className={`g-name ${g.group_name ? "" : "unnamed"}`}>{groupLabel(g.group_name, g.group_id)}</span>
                   <time>{shortTime(g.last_message_at)}</time>
                 </div>
                 <div className="g-bottom">
@@ -309,7 +330,37 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
           <>
             <div className="chat-head">
               <button className="link back" onClick={() => setTarget(null)}>‹ 群列表</button>
-              <b>{groupName ?? target.group_id}</b>
+              {nameDraft === null ? (
+                <>
+                  <b className={groupName ? "" : "unnamed"}>{groupName ?? "未命名的群"}</b>
+                  <button
+                    className="link name-btn"
+                    title="照企业微信里显示的群名填写，自动发送靠它找群"
+                    onClick={() => setNameDraft(groupName ?? "")}
+                  >
+                    {groupName ? "改群名" : "填写群名"}
+                  </button>
+                </>
+              ) : (
+                <form
+                  className="name-edit"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    saveName();
+                  }}
+                >
+                  <input
+                    autoFocus
+                    value={nameDraft}
+                    maxLength={256}
+                    placeholder="和企业微信里显示的群名一字不差"
+                    onChange={(e) => setNameDraft(e.target.value)}
+                    onKeyDown={(e) => e.key === "Escape" && setNameDraft(null)}
+                  />
+                  <button type="submit" className="primary" disabled={busy || !nameDraft.trim()}>保存</button>
+                  <button type="button" className="link" onClick={() => setNameDraft(null)}>取消</button>
+                </form>
+              )}
               <span className={`tag ${target.channel}`}>{CHANNEL_LABEL[target.channel]}</span>
               {current && <span>共 {current.message_count} 条消息</span>}
             </div>

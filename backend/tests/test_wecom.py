@@ -253,3 +253,64 @@ def test_preload_sdk_only_when_archive_configured(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "wecom_sdk_lib_path", str(tmp_path / "missing.so"))
     app._preload_wecom_sdk()  # 文件不存在时跳过，不影响启动
     assert loaded == [str(lib)]
+
+
+def test_group_directory_contact_lookups_use_proxy_client():
+    """外部群群名走单独的（代理）客户端，内部群仍用直连客户端。"""
+    import httpx
+
+    from app.channels.wecom.directory import GroupDirectory
+
+    def handler(name, calls):
+        def h(request: httpx.Request):
+            calls.append(request.url.path)
+            if request.url.path.endswith("/gettoken"):
+                return httpx.Response(200, json={"errcode": 0, "access_token": f"tk-{name}", "expires_in": 7200})
+            if request.url.path.endswith("/externalcontact/groupchat/get"):
+                return httpx.Response(200, json={"errcode": 0, "group_chat": {"name": "某客户-有数项目群"}})
+            if request.url.path.endswith("/msgaudit/groupchat/get"):
+                return httpx.Response(200, json={"errcode": 0, "roomname": "售后内部群"})
+            return httpx.Response(404)
+        return h
+
+    direct, proxied = [], []
+    d = GroupDirectory(CORP, "archive-secret", "contact-secret",
+                       client=httpx.Client(transport=httpx.MockTransport(handler("direct", direct))),
+                       contact_client=httpx.Client(transport=httpx.MockTransport(handler("proxy", proxied))))
+    assert d.lookup("wrEXT") == GroupInfo("某客户-有数项目群", True)
+    assert proxied == ["/cgi-bin/gettoken", "/cgi-bin/externalcontact/groupchat/get"] and direct == []
+
+    # 客户联系接口被拒（如 IP 不在可信 IP 里）时退回查内部群，走直连
+    def refuse(request: httpx.Request):
+        if request.url.path.endswith("/gettoken"):
+            return httpx.Response(200, json={"errcode": 0, "access_token": "tk", "expires_in": 7200})
+        return httpx.Response(200, json={"errcode": 60020, "errmsg": "not allow to access from your ip"})
+
+    d = GroupDirectory(CORP, "archive-secret", "contact-secret",
+                       client=httpx.Client(transport=httpx.MockTransport(handler("direct", direct))),
+                       contact_client=httpx.Client(transport=httpx.MockTransport(refuse)))
+    assert d.lookup("wrINT") == GroupInfo("售后内部群", False)
+
+
+def test_backfill_group_names(client):
+    """当时没查到群名的群，之后查得到时补上。"""
+    class Directory:
+        def __init__(self):
+            self.names = {}
+
+        def lookup(self, room_id):
+            return GroupInfo(self.names.get(room_id), True if room_id in self.names else None)
+
+    directory = Directory()
+    archive = FakeArchive([_item(1, rec("m1", CUST, "你好", room="wrA")), _item(2, rec("m2", CUST, "在吗", room="wrB"))])
+    syncer = ArchiveSyncer(lambda: archive, {"1": KEY}, directory, batch_size=10)
+    assert syncer.sync_once() == 2
+    with db.SessionLocal() as s:
+        assert {m.group_name for m in s.query(Message).all()} == {None}
+
+    directory.names["wrA"] = "某客户-有数项目群"
+    syncer._names_checked_at = 0  # 跳过 10 分钟间隔
+    syncer.sync_once()
+    with db.SessionLocal() as s:
+        names = {m.group_id: m.group_name for m in s.query(Message).all()}
+    assert names == {"wrA": "某客户-有数项目群", "wrB": None}

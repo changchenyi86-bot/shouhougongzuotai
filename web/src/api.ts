@@ -177,6 +177,20 @@ export function fetchGroups(view: GroupView = "all"): Promise<Group[]> {
   return call(`/api/groups?${new URLSearchParams({ view })}`);
 }
 
+export interface GroupNameResult {
+  channel: Channel;
+  group_id: string;
+  name: string;
+  duplicate: boolean;
+}
+
+/** 手动填写群名（企业微信查不到外部群群名时用），要和企业微信里显示的群名一致 */
+export const setGroupName = (channel: Channel, group_id: string, name: string, operator: string) =>
+  call<GroupNameResult>("/api/groups/name", {
+    method: "PUT",
+    body: JSON.stringify({ channel, group_id, name, operator: operator || null }),
+  });
+
 export async function uploadAttachment(file: File, operator: string): Promise<Attachment> {
   const form = new FormData();
   form.append("file", file);

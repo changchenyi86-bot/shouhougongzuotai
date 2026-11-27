@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import Message
+from app.models import GroupName, Message
 from app.schemas import MessageIn
 
 
@@ -22,6 +22,11 @@ def save_message(session: Session, data: MessageIn) -> tuple[Message, bool]:
     existing = _find(session, data)
     if existing:
         return existing, False
+    if not data.group_name:
+        # 渠道查不到群名时，用技术支持在工作台里填的
+        manual = session.get(GroupName, (data.channel, data.group_id))
+        if manual:
+            data = data.model_copy(update={"group_name": manual.name})
     msg = Message(**data.model_dump())
     session.add(msg)
     try:

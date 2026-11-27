@@ -58,8 +58,12 @@ class Settings(BaseSettings):
     # 存档应用「接收事件服务器」配置，收到 msgaudit_notify 时立即拉取
     wecom_callback_token: str = ""
     wecom_callback_aes_key: str = ""
-    # 「客户联系」Secret，可选：用于查询外部客户群名称
+    # 「客户联系」Secret，可选：用于查询外部客户群名称。新企业没有单独的客户联系 Secret 时，
+    # 用「客户联系 → 客户 → API → 可调用接口的应用」里那个自建应用的 Secret
     wecom_contact_secret: str = ""
+    # 查外部客户群名称走的代理，如 socks5://host.docker.internal:18968（本机 ssh -D 经有可信 IP 的服务器出网）。
+    # 自建应用的企业可信 IP 不收第三方服务商的 IP，本机出口 IP 加不进去时用；留空表示直连
+    wecom_contact_proxy: str = ""
 
     # ---- 附件（图片、文件） ----
     attachment_dir: str = "./data/attachments"
