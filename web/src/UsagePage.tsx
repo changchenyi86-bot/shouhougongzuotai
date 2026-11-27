@@ -8,6 +8,9 @@ export function tokens(n: number): string {
   return n.toLocaleString("zh-CN");
 }
 
+const REFRESH_MS = 30_000;
+const hm = (d: Date) => d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
 const yuan = (n: number | null) => (n === null ? "—" : n < 0.01 && n > 0 ? "< ¥0.01" : `¥${n.toFixed(2)}`);
 const pct = (n: number, d: number) => (d ? `${Math.round((n / d) * 100)}%` : "—");
 
@@ -113,20 +116,35 @@ export default function UsagePage({ notify }: { notify: (m: string) => void }) {
   const [day, setDay] = useState<string | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [showPrices, setShowPrices] = useState(false);
+  const [loadedAt, setLoadedAt] = useState<Date | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(() => {
-    fetchUsage(day)
+    setRefreshing(true);
+    return fetchUsage(day)
       .then((r) => {
         setData(r);
         setError(null);
+        setLoadedAt(new Date());
       })
-      .catch((e: Error) => setError(e.message));
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setRefreshing(false));
   }, [day]);
 
+  // 停在这页时每 30 秒刷新一次；切到别的标签页时不刷，切回来马上刷
   useEffect(() => {
     load();
-    const t = setInterval(load, 60_000);
-    return () => clearInterval(t);
+    const t = setInterval(() => {
+      if (!document.hidden) load();
+    }, REFRESH_MS);
+    const onVisible = () => {
+      if (!document.hidden) load();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [load]);
 
   if (error && !data) return <div className="page-panel"><p className="error pad">加载失败：{error}</p></div>;
@@ -158,10 +176,18 @@ export default function UsagePage({ notify }: { notify: (m: string) => void }) {
             setDay(!next || next === data.today ? undefined : next);
           }} aria-label="后一天">›</button>
         </div>
-        <span className="usage-note">
-          只算工作台自己调用的模型（回复建议、识图、评测等），不含 Claude / Codex 的额度
-          {data.tracking_since && `，从 ${new Date(data.tracking_since).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} 开始记`}
-        </span>
+        <div className="usage-head-right">
+          <span className="usage-note">
+            只算工作台自己调用的模型（回复建议、识图、评测等），不含 Claude / Codex 的额度
+            {data.tracking_since && `，从 ${new Date(data.tracking_since).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} 开始记`}
+          </span>
+          <span className="usage-refresh" title="停在这页时每 30 秒自动刷新">
+            {error ? <span className="error">刷新失败</span> : loadedAt && `${hm(loadedAt)} 更新`}
+            <button className="refresh-btn" disabled={refreshing} onClick={() => load()}>
+              {refreshing ? "刷新中…" : "刷新"}
+            </button>
+          </span>
+        </div>
       </div>
 
       <div className="tiles">
