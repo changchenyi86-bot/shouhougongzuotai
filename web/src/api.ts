@@ -548,6 +548,8 @@ export interface EvalRunDetail extends EvalRun {
 }
 
 export interface EvalResult {
+  /** AI 结合上下文补全的问题（多轮对话题才有，和题目原文不同时显示） */
+  understood_question?: string | null;
   case_id: string;
   code: string;
   kind: string;
