@@ -795,6 +795,59 @@ button.chip-status { cursor: pointer; font: inherit; font-size: 12px; }
 .composer-bar button.tool { border-style: dashed; color: var(--text-2); }
 .composer-bar button.primary { min-width: 84px; margin-left: auto; }
 
+/* 发送按钮 + 右侧选择发送快捷键的小箭头，两半拼成一个按钮（渐变风格下颜色连贯） */
+.send-split { position: relative; display: inline-flex; margin-left: auto; }
+.composer-bar .send-split button.primary,
+.composer-bar .send-split button.primary:hover:not(:disabled) { background-size: 114px 100%; }
+.composer-bar .send-split button.primary:not(.caret) { margin-left: 0; border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+.composer-bar .send-split button.caret,
+.composer-bar .send-split button.caret:hover:not(:disabled) { background-position: 100% 0; }
+.composer-bar .send-split button.caret {
+  min-width: 0;
+  width: 30px;
+  margin-left: 0;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  box-shadow: inset 1px 0 0 rgba(255, 255, 255, .35);
+}
+.composer-bar .send-split button.caret:focus-visible { box-shadow: inset 1px 0 0 rgba(255, 255, 255, .35), var(--focus-ring); }
+.composer-bar .send-split button.caret.dim { opacity: .45; }
+.composer-bar .send-split button.caret.dim:hover,
+.composer-bar .send-split button.caret[aria-expanded="true"] { opacity: 1; }
+
+.send-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  min-width: 260px;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-pop);
+  z-index: 10;
+}
+.composer-bar .send-menu button {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  height: auto;
+  padding: 7px 10px 7px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  text-align: left;
+  font-weight: 400;
+}
+.composer-bar .send-menu button:hover:not(:disabled) { background: var(--hover); }
+.composer-bar .send-menu button.on { color: var(--accent-text); font-weight: 500; }
+.send-menu .check { width: 16px; flex: none; text-align: center; color: var(--accent-text); font-weight: 600; }
+.send-menu small { margin-left: auto; padding-left: 12px; color: var(--text-3); font-size: 12px; font-weight: 400; }
+
 /* 旧版收件箱卡片（保留样式，以防别处仍在使用） */
 .sug { margin-top: 12px; padding: 12px; border-radius: var(--radius); background: var(--accent-soft); border: 1px solid var(--ai-border); }
 .sug.pending, .sug.done { color: var(--text-2); background: var(--hover); border-color: var(--border); }

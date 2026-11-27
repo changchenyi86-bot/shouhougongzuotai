@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   adopt,
   dismiss,
@@ -11,6 +11,7 @@ import {
 } from "./api";
 import Knowledge from "./Knowledge";
 import { formatSize } from "./MessageBody";
+import { MOD, SEND_KEYS, loadSendKey, saveSendKey, type SendKey } from "./sendKey";
 
 const CONFIDENCE: Record<string, string> = { high: "把握高", medium: "把握一般", low: "把握低" };
 const MAX_FILES = 9;
@@ -58,12 +59,41 @@ export default function Composer(props: Props) {
   const [noteOpen, setNoteOpen] = useState(false);
   const [note, setNote] = useState("");
   const [dragging, setDragging] = useState(false);
+  const [sendKey, setSendKey] = useState<SendKey>(loadSendKey);
+  const [keyMenu, setKeyMenu] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const textInput = useRef<HTMLTextAreaElement>(null);
+  const keyMenuBox = useRef<HTMLDivElement>(null);
   const seq = useRef(0);
 
   const uploading = files.some((f) => !f.att && !f.error);
   const ready = files.filter((f) => f.att).map((f) => f.att!);
   const hasContent = !!text.trim() || ready.length > 0;
+  const canSend = canAutoSend && hasContent && !uploading && !!groupName;
+
+  // 发送快捷键菜单：点别处或按 Esc 收起
+  useEffect(() => {
+    if (!keyMenu) return;
+    const onDown = (e: MouseEvent) => {
+      if (!keyMenuBox.current?.contains(e.target as Node)) setKeyMenu(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setKeyMenu(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [keyMenu]);
+
+  const pickSendKey = (key: SendKey) => {
+    setSendKey(key);
+    saveSendKey(key);
+    setKeyMenu(false);
+    textInput.current?.focus();
+  };
 
   const addFiles = (list: FileList | File[]) => {
     const room = MAX_FILES - files.length;
@@ -122,6 +152,40 @@ export default function Composer(props: Props) {
       reset();
       notify(ok ? "已复制，请到企业微信群里粘贴发送" : "复制失败，请手动选择文字复制");
     });
+
+  // 按发送键：第一次弹出确认条，确认条在时再按一次才真正发出
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Escape" && confirming) {
+      e.preventDefault();
+      setConfirming(false);
+      return;
+    }
+    if (e.key !== "Enter" || e.altKey) return;
+    // 输入法选字时按的回车只是把字母上屏，不算发送
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    const mod = e.ctrlKey || e.metaKey;
+    const isSendKey = !e.shiftKey && (sendKey === "enter" ? !mod : mod);
+    if (!isSendKey) {
+      // Enter 发送时，Command/Ctrl+Enter 和 Shift+Enter 一样换行
+      if (sendKey === "enter" && mod) {
+        e.preventDefault();
+        const el = e.currentTarget;
+        el.setRangeText("\n", el.selectionStart, el.selectionEnd, "end");
+        setText(el.value);
+        setConfirming(false);
+      }
+      return;
+    }
+    // 发送电脑不在线时只能复制文字，发送键照常换行
+    if (!canAutoSend) return;
+    e.preventDefault();
+    if (e.repeat || busy) return;
+    if (!hasContent) return;
+    if (uploading) return notify("图片或文件还在上传，传完再发");
+    if (!groupName) return notify("还不知道这个群的名字，无法自动发送");
+    if (confirming) send();
+    else setConfirming(true);
+  };
 
   const applySuggestion = (item: InboxItem) => {
     setText(item.suggestion?.content ?? "");
@@ -245,10 +309,11 @@ export default function Composer(props: Props) {
       )}
 
       <textarea
+        ref={textInput}
         value={text}
         placeholder={
           canAutoSend
-            ? "输入回复，可以粘贴或拖入图片、文件。Ctrl+Enter 发送"
+            ? `输入回复，可以粘贴或拖入图片、文件。${sendKey === "enter" ? "Enter 发送，Shift+Enter 换行" : `${MOD}+Enter 发送`}`
             : "输入回复。发送电脑不在线，只能复制文字后到企业微信里手动发"
         }
         rows={Math.min(8, Math.max(3, text.split("\n").length + 1))}
@@ -262,12 +327,7 @@ export default function Composer(props: Props) {
             addFiles(e.clipboardData.files);
           }
         }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && canAutoSend && hasContent && !uploading) {
-            e.preventDefault();
-            setConfirming(true);
-          }
-        }}
+        onKeyDown={onKeyDown}
       />
 
       {confirming && (
@@ -307,14 +367,45 @@ export default function Composer(props: Props) {
           {canAutoSend ? "只复制文字，我自己发" : "复制文字"}
         </button>
         {canAutoSend && (
-          <button
-            className="primary"
-            disabled={busy || !hasContent || uploading || confirming || !groupName}
-            title={groupName ? undefined : "还不知道这个群的名字，无法自动发送"}
-            onClick={() => setConfirming(true)}
-          >
-            {uploading ? "上传中…" : "发送"}
-          </button>
+          <div className="send-split" ref={keyMenuBox}>
+            <button
+              className="primary"
+              disabled={busy || !canSend || confirming}
+              title={groupName ? undefined : "还不知道这个群的名字，无法自动发送"}
+              onClick={() => setConfirming(true)}
+            >
+              {uploading ? "上传中…" : "发送"}
+            </button>
+            <button
+              className={`primary caret ${busy || !canSend || confirming ? "dim" : ""}`}
+              aria-label="选择发送快捷键"
+              aria-haspopup="menu"
+              aria-expanded={keyMenu}
+              title="选择发送快捷键"
+              onClick={() => setKeyMenu((v) => !v)}
+            >
+              <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+                <path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            {keyMenu && (
+              <div className="send-menu" role="menu">
+                {SEND_KEYS.map((k) => (
+                  <button
+                    key={k.key}
+                    role="menuitemradio"
+                    aria-checked={sendKey === k.key}
+                    className={sendKey === k.key ? "on" : ""}
+                    onClick={() => pickSendKey(k.key)}
+                  >
+                    <span className="check" aria-hidden="true">{sendKey === k.key ? "✓" : ""}</span>
+                    <span>{k.label}</span>
+                    <small>{k.hint}</small>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>
