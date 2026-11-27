@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { fetchChat, sendChat, type ChatTurn, type Suggestion } from "./api";
+import CopyButton from "./CopyButton";
 
 interface Props {
   suggestion: Suggestion;
@@ -78,6 +79,7 @@ export default function AiChat({ suggestion, onFill, filledId, onFilled, notify 
                 <p>{t.content}</p>
                 {t.note && <p className="ai-chat-note">{t.note}</p>}
                 <div className="ai-chat-tools">
+                  <CopyButton text={t.content} label="复制" title="复制 AI 这次写的回复" />
                   {filledId === t.id ? (
                     <span className="filled">已填入输入框</span>
                   ) : (

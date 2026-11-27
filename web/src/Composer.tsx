@@ -13,6 +13,7 @@ import {
   type Member,
 } from "./api";
 import AiChat from "./AiChat";
+import CopyButton, { copyText } from "./CopyButton";
 import Knowledge from "./Knowledge";
 import { useImageViewer } from "./ImageViewer";
 import { FileIcon, formatSize, isImage } from "./MessageBody";
@@ -31,15 +32,6 @@ import { MOD, SEND_KEYS, loadSendKey, saveSendKey, type SendKey } from "./sendKe
 
 const CONFIDENCE: Record<string, string> = { high: "把握高", medium: "把握一般", low: "把握低" };
 const MAX_FILES = 9;
-
-async function copy(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 type Pending = { key: number; name: string; att?: Attachment; error?: string };
 /** 输入框里的文字从哪来：AI 建议、和 AI 的对话、自己打的 */
@@ -275,7 +267,7 @@ export default function Composer(props: Props) {
       const content = text.trim();
       const at = toRefs(findMentions(content, members ?? [], picked));
       if (linked?.suggestion) await adopt(linked.suggestion.id, content, false, basis === "chat", at);
-      const ok = await copy(content);
+      const ok = await copyText(content);
       reset();
       notify(
         !ok
@@ -494,6 +486,9 @@ export default function Composer(props: Props) {
             <button disabled={busy} onClick={() => run(() => dismiss(s.id))}>无需回复</button>
             {s.status !== "escalated" && s.status !== "generating" && (
               <button disabled={busy} onClick={() => run(() => regenerate(s.id))}>重新生成</button>
+            )}
+            {s.content && !inUse && (s.status === "ready" || s.status === "escalated") && (
+              <CopyButton text={s.content} label="复制" title="复制 AI 建议的文字" />
             )}
           </div>
           {chatOpen && (
