@@ -723,7 +723,7 @@ def test_mention_missing_from_text(chat):
 
 
 def test_member_list_found_by_screen_change_when_window_box_has_no_text(chat, monkeypatch):
-    # 真机上先认到的窗口是成员列表外面的阴影，那个范围里认不出字：改按打 @ 前后画面变了的地方去认
+    # 真机上窗口报的范围里认不出字（成员列表外面套着阴影窗口，位置也对不上）：按打 @ 前后画面变了的地方去认
     chat.members = ["sln@微信"]
     pane = chat.driver._pane_box(RECT)
     chat.changed = (10, 10, 200, 80)

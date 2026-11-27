@@ -1130,23 +1130,21 @@ class WeComDriver:
             while popup_box(hwnds) is not None and time.monotonic() < deadline:
                 time.sleep(0.05)
 
-    def _popup_lines(self, rect: Rect, hwnds: list[int], before) -> list[OcrLine]:
-        """输入名字后，等成员列表筛选好（和输入前不一样、并且连续两次截屏一样）再识字。"""
+    def _wait_filtered(self, pane: tuple[int, int, int, int], before) -> None:
+        """输入名字后，等成员列表筛选好：聊天区和输入名字前不一样、并且连续两次截屏一样（最多等 AT_FILTER_WAIT 秒）。
+
+        看整个聊天区而不只看成员列表窗口：真机上窗口报的位置和列表实际画的位置对不上。
+        """
         deadline = time.monotonic() + AT_FILTER_WAIT
         last = None
         while True:
             time.sleep(0.06)
-            box = popup_box(hwnds)
-            if box is None:
-                return []
-            view = (box, self._grab(box)[0])
-            if last is not None and not self._view_differs(view, last) and self._view_differs(view, before):
-                break
+            frame = self._grab(pane)[0]
+            if last is not None and not differs(frame, last) and differs(frame, before):
+                return
             if time.monotonic() >= deadline:
-                break
-            last = view
-        whole = self._results_box(rect)
-        return self.ocr.read(view[0], image=view[1], like=(whole[2] - whole[0], whole[3] - whole[1]))
+                return
+            last = frame
 
     def _mention(self, rect: Rect, m: Mention) -> str | None:
         """在输入框当前位置真正 @ 这个人。做到了返回 None；没做到返回原因，并把名字按普通文字补齐。"""
@@ -1159,25 +1157,29 @@ class WeComDriver:
             type_unicode(m.name)  # 名字按普通文字补上
             return "企业微信没有弹出成员列表"
         hwnds, cls = popup
-        box = popup_box(hwnds)
-        before = (box, self._grab(box)[0]) if box else None
+        before = self._grab(pane)[0]
         type_unicode(query)
-        lines = self._popup_lines(rect, hwnds, before) if before else []
+        self._wait_filtered(pane, before)
+        whole = self._results_box(rect)
+        like = (whole[2] - whole[0], whole[3] - whole[1])
+        # 成员列表在哪：看打 @ 前后聊天区画面变了的地方（真机上窗口报的位置和列表实际画的位置对不上，
+        # 只在窗口范围里认不出字）。画面看不出变化、或者那里没认出这个人，再到窗口范围里认一次
+        lines: list[OcrLine] = []
+        area = None
+        found = changed_box(pane_before, self._grab(pane)[0])
+        if found:
+            area = (pane[0] + found[0], pane[1] + found[1], pane[0] + found[2], pane[1] + found[3])
+            lines = self.ocr.read(area, like=like)
         texts = [line.text for line in lines]
         index, why = mentions.pick(texts, m)
         if index is None and not any(mentions.candidate(t, m.name) for t in texts):
-            # 窗口范围里没认出这个人：按打 @ 前后聊天区画面变了的地方再认一次（弹出的成员列表就在那里）
-            found = changed_box(pane_before, self._grab(pane)[0])
-            if found:
-                area = (pane[0] + found[0], pane[1] + found[1], pane[0] + found[2], pane[1] + found[3])
-                whole = self._results_box(rect)
-                lines = self.ocr.read(area, like=(whole[2] - whole[0], whole[3] - whole[1]))
-                texts = [line.text for line in lines]
-                index, why = mentions.pick(texts, m)
-                cls += f"；按画面变化找的范围 {area}"
-                if "按画面变化找的成员列表" not in self._notes:
-                    self._notes.append("按画面变化找的成员列表")
-        log.info("@%s：成员列表（%s，识字范围 %s）里识别到：%s", m.name, cls, popup_box(hwnds) or box,
+            area = popup_box(hwnds)
+            lines = self.ocr.read(area, like=like) if area else []
+            texts = [line.text for line in lines]
+            index, why = mentions.pick(texts, m)
+            if "按窗口范围找的成员列表" not in self._notes:
+                self._notes.append("按窗口范围找的成员列表")
+        log.info("@%s：成员列表（%s，识字范围 %s）里识别到：%s", m.name, cls, area,
                  "；".join(f"{ln.text}@({ln.x0},{ln.y0})" for ln in lines) or "没有识别到文字")
         self._debug_shot("mention-list")
         if index is None:
