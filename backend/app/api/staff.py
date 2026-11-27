@@ -19,7 +19,8 @@ router = APIRouter(prefix="/api")
 def staff_out(s: Staff, open_count: int = 0) -> StaffOut:
     return StaffOut(id=s.id, name=s.name, username=s.username, role=s.role,
                     team=TeamOut.model_validate(s.team) if s.team else None, active=s.active, status=s.status,
-                    online=auth.is_online(s), last_seen=s.last_seen, open_count=open_count)
+                    online=auth.is_online(s), last_seen=s.last_seen, open_count=open_count,
+                    has_password=bool(s.password_hash))
 
 
 # ---------- 登录 ----------

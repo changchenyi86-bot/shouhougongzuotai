@@ -329,6 +329,8 @@ export interface Staff {
   last_seen: string | null;
   /** 手上进行中的会话数 */
   open_count: number;
+  /** 设过密码；批量导入的成员要管理员设了密码才能登录 */
+  has_password: boolean;
 }
 
 const put = <T>(url: string, body: unknown) => call<T>(url, { method: "PUT", body: JSON.stringify(body) });
