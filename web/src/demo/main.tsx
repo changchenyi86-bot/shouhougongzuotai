@@ -2,6 +2,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "../App";
+import { ImageViewerProvider } from "../ImageViewer";
 import "../styles.css";
 import { applyTheme, loadTheme } from "../theme";
 import { installMock } from "./mock";
@@ -11,6 +12,8 @@ applyTheme(loadTheme());
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <ImageViewerProvider>
+      <App />
+    </ImageViewerProvider>
   </StrictMode>,
 );

@@ -12,6 +12,7 @@ import {
   reopen,
   resendTask,
   setGroupName,
+  type Attachment,
   type Channel,
   type ConversationEnd,
   type Group,
@@ -23,7 +24,8 @@ import {
   type Suggestion,
 } from "./api";
 import Composer from "./Composer";
-import MessageBody, { AttachmentView } from "./MessageBody";
+import { ImageGallery } from "./ImageViewer";
+import MessageBody, { AttachmentView, isImage } from "./MessageBody";
 import { Avatar, SenderLine, senderName } from "./Sender";
 import ReflowTip from "./ReflowTip";
 
@@ -508,6 +510,14 @@ export default function Conversations({ me, canAutoSend, notify, onOpenKnowledge
 
   // 待回复的客户消息：默认处理最新的一条，点气泡上的标签可以换
   const open = useMemo(() => items.filter((i) => i.suggestion && OPEN.includes(i.suggestion.status)), [items]);
+  // 这个群聊天记录里的全部图片（含正在发的），看大图时可以左右切换
+  const chatImages = useMemo(
+    () =>
+      [...items.map((i) => i.message.attachment), ...(moreAfter ? [] : outbox.flatMap((t) => t.attachments))].filter(
+        (a): a is Attachment => !!a && isImage(a),
+      ),
+    [items, outbox, moreAfter],
+  );
   const focus = open.find((i) => i.suggestion!.id === focusId) ?? open[open.length - 1] ?? null;
   const shownIndex = focus ? open.indexOf(focus) : 0;
 
@@ -738,57 +748,59 @@ export default function Conversations({ me, canAutoSend, notify, onOpenKnowledge
                 <button disabled={busy} onClick={() => setHeadAsk(false)}>取消</button>
               </div>
             )}
-            <div
-              className="chat-list"
-              ref={listRef}
-              onScroll={(e) => {
-                const el = e.currentTarget;
-                stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-              }}
-              onLoadCapture={() => {
-                const el = listRef.current;
-                if (el && stick.current) el.scrollTop = el.scrollHeight;
-              }}
-            >
-              {error && <p className="error">加载失败：{error}</p>}
-              {loading && <p className="empty pad">加载中…</p>}
-              {moreBefore && <button className="load-more" onClick={loadOlder}>加载更早的消息</button>}
-              {!loading && !moreBefore && items.length > 0 && <p className="chat-start">已经是最早的消息</p>}
-              {endsAt.before.map((e) => (
-                <EndSep key={e.id} end={e} />
-              ))}
-              {items.map(({ message: m, suggestion }, i) => (
-                <div key={m.id}>
-                  {(i === 0 || day(items[i - 1].message.sent_at) !== day(m.sent_at)) && (
-                    <div className="day-sep">{day(m.sent_at)}</div>
-                  )}
-                  <div
-                    id={`m-${m.id}`}
-                    className={`bubble-row ${m.from_customer ? "cust" : "staff"} ${focus?.message.id === m.id ? "focused" : ""}`}
-                  >
-                    <Avatar name={m.sender_name} customer={m.from_customer} />
-                    <div className="msg-col">
-                      <SenderLine name={senderName(m)} kind={m.sender_kind} time={hm(m.sent_at)} />
-                      <MessageBody message={m} onChanged={() => refresh()} />
-                      {suggestion && (
-                        <SugChip
-                          s={suggestion}
-                          focused={focus?.suggestion?.id === suggestion.id}
-                          onFocus={() => setFocusId(suggestion.id)}
-                          onReopen={() => !busy && reopenOne(suggestion)}
-                        />
-                      )}
+            <ImageGallery images={chatImages}>
+              <div
+                className="chat-list"
+                ref={listRef}
+                onScroll={(e) => {
+                  const el = e.currentTarget;
+                  stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+                }}
+                onLoadCapture={() => {
+                  const el = listRef.current;
+                  if (el && stick.current) el.scrollTop = el.scrollHeight;
+                }}
+              >
+                {error && <p className="error">加载失败：{error}</p>}
+                {loading && <p className="empty pad">加载中…</p>}
+                {moreBefore && <button className="load-more" onClick={loadOlder}>加载更早的消息</button>}
+                {!loading && !moreBefore && items.length > 0 && <p className="chat-start">已经是最早的消息</p>}
+                {endsAt.before.map((e) => (
+                  <EndSep key={e.id} end={e} />
+                ))}
+                {items.map(({ message: m, suggestion }, i) => (
+                  <div key={m.id}>
+                    {(i === 0 || day(items[i - 1].message.sent_at) !== day(m.sent_at)) && (
+                      <div className="day-sep">{day(m.sent_at)}</div>
+                    )}
+                    <div
+                      id={`m-${m.id}`}
+                      className={`bubble-row ${m.from_customer ? "cust" : "staff"} ${focus?.message.id === m.id ? "focused" : ""}`}
+                    >
+                      <Avatar name={m.sender_name} customer={m.from_customer} />
+                      <div className="msg-col">
+                        <SenderLine name={senderName(m)} kind={m.sender_kind} time={hm(m.sent_at)} />
+                        <MessageBody message={m} onChanged={() => refresh()} />
+                        {suggestion && (
+                          <SugChip
+                            s={suggestion}
+                            focused={focus?.suggestion?.id === suggestion.id}
+                            onFocus={() => setFocusId(suggestion.id)}
+                            onReopen={() => !busy && reopenOne(suggestion)}
+                          />
+                        )}
+                      </div>
                     </div>
+                    {endsAt.after.get(i)?.map((e) => (
+                      <EndSep key={e.id} end={e} />
+                    ))}
                   </div>
-                  {endsAt.after.get(i)?.map((e) => (
-                    <EndSep key={e.id} end={e} />
-                  ))}
-                </div>
-              ))}
-              {moreAfter && <button className="load-more" onClick={loadNewer}>加载更新的消息</button>}
-              {!moreAfter &&
-                outbox.map((t) => <OutboxBubble key={t.id} task={t} busy={busy} onAction={(k) => taskAction(t, k)} />)}
-            </div>
+                ))}
+                {moreAfter && <button className="load-more" onClick={loadNewer}>加载更新的消息</button>}
+                {!moreAfter &&
+                  outbox.map((t) => <OutboxBubble key={t.id} task={t} busy={busy} onAction={(k) => taskAction(t, k)} />)}
+              </div>
+            </ImageGallery>
             {proposal && (
               <ReflowTip
                 key={proposal.suggestion!.candidate!.id}

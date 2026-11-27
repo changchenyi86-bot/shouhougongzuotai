@@ -823,6 +823,8 @@ input.group-search {
 .media-error { font-style: normal; font-size: 12px; color: var(--danger); margin-top: 4px; }
 .media-error .link { margin: 0 0 0 8px; font-size: 12px; }
 
+.att-img { display: block; padding: 0; border: 0; background: none; border-radius: var(--radius); cursor: zoom-in; }
+.att-img:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .att-img img {
   display: block;
   max-width: min(300px, 60vw);
@@ -830,7 +832,9 @@ input.group-search {
   border-radius: var(--radius);
   border: 1px solid var(--border);
   background: #fff;
+  transition: filter .15s;
 }
+.att-img:hover img { filter: brightness(.94); }
 /* 文件：类型图标、文件名、大小、下载 */
 .file-card {
   display: flex;
@@ -869,6 +873,107 @@ a.file-card:hover .dl-icon { color: var(--accent); }
 .risk-tip { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--warn); }
 .risk-tip svg { width: 13px; height: 13px; flex: none; }
 .chip .file-icon { flex: none; }
+.chip-img { display: inline-flex; align-items: center; gap: 6px; min-width: 0; padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: zoom-in; }
+.chip-img img { width: 22px; height: 22px; flex: none; object-fit: cover; border-radius: 4px; border: 1px solid var(--border); background: #fff; }
+.chip-img:hover { color: var(--accent-text); }
+
+/* 看大图的浮窗：深色底，和风格无关 */
+.viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  background: rgba(10, 10, 14, .9);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  color: #fff;
+  animation: viewer-in .16s ease-out;
+}
+@keyframes viewer-in { from { opacity: 0; } }
+.viewer-top { display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 12px 0 20px; flex: none; }
+.viewer-name { min-width: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(255, 255, 255, .9); }
+.viewer-count { flex: none; font-size: 13px; color: rgba(255, 255, 255, .6); font-variant-numeric: tabular-nums; }
+.viewer-close { margin-left: auto; }
+.viewer-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+}
+.viewer-stage img {
+  grid-area: 1 / 1;
+  max-width: calc(100vw - 160px);
+  max-height: calc(100vh - 140px);
+  object-fit: contain;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, .45);
+  transform-origin: center;
+  cursor: grab;
+}
+.viewer-stage:active img { cursor: grabbing; }
+.viewer-note { grid-area: 1 / 1; font-size: 13px; color: rgba(255, 255, 255, .7); }
+.viewer-btn {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(255, 255, 255, .85);
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.viewer-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.viewer-btn:hover:not(:disabled) { background: rgba(255, 255, 255, .14); color: #fff; }
+.viewer-btn:disabled { opacity: .35; cursor: default; }
+.viewer-btn:focus-visible, .viewer-pct:focus-visible { outline: 2px solid rgba(255, 255, 255, .7); outline-offset: 1px; }
+.viewer-nav { position: absolute; z-index: 1; top: 50%; width: 44px; height: 44px; margin-top: -22px; background: rgba(40, 40, 48, .72); }
+.viewer-nav:hover:not(:disabled) { background: rgba(60, 60, 70, .9); }
+.viewer-nav:disabled { opacity: 0; pointer-events: none; }
+.viewer-nav.prev { left: 20px; }
+.viewer-nav.next { right: 20px; }
+.viewer-bar {
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 12px 0 20px;
+  padding: 4px 6px;
+  border-radius: 999px;
+  background: rgba(40, 40, 48, .92);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .35);
+  flex: none;
+}
+.viewer-pct {
+  min-width: 58px;
+  height: 32px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #fff;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.viewer-pct:hover { background: rgba(255, 255, 255, .14); }
+.viewer-sep { width: 1px; height: 18px; margin: 0 4px; background: rgba(255, 255, 255, .18); }
+@media (max-width: 900px) {
+  .viewer-top { height: 48px; padding-left: 14px; }
+  .viewer-stage img { max-width: calc(100vw - 24px); max-height: calc(100vh - 130px); }
+  .viewer-nav { width: 36px; height: 36px; margin-top: -18px; }
+  .viewer-nav.prev { left: 8px; }
+  .viewer-nav.next { right: 8px; }
+  .viewer-bar { margin-bottom: 16px; }
+}
 
 /* 气泡下的处理状态 */
 .chip-status {
