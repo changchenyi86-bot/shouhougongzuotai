@@ -246,6 +246,9 @@ export interface Conversation {
 
 export type GroupView = "todo" | "escalated" | "unassigned" | "all";
 
+/** 工作台有没有新变化（新消息、AI 建议、会话分配），版本号变了再去刷新列表和聊天记录 */
+export const fetchUpdates = () => call<{ version: string }>("/api/updates");
+
 export function fetchGroups(view: GroupView = "all"): Promise<Group[]> {
   return call(`/api/groups?${new URLSearchParams({ view })}`);
 }

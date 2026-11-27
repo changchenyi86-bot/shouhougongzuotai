@@ -144,7 +144,7 @@ npm run demo
 
 1. 企业微信管理后台开通会话内容存档（付费功能），记下存档 Secret，配置消息加密公钥并保存对应私钥。
 2. 下载官方 Linux C SDK（`libWeWorkFinanceSdk_C.so`），和私钥一起放到项目根目录 `secrets/wecom/`（已在 .gitignore 中），docker-compose 会挂载到容器 `/opt/wecom`。
-3. 在 `backend/.env` 填写 `WECOM_CORP_ID`、`WECOM_ARCHIVE_SECRET`、`WECOM_ARCHIVE_PRIVATE_KEY_FILES`（见 `.env.example`）。后端每 30 秒增量拉取一次。
+3. 在 `backend/.env` 填写 `WECOM_CORP_ID`、`WECOM_ARCHIVE_SECRET`、`WECOM_ARCHIVE_PRIVATE_KEY_FILES`（见 `.env.example`）。后端每 3 秒增量拉取一次（`WECOM_ARCHIVE_POLL_INTERVAL`，企业微信限制拉取接口每分钟 4000 次，3 秒一次远低于上限）。新消息入库后工作台页面 2 秒内刷新，AI 建议在后台另外生成，不耽误消息显示。
 4. 可选：存档应用「接收事件服务器」填 `https://<域名>/webhooks/wecom` 并配置 `WECOM_CALLBACK_TOKEN` / `WECOM_CALLBACK_AES_KEY`，有新消息时会立即拉取。
 5. 可选：填写 `WECOM_CONTACT_SECRET`（客户联系 Secret），工作台可显示外部客户群名称。新开通的企业没有单独的客户联系 Secret，用「客户联系 → 客户 → API → 可调用接口的应用」里那个自建应用的 Secret。
    自建应用的「企业可信IP」不收第三方服务商的 IP；本机出口 IP 加不进去时，经一台已在可信 IP 里的服务器转发：

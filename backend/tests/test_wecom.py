@@ -314,3 +314,36 @@ def test_backfill_group_names(client):
     with db.SessionLocal() as s:
         names = {m.group_id: m.group_name for m in s.query(Message).all()}
     assert names == {"wrA": "某客户-有数项目群", "wrB": None}
+
+
+def test_archive_poll_backs_off_after_error(monkeypatch):
+    """拉取出错后隔 30 秒再试，正常时按配置的间隔（默认 3 秒）拉。"""
+    import asyncio
+
+    from app import main
+
+    waits = []
+
+    class Boom:
+        def sync_once(self):
+            raise RuntimeError("网络断了")
+
+    class Ok:
+        def sync_once(self):
+            return 0
+
+    syncers = iter([Boom(), Ok()])
+    monkeypatch.setattr(main, "get_syncer", lambda: next(syncers))
+
+    async def fake_sleep(seconds):
+        waits.append(seconds)
+        if len(waits) == 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(main.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(main.settings, "wecom_archive_poll_interval", 3)
+    try:
+        asyncio.run(main._poll_wecom_archive())
+    except asyncio.CancelledError:
+        pass
+    assert waits == [main.ARCHIVE_RETRY_SECONDS, 3]

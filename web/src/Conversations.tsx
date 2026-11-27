@@ -7,6 +7,7 @@ import {
   endConversation,
   fetchConversation,
   fetchGroups,
+  fetchUpdates,
   fetchStaff,
   reopen,
   resendTask,
@@ -336,6 +337,38 @@ export default function Conversations({ me, canAutoSend, notify, onOpenKnowledge
     const t = setInterval(() => refresh(), sending ? 1_000 : 10_000);
     return () => clearInterval(t);
   }, [refresh, sending]);
+
+  // 每 2 秒问一次后台有没有新变化，有就马上刷新群列表和当前群，新消息几秒内就能看到。
+  // 上面的定时刷新保留作兜底；页面切到后台时不问，切回来立刻问一次。
+  const latest = useRef({ refresh, loadGroups });
+  latest.current = { refresh, loadGroups };
+  useEffect(() => {
+    let version: string | null = null;
+    let stopped = false;
+    const check = () => {
+      if (stopped || document.hidden) return;
+      fetchUpdates()
+        .then(({ version: v }) => {
+          if (stopped) return;
+          if (version !== null && v !== version) {
+            latest.current.loadGroups();
+            latest.current.refresh();
+          }
+          version = v;
+        })
+        .catch(() => {
+          /* 下次再问 */
+        });
+    };
+    check();
+    const t = setInterval(check, 2_000);
+    document.addEventListener("visibilitychange", check);
+    return () => {
+      stopped = true;
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", check);
+    };
+  }, []);
 
   const changed = () => {
     refresh(true);

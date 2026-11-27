@@ -17,16 +17,21 @@ from app.db import init_db
 log = logging.getLogger(__name__)
 
 
+ARCHIVE_RETRY_SECONDS = 30  # 拉取出错（网络断了、IP 不在白名单等）后隔多久再试，免得每几秒刷一屏错误日志
+
+
 async def _poll_wecom_archive() -> None:
     """定时拉取企业微信会话存档（回调通知之外的兜底）。"""
     while True:
+        wait = settings.wecom_archive_poll_interval
         try:
             syncer = get_syncer()
             if syncer is not None:
                 await asyncio.to_thread(syncer.sync_once)
-        except Exception:  # noqa: BLE001  配置错误或网络问题时记录日志，下一轮重试
+        except Exception:  # noqa: BLE001  配置错误或网络问题时记录日志，稍后重试
             log.exception("会话存档拉取失败")
-        await asyncio.sleep(settings.wecom_archive_poll_interval)
+            wait = max(wait, ARCHIVE_RETRY_SECONDS)
+        await asyncio.sleep(wait)
 
 
 @asynccontextmanager
