@@ -12,6 +12,8 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 from app import db  # noqa: E402
 from app.ai import llm, worker  # noqa: E402
 from app.ai.llm import SuggestionDraft  # noqa: E402
+from app.ai.reflow import Judgement  # noqa: E402
+from app.ai.refine import RefinedReply  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.main import app  # noqa: E402
 
@@ -25,12 +27,26 @@ class FakeLLM:
                                             reply="您好，请清理浏览器缓存后重试。", reason="常见问题",
                                             references=[])
         self.error: Exception | None = None
+        # 和 AI 对话、回流判断的固定结果，按输出结构取
+        self.results: dict[type, object] = {
+            RefinedReply: RefinedReply(reply="您好，请先清理浏览器缓存再重新导出。", note=""),
+            Judgement: Judgement(general=True, reason="导出问题，别的客户也会遇到", title="报表导出一直转圈",
+                                 question="报表导出一直转圈怎么办？", answer="请先清理浏览器缓存再重新导出。",
+                                 module="报表导出", branch="有数", kind="troubleshoot"),
+        }
+        self.generated: list[tuple[type, str]] = []
 
     def draft(self, system: str, prompt: str):
         self.calls.append((system, prompt))
         if self.error:
             raise self.error
         return self.draft_result, "fake-model"
+
+    def generate(self, system: str, prompt: str, schema):
+        self.generated.append((schema, prompt))
+        if self.error:
+            raise self.error
+        return self.results[schema], "fake-model"
 
 
 @pytest.fixture()

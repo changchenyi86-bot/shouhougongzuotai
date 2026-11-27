@@ -60,7 +60,17 @@ export interface KnowledgeRef {
   snippet: string;
   /** 建议是否实际引用了这条 */
   cited: boolean;
+  /** 相似问答（工作台知识、历史回复）：写的人、当时的群、相似度 */
+  author?: string | null;
+  group_name?: string | null;
+  score?: number | null;
 }
+
+/** 采纳情况：原样采纳 / 小改 / 大改 / 未用 */
+export type Adoption = "exact" | "minor" | "major" | "unused";
+export const ADOPTION_LABEL: Record<Adoption, string> = { exact: "原样采纳", minor: "小改", major: "大改", unused: "未用" };
+
+export type CandidateStatus = "proposed" | "pending" | "approved" | "rejected" | "retired" | "declined" | "not_general";
 
 export interface Suggestion {
   id: string;
@@ -76,6 +86,19 @@ export interface Suggestion {
   knowledge: KnowledgeRef[];
   /** 知识库没查成的原因 */
   knowledge_error: string | null;
+  /** 没查售后数字人的原因（寒暄、没配置） */
+  knowledge_note?: string | null;
+  /** AI 判断是否需要回复 */
+  needs_reply?: boolean | null;
+  /** AI 判为无需回复、自动标记的 */
+  auto_dismissed?: boolean;
+  reopened_by?: string | null;
+  adoption?: Adoption | null;
+  adoption_score?: number | null;
+  /** 回复是和 AI 对话润色出来的 */
+  via_chat?: boolean;
+  /** 回复发出后 AI 判断要不要沉淀成知识 */
+  candidate?: { id: string; status: CandidateStatus; question: string } | null;
   final_content: string | null;
   delivery: string | null;
   send_status: SendStatus | null;
@@ -137,13 +160,33 @@ async function call<T>(url: string, init?: RequestInit): Promise<T> {
 const post = <T>(url: string, body: unknown = {}) =>
   call<T>(url, { method: "POST", body: JSON.stringify(body) });
 
-export const adopt = (id: string, content: string, send = false) =>
-  post<{ suggestion: Suggestion; delivery: string; detail: string }>(`/api/suggestions/${id}/adopt`, { content, send });
+export const adopt = (id: string, content: string, send = false, viaChat = false) =>
+  post<{ suggestion: Suggestion; delivery: string; detail: string }>(`/api/suggestions/${id}/adopt`, {
+    content,
+    send,
+    via_chat: viaChat,
+  });
 export const fetchSendState = () => call<SendState>("/api/send/status");
 export const escalate = (id: string, note: string) =>
   post<Suggestion>(`/api/suggestions/${id}/escalate`, { note: note || null });
 export const dismiss = (id: string) => post<Suggestion>(`/api/suggestions/${id}/dismiss`);
 export const regenerate = (id: string) => post<Suggestion>(`/api/suggestions/${id}/regenerate`);
+/** 把「无需回复」改回待回复 */
+export const reopen = (id: string) => post<Suggestion>(`/api/suggestions/${id}/reopen`);
+
+/** 和 AI 对话润色回复的一条 */
+export interface ChatTurn {
+  id: string;
+  role: "staff" | "ai";
+  content: string;
+  /** AI 给技术支持的一句说明，不发给客户 */
+  note: string | null;
+  operator: string | null;
+  created_at: string;
+}
+export const fetchChat = (suggestionId: string) => call<ChatTurn[]>(`/api/suggestions/${suggestionId}/chat`);
+export const sendChat = (suggestionId: string, content: string) =>
+  post<ChatTurn[]>(`/api/suggestions/${suggestionId}/chat`, { content });
 
 export interface Group {
   channel: Channel;
@@ -232,6 +275,7 @@ export const sendToGroup = (body: {
   content: string;
   attachment_ids: string[];
   suggestion_id: string | null;
+  via_chat?: boolean;
 }) => post<SendTask>("/api/conversations/send", body);
 
 /** 结束会话：没回复的客户消息不再算待处理，客户再发消息时重新回到待处理 */
@@ -308,3 +352,99 @@ export const setGroupOwner = (channel: Channel, group_id: string, owner_id: stri
 /** 把进行中的会话转给同事 */
 export const assignConversation = (channel: Channel, group_id: string, staff_id: string) =>
   post<StaffBrief>("/api/conversations/assign", { channel, group_id, staff_id });
+
+// ---------- 候选知识 ----------
+
+export type Branch = "有数" | "知数" | "通用";
+export type KnowledgeKind = "how_to" | "fact" | "troubleshoot" | "not_supported";
+export const KIND_LABEL: Record<KnowledgeKind, string> = {
+  how_to: "操作做法",
+  fact: "结论说明",
+  troubleshoot: "排查处理",
+  not_supported: "不支持及替代",
+};
+
+export interface Candidate {
+  id: string;
+  suggestion_id: string;
+  status: CandidateStatus;
+  title: string;
+  question: string;
+  answer: string;
+  branch: Branch;
+  kind: KnowledgeKind;
+  module: string;
+  /** AI 判断是否通用的依据 */
+  reason: string | null;
+  customer_question: string;
+  /** 客户实际收到的回复 */
+  customer_reply: string;
+  ai_suggestion: string | null;
+  group_name: string | null;
+  author: string | null;
+  confirmed_by: string | null;
+  confirmed_at: string | null;
+  reviewer: string | null;
+  reviewed_at: string | null;
+  review_note: string | null;
+  updated_by: string | null;
+  /** 写入售后数字人的纠错卡编号；知数暂不支持写入 */
+  card_id: string | null;
+  synced_version: string | null;
+  synced_status: string | null;
+  synced_at: string | null;
+  created_at: string;
+  channel: Channel | null;
+  group_id: string | null;
+  message_id: string | null;
+}
+
+export type CandidateView = "proposed" | "pending" | "approved" | "rejected" | "skipped";
+
+export interface CandidateEdit {
+  title?: string;
+  question?: string;
+  answer?: string;
+  branch?: Branch;
+  kind?: KnowledgeKind;
+  module?: string;
+  note?: string;
+}
+
+export function fetchCandidates(view: CandidateView, author?: string): Promise<Candidate[]> {
+  const qs = new URLSearchParams({ view });
+  if (author) qs.set("author", author);
+  return call(`/api/candidates?${qs}`);
+}
+/** 知识库角标：等我确认的、等我审核的 */
+export const fetchCandidateCounts = () =>
+  call<{ mine: number; pending: number; by_status: Record<string, number> }>("/api/candidates/counts");
+export const candidateAction = (
+  id: string,
+  action: "confirm" | "decline" | "approve" | "reject" | "retire",
+  edit: CandidateEdit = {},
+) => post<Candidate>(`/api/candidates/${id}/${action}`, edit);
+
+// ---------- 采纳统计 ----------
+
+export interface AdoptionRow {
+  operator: string;
+  replied: number;
+  exact: number;
+  minor: number;
+  major: number;
+  unused: number;
+  via_chat: number;
+  escalated: number;
+  dismissed: number;
+  knowledge_submitted: number;
+  knowledge_approved: number;
+  reviews: number;
+}
+export interface AdoptionWeek {
+  /** 这周周一 YYYY-MM-DD */
+  week: string;
+  total: AdoptionRow;
+  people: AdoptionRow[];
+}
+export const fetchAdoptionStats = (weeks = 8) => call<{ weeks: AdoptionWeek[] }>(`/api/stats/adoption?weeks=${weeks}`);

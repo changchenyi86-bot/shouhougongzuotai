@@ -9,6 +9,7 @@ import {
   type Attachment,
   type InboxItem,
 } from "./api";
+import AiChat from "./AiChat";
 import Knowledge from "./Knowledge";
 import { formatSize } from "./MessageBody";
 import { MOD, SEND_KEYS, loadSendKey, saveSendKey, type SendKey } from "./sendKey";
@@ -32,6 +33,8 @@ export function customerLabel(m: InboxItem["message"]): string {
 }
 
 type Pending = { key: number; name: string; att?: Attachment; error?: string };
+/** 输入框里的文字从哪来：AI 建议、和 AI 的对话、自己打的 */
+type Basis = "suggestion" | "chat" | "typed" | null;
 
 interface Props {
   channel: InboxItem["message"]["channel"];
@@ -53,6 +56,10 @@ export default function Composer(props: Props) {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<Pending[]>([]);
   const [linked, setLinked] = useState<InboxItem | null>(null);
+  const [basis, setBasis] = useState<Basis>(null);
+  const [unlinked, setUnlinked] = useState(false); // 点了 ×，自己打字时不再自动关联
+  const [chatOpen, setChatOpen] = useState(false);
+  const [filledChat, setFilledChat] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
@@ -125,8 +132,19 @@ export default function Composer(props: Props) {
     setText("");
     setFiles([]);
     setLinked(null);
+    setBasis(null);
+    setUnlinked(false);
+    setFilledChat(null);
     setConfirming(false);
   };
+
+  // 换了要回复的客户消息：自己打的字跟着关联到新的那条，对话小窗和转人工备注收起
+  const focusId = focus?.suggestion?.id ?? null;
+  useEffect(() => {
+    setChatOpen(false);
+    setNoteOpen(false);
+    if (basis === "typed" && !unlinked) setLinked(focus);
+  }, [focusId]); // 只在换消息时执行
 
   const send = () =>
     run(async () => {
@@ -136,6 +154,7 @@ export default function Composer(props: Props) {
         content: text.trim(),
         attachment_ids: ready.map((a) => a.id),
         suggestion_id: linked?.suggestion?.id ?? null,
+        via_chat: basis === "chat",
       });
       reset();
       notify("已确认，正在发送到群里");
@@ -145,7 +164,7 @@ export default function Composer(props: Props) {
   const copyOnly = () =>
     run(async () => {
       const content = text.trim();
-      if (linked?.suggestion) await adopt(linked.suggestion.id, content);
+      if (linked?.suggestion) await adopt(linked.suggestion.id, content, false, basis === "chat");
       const ok = await copy(content);
       reset();
       notify(ok ? "已复制，请到企业微信群里粘贴发送" : "复制失败，请手动选择文字复制");
@@ -188,11 +207,40 @@ export default function Composer(props: Props) {
   const applySuggestion = (item: InboxItem) => {
     setText(item.suggestion?.content ?? "");
     setLinked(item);
+    setBasis("suggestion");
+    setFilledChat(null);
     setConfirming(false);
   };
 
+  const fillFromChat = (content: string) => {
+    if (!focus) return;
+    setText(content);
+    setLinked(focus);
+    setBasis("chat");
+    setConfirming(false);
+    textInput.current?.focus();
+  };
+
+  const onType = (value: string) => {
+    setText(value);
+    setConfirming(false);
+    if (!value.trim()) {
+      if (basis === "typed") {
+        setBasis(null);
+        if (!unlinked) setLinked(null);
+      }
+      return;
+    }
+    // 自己打的回复也关联到正在处理的客户消息，发出后记为已回复（可以点 × 取消关联）
+    if (!basis) {
+      setBasis("typed");
+      if (!linked && !unlinked && focus?.suggestion) setLinked(focus);
+    }
+  };
+
   const s = focus?.suggestion;
-  const inUse = !!s && linked?.suggestion?.id === s.id; // 建议已填进输入框，面板收起
+  const inUse = !!s && linked?.suggestion?.id === s.id && basis === "suggestion"; // 建议已填进输入框，面板收起
+  const maybeNoReply = !!s && s.status === "ready" && s.needs_reply === false && !s.reopened_by;
   const what = [
     text.trim() && "文字",
     ready.filter((a) => a.mime.startsWith("image/")).length && `${ready.filter((a) => a.mime.startsWith("image/")).length} 张图片`,
@@ -239,6 +287,8 @@ export default function Composer(props: Props) {
               <div className="sug-head">
                 {s.status === "escalated" ? (
                   <span className="badge warn">已转人工{s.handled_by ? ` · ${s.handled_by}` : ""}</span>
+                ) : maybeNoReply ? (
+                  <span className="badge">AI 觉得可能不用回复</span>
                 ) : s.can_answer ? (
                   <span className="badge ok">可直接回复</span>
                 ) : (
@@ -256,6 +306,14 @@ export default function Composer(props: Props) {
             {s.content && s.status !== "generating" && !inUse && (
               <button className="primary" disabled={busy} onClick={() => applySuggestion(focus)}>用这条建议</button>
             )}
+            <button
+              className={`ai-chat-toggle ${chatOpen ? "on" : ""}`}
+              aria-expanded={chatOpen}
+              title="说说你的方案或要点，AI 帮你写成发给客户的回复"
+              onClick={() => setChatOpen((v) => !v)}
+            >
+              和 AI 对话
+            </button>
             {s.status !== "escalated" && s.status !== "generating" && (
               <button disabled={busy} onClick={() => setNoteOpen((v) => !v)}>转人工</button>
             )}
@@ -264,6 +322,15 @@ export default function Composer(props: Props) {
               <button disabled={busy} onClick={() => run(() => regenerate(s.id))}>重新生成</button>
             )}
           </div>
+          {chatOpen && (
+            <AiChat
+              suggestion={s}
+              onFill={fillFromChat}
+              filledId={basis === "chat" ? filledChat : null}
+              onFilled={setFilledChat}
+              notify={notify}
+            />
+          )}
           {noteOpen && (
             <div className="escalate">
               <input placeholder="备注（可选）：需要谁处理、缺什么信息" value={note} onChange={(e) => setNote(e.target.value)} />
@@ -288,7 +355,16 @@ export default function Composer(props: Props) {
         <div className="reply-to">
           回复 {customerLabel(linked.message)}：「{linked.message.content.slice(0, 30)}」
           <span className="muted">（发出后这条消息记为已处理）</span>
-          <button className="link" onClick={() => setLinked(null)} title="不关联这条消息">×</button>
+          <button
+            className="link"
+            onClick={() => {
+              setLinked(null);
+              setUnlinked(true);
+            }}
+            title="不关联这条消息"
+          >
+            ×
+          </button>
         </div>
       )}
 
@@ -315,10 +391,7 @@ export default function Composer(props: Props) {
             : "输入回复。发送电脑不在线，只能复制文字后到企业微信里手动发"
         }
         rows={Math.min(8, Math.max(3, text.split("\n").length + 1))}
-        onChange={(e) => {
-          setText(e.target.value);
-          setConfirming(false);
-        }}
+        onChange={(e) => onType(e.target.value)}
         onPaste={(e) => {
           if (canAutoSend && e.clipboardData.files.length) {
             e.preventDefault();

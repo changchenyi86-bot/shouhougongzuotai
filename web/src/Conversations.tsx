@@ -8,6 +8,7 @@ import {
   fetchConversation,
   fetchGroups,
   fetchStaff,
+  reopen,
   resendTask,
   setGroupName,
   type Channel,
@@ -22,6 +23,7 @@ import {
 } from "./api";
 import Composer, { customerLabel } from "./Composer";
 import MessageBody, { AttachmentView } from "./MessageBody";
+import ReflowTip from "./ReflowTip";
 
 export interface ChatTarget {
   channel: Channel;
@@ -32,6 +34,10 @@ interface Props {
   me: Staff;
   canAutoSend: (channel: Channel) => boolean;
   notify: (text: string) => void;
+  /** 打开知识库页（候选知识） */
+  onOpenKnowledge: () => void;
+  /** 候选知识有变化（刷新知识库角标） */
+  onKnowledgeChanged: () => void;
 }
 
 const VIEWS: { key: GroupView; label: string; admin?: boolean }[] = [
@@ -75,9 +81,25 @@ function shortTime(iso: string) {
     : d.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
 }
 
-function SugChip({ s, focused, onFocus }: { s: Suggestion; focused: boolean; onFocus: () => void }) {
-  if (s.status === "adopted" || s.status === "edited")
-    return <span className="chip-status ok" title={s.final_content ?? undefined}>已回复{s.handled_by ? ` · ${s.handled_by}` : ""}</span>;
+const CANDIDATE_TAG: Partial<Record<string, string>> = { pending: "已进候选知识", approved: "已沉淀为知识" };
+
+function SugChip({ s, focused, onFocus, onReopen }: { s: Suggestion; focused: boolean; onFocus: () => void; onReopen: () => void }) {
+  if (s.status === "adopted" || s.status === "edited") {
+    const tag = s.candidate && CANDIDATE_TAG[s.candidate.status];
+    return (
+      <span className="chip-line">
+        <span className="chip-status ok" title={s.final_content ?? undefined}>已回复{s.handled_by ? ` · ${s.handled_by}` : ""}</span>
+        {tag && <span className="chip-status kn" title={s.candidate!.question}>{tag}</span>}
+      </span>
+    );
+  }
+  if (s.status === "dismissed" && s.auto_dismissed)
+    return (
+      <span className="chip-status auto" title={s.reason ?? undefined}>
+        AI 判断无需回复
+        <button className="link" onClick={onReopen}>要回复</button>
+      </span>
+    );
   if (s.status === "dismissed") return <span className="chip-status">无需回复</span>;
   if (s.status === "closed")
     return (
@@ -168,7 +190,7 @@ function OutboxBubble({ task, busy, onAction }: { task: SendTask; busy: boolean;
   );
 }
 
-export default function Conversations({ me, canAutoSend, notify }: Props) {
+export default function Conversations({ me, canAutoSend, notify, onOpenKnowledge, onKnowledgeChanged }: Props) {
   const admin = me.role === "admin";
   const [view, setView] = useState<GroupView>("todo");
   const [groups, setGroups] = useState<Group[]>([]);
@@ -429,6 +451,26 @@ export default function Conversations({ me, canAutoSend, notify }: Props) {
       setBusy(false);
     }
   };
+
+  const reopenOne = async (s: Suggestion) => {
+    setBusy(true);
+    try {
+      await reopen(s.id);
+      setFocusId(s.id);
+      changed();
+    } catch (e) {
+      notify(`操作失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // 我刚回复的、AI 建议沉淀成知识的：在输入框上方提示一次
+  const proposal = useMemo(
+    () =>
+      [...items].reverse().find((i) => i.suggestion?.candidate?.status === "proposed" && i.suggestion.handled_by === me.name) ?? null,
+    [items, me.name],
+  );
 
   // 待回复的客户消息：默认处理最新的一条，点气泡上的标签可以换
   const open = useMemo(() => items.filter((i) => i.suggestion && OPEN.includes(i.suggestion.status)), [items]);
@@ -696,7 +738,12 @@ export default function Conversations({ me, canAutoSend, notify }: Props) {
                     </div>
                     <MessageBody message={m} onChanged={() => refresh()} />
                     {suggestion && (
-                      <SugChip s={suggestion} focused={focus?.suggestion?.id === suggestion.id} onFocus={() => setFocusId(suggestion.id)} />
+                      <SugChip
+                        s={suggestion}
+                        focused={focus?.suggestion?.id === suggestion.id}
+                        onFocus={() => setFocusId(suggestion.id)}
+                        onReopen={() => !busy && reopenOne(suggestion)}
+                      />
                     )}
                   </div>
                   {endsAt.after.get(i)?.map((e) => (
@@ -708,6 +755,18 @@ export default function Conversations({ me, canAutoSend, notify }: Props) {
               {!moreAfter &&
                 outbox.map((t) => <OutboxBubble key={t.id} task={t} busy={busy} onAction={(k) => taskAction(t, k)} />)}
             </div>
+            {proposal && (
+              <ReflowTip
+                key={proposal.suggestion!.candidate!.id}
+                item={proposal}
+                onDone={() => {
+                  refresh();
+                  onKnowledgeChanged();
+                }}
+                onOpenKnowledge={onOpenKnowledge}
+                notify={notify}
+              />
+            )}
             <Composer
               key={`${target.channel}:${target.group_id}`}
               channel={target.channel}

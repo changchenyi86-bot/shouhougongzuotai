@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime, timedelta, timezone
 
 from app import routing, send_queue
+from app.ai import reflow, worker
 from app.api.sending import task_out
 from app.api.suggestions import OPEN, REPLYABLE
 from app.auth import current_staff, require_admin
@@ -313,6 +314,7 @@ def send(body: SendIn, staff: Staff = Depends(current_staff), session: Session =
         sug.status = S.EDITED if edited else S.ADOPTED
         sug.handled_by, sug.handled_at = staff.name, datetime.now(timezone.utc)
         sug.final_content = content
+        reflow.record(session, sug, content, body.via_chat)
     try:
         task = send_queue.enqueue(session, body.channel, body.group_id, content, body.attachment_ids,
                                   staff.name, sug)
@@ -320,6 +322,8 @@ def send(body: SendIn, staff: Staff = Depends(current_staff), session: Session =
         session.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     session.commit()
+    if sug is not None:
+        worker.submit(reflow.after_reply, sug.id)
     return task_out(session, task)
 
 
