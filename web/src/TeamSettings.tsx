@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { addStaff, editStaff, fetchStaff, fetchTeams, ROLE_LABEL, type Role, type Staff, type Team } from "./api";
 import GroupOwners from "./GroupOwners";
+import GroupProducts from "./GroupProducts";
 
 interface Props {
   me: Staff;
@@ -27,19 +28,25 @@ function StatusCell({ s }: { s: Staff }) {
   return <span className="st muted"><i className="st-dot off" />不在线 · {lastSeen(s.last_seen)}</span>;
 }
 
-/** 团队设置（管理员）：成员、群负责人。 */
+/** 团队设置（管理员）：成员、群负责人、群产品。 */
 export default function TeamSettings({ me, notify }: Props) {
-  const [tab, setTab] = useState<"成员" | "群负责人">("成员");
+  const [tab, setTab] = useState<"成员" | "群负责人" | "群产品">("成员");
   return (
     <div className="settings">
       <div className="subtabs" role="tablist">
-        {(["成员", "群负责人"] as const).map((t) => (
+        {(["成员", "群负责人", "群产品"] as const).map((t) => (
           <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
             {t}
           </button>
         ))}
       </div>
-      {tab === "成员" ? <Members me={me} notify={notify} /> : <GroupOwners notify={notify} />}
+      {tab === "成员" ? (
+        <Members me={me} notify={notify} />
+      ) : tab === "群负责人" ? (
+        <GroupOwners notify={notify} />
+      ) : (
+        <GroupProducts notify={notify} />
+      )}
     </div>
   );
 }

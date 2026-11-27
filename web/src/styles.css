@@ -1199,6 +1199,12 @@ button.chip-status.merged:hover { color: var(--accent-text); }
 /* AI 结合上下文补全的问题 */
 .ai-question { display: flex; gap: 8px; align-items: baseline; margin: 8px 0 0; font-size: 12.5px; line-height: 1.6; color: var(--text-2); }
 .ai-question b { flex: none; font-weight: 500; color: var(--text-3); }
+/* 这条建议查的是哪个产品的知识、怎么定的，可以改 */
+.ai-product { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0 0; font-size: 12.5px; line-height: 1.6; color: var(--text-2); }
+.ai-product b { flex: none; font-weight: 500; color: var(--text-3); }
+.ai-product-name { font-weight: 500; color: var(--accent-text); background: var(--accent-soft); border-radius: 4px; padding: 0 6px; }
+.ai-product-how { color: var(--text-3); min-width: 0; }
+.ai-product select { font-size: 12px; padding: 1px 4px; height: auto; }
 .conf { color: var(--text-2); }
 .reason { color: var(--text-3); flex-basis: 100%; }
 .by { color: var(--text-3); font-size: 12px; margin-left: 8px; }
@@ -2159,3 +2165,10 @@ button.link.inline { margin: 0 0 0 4px; font-size: 12px; }
   cursor: pointer;
 }
 .refresh-btn:hover:not(:disabled) { background: var(--hover); }
+
+/* 团队设置 · 群产品 */
+.product-ch { margin-left: 6px; }
+.product-by { margin-left: 6px; font-size: 12px; }
+.product-rec { max-width: 360px; }
+.product-rec-name { font-weight: 500; color: var(--accent-text); margin-right: 6px; }
+.product-basis { display: block; margin-top: 2px; font-size: 12px; line-height: 1.5; color: var(--text-3); }

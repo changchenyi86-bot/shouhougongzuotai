@@ -38,9 +38,6 @@ KIND_LABELS = {
 }
 # 知识库的产品前缀 → 适用分支
 BRANCHES = {"bi": "有数", "zs": "知数", "ed": "数据中台"}
-# 群名里的产品标记：BD（偶尔写成 DB）是数据中台的群，BI 是有数的群；前后不能紧挨着英文字母
-_BD_GROUP = re.compile(r"(?<![A-Za-z])(BD|DB)(?![A-Za-z])", re.I)
-_BI_GROUP = re.compile(r"(?<![A-Za-z])BI(?![A-Za-z])|有数|知数", re.I)
 
 # 纯寒暄、确认类消息不查知识库
 _SMALL_TALK = re.compile(r"^(好的?|好滴|嗯+|哦+|收到|了解|明白|知道了|谢谢|多谢|感谢|辛苦了?|ok|okay|thx|thanks|👍)+$", re.I)
@@ -243,6 +240,10 @@ class KnowledgeClient:
 
     # ---- 手册、FAQ、工单 ----
     def documents(self, query: str, product: str, top: int, read_full: int, max_chars: int) -> list[KnowledgeItem]:
+        return self.materialize(self.ranked(query, product)[:top], read_full, max_chars)
+
+    def ranked(self, query: str, product: str) -> list[dict]:
+        """一个产品的候选文档：三路各取前 RERANK_POOL 篇，轮流合并去重后重排（还没读全文）。"""
         routes = []
         for source_type in ("manual", "faq", ""):
             res = self.call("search", {"query": query, "top": RERANK_POOL, "product": product, "type": source_type})
@@ -257,14 +258,17 @@ class KnowledgeClient:
                     if f and f not in seen:
                         seen.add(f)
                         merged.append(r)
-        merged = rerank(query, merged)
+        return rerank(query, merged)
+
+    def materialize(self, rows: list[dict], read_full: int, max_chars: int) -> list[KnowledgeItem]:
+        """把候选文档读成参考资料：每篇都读一下取原文链接，正文只给前 read_full 篇。"""
         items = []
-        for i, r in enumerate(merged[:top]):
+        for i, r in enumerate(rows):
             item = KnowledgeItem(
                 kind=r.get("source") or "wiki", branch=_branch(r.get("index") or r["file"]),
                 title=(r.get("title") or r["file"]).strip(), source_id=r["file"],
                 snippet=_IMAGE.sub("", r.get("snippet") or "").strip()[:200])
-            # 每篇都读一下以取得原文链接，正文只给前 read_full 篇；单篇读不到时只用摘要
+            # 单篇读不到时只用摘要
             try:
                 text = self.call("read_article", {"file": r["file"]})
             except KnowledgeError as exc:
@@ -295,39 +299,33 @@ def set_client(client: KnowledgeClient | None) -> None:
     _client = client
 
 
-def products_for_group(group_name: str | None) -> list[str]:
-    """按群名决定查哪些产品的知识：只带 BD 的群查数据中台（ed），BD 和 BI 都带的两边都查，
-    其余（BI、知数、没标的群）查默认产品（bi，检索服务会自动带上知数）。"""
-    name = group_name or ""
-    if _BD_GROUP.search(name):
-        return [settings.knowledge_product, "ed"] if _BI_GROUP.search(name) else ["ed"]
-    return [settings.knowledge_product]
-
-
-def retrieve(text: str, group_name: str | None = None) -> list[KnowledgeItem]:
+def retrieve(text: str, products: list[str] | None = None) -> list[KnowledgeItem]:
     """按客户消息查参考知识：纠错卡在前，然后是手册、FAQ、工单。没配置或不需要查时返回空。
 
-    查哪个产品按群名定（见 products_for_group）；两个产品都查时，文档按名次轮流合并，总篇数不变。
+    products 是检索服务的产品参数（bi / zs / ed，见 app.ai.products.mcp_products），不传查默认产品。
+    几个产品都查时，各自重排后按名次轮流合并、按文件去重，总篇数不变，最后只读入选的几篇。
     失败抛 KnowledgeError。
     """
     client = get_client()
     query = search_query(text)
     if client is None or query is None:
         return []
-    products = products_for_group(group_name)
+    products = products or [settings.knowledge_product]
     cards: list[KnowledgeItem] = []
-    per_product: list[list[KnowledgeItem]] = []
+    per_product: list[list[dict]] = []
     for product in products:
         cards += client.cards(query, product)
-        per_product.append(client.documents(query, product, settings.knowledge_top, settings.knowledge_read_full,
-                                            settings.knowledge_article_chars))
-    docs: list[KnowledgeItem] = []
-    for rank in range(max((len(p) for p in per_product), default=0)):
-        docs += [p[rank] for p in per_product if rank < len(p)]
+        per_product.append(client.ranked(query, product))
     seen: set[str] = set()
     cards = [c for c in cards if not (c.source_id in seen or seen.add(c.source_id))]
-    docs = [d for d in docs if not (d.source_id in seen or seen.add(d.source_id))]
-    items = cards + docs[: settings.knowledge_top]
+    rows: list[dict] = []
+    for rank in range(max((len(p) for p in per_product), default=0)):
+        for p in per_product:
+            if rank < len(p) and p[rank]["file"] not in seen:
+                seen.add(p[rank]["file"])
+                rows.append(p[rank])
+    items = cards + client.materialize(rows[: settings.knowledge_top], settings.knowledge_read_full,
+                                       settings.knowledge_article_chars)
     for i, item in enumerate(items, 1):
         item.ref = f"K{i}"
     return items

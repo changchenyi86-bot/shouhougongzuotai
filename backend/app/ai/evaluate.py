@@ -126,8 +126,8 @@ class CaseSpec:
                    (c.data or {}).get("expected_question"))
 
 
-# 评测题按分支给一个带产品标记的群名，查知识时和真实群一样按群名分产品（见 knowledge.products_for_group）
-_EVAL_GROUP = {"有数": "评测 BI（不发到群里）", "知数": "评测 BI（不发到群里）", "数据中台": "评测 BD（不发到群里）"}
+# 评测题按分支给一个带产品标记的群名，查知识时和真实群一样按群名分产品（见 app.ai.products）
+_EVAL_GROUP = {"有数": "评测 BI（不发到群里）", "知数": "评测 知数（不发到群里）", "数据中台": "评测 BD（不发到群里）"}
 
 
 def _message(content: str, sent_at: datetime, customer: bool, branch: str = "") -> Message:

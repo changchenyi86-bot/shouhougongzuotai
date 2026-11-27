@@ -40,7 +40,7 @@ def ev(client, fake_llm, monkeypatch):
     monkeypatch.setattr(settings, "knowledge_mcp_url", "http://digital-human.test/messages")
     faq = KnowledgeItem(kind="faq", branch="有数", title="有数的缓存与刷新", source_id="bi-faq-lzs08.md",
                         url="https://study.sf.163.com/documents/read/privatization/lzs08", snippet="缓存")
-    monkeypatch.setattr(suggest, "retrieve_knowledge", lambda session, message, query: [faq.model_copy()])
+    monkeypatch.setattr(suggest, "retrieve_knowledge", lambda session, message, query, **kw: [faq.model_copy()])
     fake_llm.results[Verdict] = Verdict(verdict="对", reason="和期望一致")
     r = client.post("/api/eval/sets/v1/import", files={"file": ("v1.jsonl", _jsonl(CASES))})
     assert r.status_code == 200, r.text

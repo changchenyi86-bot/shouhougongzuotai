@@ -5,12 +5,18 @@ import {
   dismiss,
   escalate,
   fetchMembers,
+  PRODUCT_CODES,
+  PRODUCT_LABEL,
+  productLabel,
   regenerate,
   sendToGroup,
+  setSuggestionProduct,
   uploadAttachment,
   type Attachment,
   type InboxItem,
   type Member,
+  type ProductCode,
+  type Suggestion,
 } from "./api";
 import AiChat from "./AiChat";
 import CopyButton, { copyText } from "./CopyButton";
@@ -483,6 +489,9 @@ export default function Composer(props: Props) {
                   <span>{question}</span>
                 </p>
               )}
+              {s.products && s.products.length > 0 && (
+                <ProductLine s={s} busy={busy} onChange={(code) => run(() => setSuggestionProduct(s.id, [code]))} />
+              )}
               {s.note && <p className="note">转人工备注：{s.note}</p>}
               {s.content && (
                 <p className="ai-text">
@@ -746,5 +755,49 @@ export default function Composer(props: Props) {
         )}
       </div>
     </div>
+  );
+}
+
+
+const PRODUCT_SOURCE: Record<string, string> = {
+  manual: "管理员给这个群指定的",
+  group: "按群名",
+  ai: "AI 按这一轮内容判断",
+  all: "AI 判断不出，几个产品一起查",
+};
+
+/** 建议卡：这条建议查的是哪个产品的知识、怎么定的；查错了可以改，改完按新产品重新生成。 */
+function ProductLine({ s, busy, onChange }: { s: Suggestion; busy: boolean; onChange: (code: ProductCode) => void }) {
+  const codes = s.products ?? [];
+  const how =
+    s.product_source === "override"
+      ? `${s.product_corrected_by ?? "技术支持"}改的`
+      : PRODUCT_SOURCE[s.product_source ?? ""] ?? "";
+  const reason = s.product_source === "ai" && s.product_reason ? `：${s.product_reason}` : "";
+  const editable = s.status === "ready" || s.status === "failed";
+  return (
+    <p className="ai-product" title="去售后数字人哪个产品的知识库查资料。查错了就改，改完按新产品重新生成这条建议">
+      <b>查的知识</b>
+      <span className="ai-product-name">{productLabel(codes)}</span>
+      <span className="ai-product-how">
+        {how}
+        {reason}
+      </span>
+      {editable && (
+        <select
+          aria-label="改成别的产品"
+          value=""
+          disabled={busy}
+          onChange={(e) => e.target.value && onChange(e.target.value as ProductCode)}
+        >
+          <option value="">改成…</option>
+          {PRODUCT_CODES.filter((c) => !(codes.length === 1 && codes[0] === c)).map((c) => (
+            <option key={c} value={c}>
+              {PRODUCT_LABEL[c]}
+            </option>
+          ))}
+        </select>
+      )}
+    </p>
   );
 }

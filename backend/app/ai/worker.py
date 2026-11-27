@@ -128,7 +128,7 @@ def run(message_id: uuid.UUID) -> None:
         result = error = None
         try:
             with usage.scope(**usage.for_message(message)):
-                result = generate(session, message, round=round)
+                result = generate(session, message, round=round, product_override=sug.product_override)
         except SuggestionFailed as exc:
             error = str(exc)
         except Exception as exc:  # noqa: BLE001
@@ -162,6 +162,9 @@ def run(message_id: uuid.UUID) -> None:
             sug.knowledge = [k.to_record() for k in result.knowledge]
             sug.knowledge_error, sug.knowledge_note = result.knowledge_error, result.knowledge_note
             sug.profile = result.profile
+            if result.product is not None:
+                sug.products, sug.product_source = result.product.codes, result.product.source
+                sug.product_reason = result.product.reason
             sug.needs_reply = draft.needs_reply
             if not draft.needs_reply and all(auto_dismissable(m.content) for m in round) and not sug.reopened_by:
                 # AI 判断无需回复（寒暄、致谢、测试）：直接标记，不算待处理；工作台上可以改回待回复

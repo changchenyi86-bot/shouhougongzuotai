@@ -115,6 +115,11 @@ class SuggestionOut(BaseModel):
     adoption_score: float | None = None
     via_chat: bool = Field(default=False, description="回复是和 AI 对话润色出来的")
     profile: dict | None = Field(default=None, description="生成时带给 AI 的客户档案：{customer, summary}")
+    products: list[str] | None = Field(default=None, description="查的是哪个产品的知识：bi 有数 / zs 知数 / ed 数据中台")
+    product_source: str | None = Field(
+        default=None, description="manual 管理员指定 / group 群名 / ai AI 判断 / all 几个都查 / override 技术支持改的")
+    product_reason: str | None = None
+    product_corrected_by: str | None = None
     candidate: CandidateBrief | None = None
     final_content: str | None
     delivery: str | None
@@ -298,6 +303,37 @@ class OwnerIn(BaseModel):
     channel: Channel
     group_id: str = Field(min_length=1, max_length=128)
     owner_id: uuid.UUID | None = Field(description="为空表示取消负责人")
+
+
+ProductCode = Literal["bi", "zs", "ed"]
+
+
+class ProductIn(BaseModel):
+    products: list[ProductCode] = Field(min_length=1, max_length=3)
+
+
+class GroupProductIn(BaseModel):
+    channel: Channel
+    group_id: str = Field(min_length=1, max_length=128)
+    products: list[ProductCode] | None = Field(default=None, max_length=3, description="为空表示取消指定，按群名或 AI 判断")
+
+
+class GroupProductOut(BaseModel):
+    channel: Channel
+    group_id: str
+    group_name: str | None
+    by_name: list[str] = Field(description="群名里带的产品标记")
+    manual: list[str] | None = Field(description="管理员指定的产品")
+    effective: str = Field(description="现在怎么定：manual 指定 / group 按群名 / ai 每轮由 AI 判断")
+    needs_setting: bool = Field(description="群名一个产品都不带，建议指定")
+    recommend: list[str] = Field(description="推荐指定的产品")
+    recommend_basis: str = ""
+    ai_stats: dict[str, int] = Field(default={}, description="近 30 天 AI 判断的产品次数")
+    owner: str | None = None
+    owner_team: str | None = None
+    customer: str | None = None
+    last_message_at: datetime | None = None
+    updated_by: str | None = None
 
 
 class AssignIn(BaseModel):
