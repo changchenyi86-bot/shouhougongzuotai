@@ -83,12 +83,17 @@ def _connect():
         raise SourceError(f"客户资料数据库连接配置读不了（{type(exc).__name__}）") from None
     except pymysql.MySQLError as exc:
         raise SourceError(f"连不上客户资料数据库（错误码 {exc.args[0] if exc.args else '?'}）") from None
-    cur = conn.cursor()
-    for sql in ("SET SESSION TRANSACTION READ ONLY", "SET SESSION MAX_EXECUTION_TIME=60000",
-                "SET SESSION time_zone = '+08:00'", "START TRANSACTION READ ONLY"):
-        cur.execute(sql)
-    cur.execute("SELECT @@session.transaction_read_only AS ro")
-    if cur.fetchone()["ro"] != 1:
+    try:
+        cur = conn.cursor()
+        for sql in ("SET SESSION TRANSACTION READ ONLY", "SET SESSION MAX_EXECUTION_TIME=60000",
+                    "SET SESSION time_zone = '+08:00'", "START TRANSACTION READ ONLY"):
+            cur.execute(sql)
+        cur.execute("SELECT @@session.transaction_read_only AS ro")
+        read_only = cur.fetchone()["ro"] == 1
+    except pymysql.MySQLError as exc:
+        conn.close()
+        raise SourceError(f"客户资料数据库设置只读会话出错（错误码 {exc.args[0] if exc.args else '?'}）") from None
+    if not read_only:
         conn.close()
         raise SourceError("没能进入只读事务，不同步")
     return conn, cur
@@ -131,6 +136,11 @@ def fetch_source(chat_ids: list[str], record_cursor: datetime | None, fresh_chat
 
 def _text(v) -> str:
     return "" if v is None else str(v).strip()
+
+
+def _cut(v, size: int) -> str | None:
+    """按工作台表的列宽截断（PostgreSQL 上超长会让整次同步写入失败）；空的给 None。"""
+    return _text(v)[:size] or None
 
 
 def _split(v) -> list[str]:
@@ -270,7 +280,7 @@ def build_profiles(src: dict, now: datetime) -> list[CustomerProfile]:
             "structure": _text(r.get("status_struct")) or None, "next_expire": _date(r.get("next_expire_date")),
             "expire": _date(r.get("expire_date"))})
     envs = _environments(src)
-    cluster = {_text(r["simple_name"]): _text(r.get("cluster_type")) or None for r in src["cluster"]
+    cluster = {_text(r["simple_name"]): _cut(r.get("cluster_type"), 40) for r in src["cluster"]
                if _text(r.get("simple_name"))}
     names = set(rep) | set(crm) | set(lines) | set(envs) | set(cluster)
     names |= {_text(r["simple_name"]) for r in src["bind"]} | {_text(r["customer_name"]) for r in src["tasks"]}
@@ -280,10 +290,10 @@ def build_profiles(src: dict, now: datetime) -> list[CustomerProfile]:
         r, c = rep.get(name, {}), crm.get(name, {})
         profiles.append(CustomerProfile(
             name=name[:100], companies=_split(r.get("cus_company")) or None,
-            level=_text(r.get("vip_level")) or None, industry=_text(r.get("cus_industry")) or None,
-            sales=_text(r.get("sale_name")) or _text(c.get("sale_name")) or None,
+            level=_cut(r.get("vip_level"), 20), industry=_cut(r.get("cus_industry"), 100),
+            sales=_cut(_text(r.get("sale_name")) or _text(c.get("sale_name")), 60),
             purchased=_split(r.get("purchased_sku")) or None,
-            business_status=_text(c.get("bus_status")) or None,
+            business_status=_cut(c.get("bus_status"), 20),
             maintenance=sorted(lines.get(name, []), key=lambda x: (x["line"] != "BI", x["line"])) or None,
             environments=envs.get(name) or None, cluster_type=cluster.get(name), synced_at=now))
     return profiles
@@ -320,11 +330,11 @@ def apply(session: Session, src: dict, chat_ids: list[str]) -> None:
     for r in src["bind"]:
         for key in {_text(r.get("chat_id")), _text(r.get("group_id"))}:
             if key.startswith("wr"):
-                bind.setdefault(key, []).append(_text(r["simple_name"]))
+                bind.setdefault(key, []).append(_text(r["simple_name"])[:100])
     tasks: dict[str, list[str]] = {}
     for r in src["tasks"]:
         if _text(r.get("customer_name")):
-            tasks.setdefault(_text(r["chat_id"]), []).append(_text(r["customer_name"]))
+            tasks.setdefault(_text(r["chat_id"]), []).append(_text(r["customer_name"])[:100])
     for chat_id in chat_ids:
         row = session.get(CustomerGroupLink, (Channel.WECOM, chat_id))
         if row is not None and row.source == "manual":
@@ -348,8 +358,8 @@ def apply(session: Session, src: dict, chat_ids: list[str]) -> None:
                 session.delete(existing)
             continue
         rec = existing or ServiceRecord(id=rid)
-        rec.chat_id, rec.served_on = _text(r["chat_id"]), (_date(r.get("date_id")) or _text(r.get("date_id"))[:10])
-        rec.category, rec.staff_name = _text(r.get("category")) or None, _text(r.get("emp_name")) or None
+        rec.chat_id, rec.served_on = _text(r["chat_id"])[:128], (_date(r.get("date_id")) or _text(r.get("date_id"))[:10])
+        rec.category, rec.staff_name = _cut(r.get("category"), 32), _cut(r.get("emp_name"), 64)
         rec.description, rec.solution = _text(r.get("service_desc")) or None, _text(r.get("solution")) or None
         rec.resolved = r.get("is_resolved")
         rec.source_updated_at = _source_time(r.get("updated_at"))

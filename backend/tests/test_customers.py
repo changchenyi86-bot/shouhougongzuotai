@@ -273,3 +273,47 @@ def test_product_label(raw, label):
                                                      ("PROD", "生产环境", "生产"), ("TRIAL", "试用环境（EDSGF02105）", "试用环境（EDSGF02105）")])
 def test_env_label(env_type, name, label):
     assert customers.env_label(env_type, name) == label
+
+
+def test_long_source_values_fit_columns(client, monkeypatch):
+    """源库里超长的字段按工作台的列宽截断（PostgreSQL 上超长会让整次同步失败）。"""
+    _msg(client, "wrJia", sender="lisi")
+    src = _source(records=[{**_record(201, "wrJia", "2026-11-26", "排查"), "category": "类" * 40, "emp_name": "人" * 80}])
+    src["repurchase"][0].update(vip_level="级" * 30, sale_name="销" * 70, cus_industry="业" * 120)
+    src["crm"][0]["bus_status"] = "状" * 30
+    src["cluster"][0]["cluster_type"] = "群" * 50
+    monkeypatch.setattr(settings, "customer_db_config_file", "/tmp/not-used.json")
+    monkeypatch.setattr(customers, "fetch_source", lambda *a: src)
+    assert "同步了" in customers.sync_once()
+    with db.SessionLocal() as s:
+        p = s.get(CustomerProfile, "甲方股份")
+        assert (len(p.level), len(p.sales), len(p.industry), len(p.business_status), len(p.cluster_type)) == (20, 60, 100, 20, 40)
+        r = s.get(ServiceRecord, 201)
+        assert (len(r.category), len(r.staff_name)) == (32, 64)
+
+
+def test_read_only_session_setup_error_is_reported(monkeypatch, tmp_path):
+    """连上之后设只读会话出错（如源库不支持某个设置）：报同步失败、关掉连接，不往下读。"""
+    import pymysql
+
+    closed = []
+
+    class Cursor:
+        def execute(self, sql):
+            if "MAX_EXECUTION_TIME" in sql:
+                raise pymysql.err.OperationalError(1193, "Unknown system variable")
+
+    class Conn:
+        def cursor(self):
+            return Cursor()
+
+        def close(self):
+            closed.append(True)
+
+    cfg = tmp_path / "db.json"
+    cfg.write_text('{"host": "h", "username": "u", "password": "p"}', encoding="utf-8")
+    monkeypatch.setattr(settings, "customer_db_config_file", str(cfg))
+    monkeypatch.setattr(pymysql, "connect", lambda **kw: Conn())
+    with pytest.raises(customers.SourceError, match="1193"):
+        customers._connect()
+    assert closed == [True]
