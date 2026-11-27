@@ -13,6 +13,7 @@ from app import db  # noqa: E402
 from app.ai import llm, worker  # noqa: E402
 from app.ai.llm import SuggestionDraft  # noqa: E402
 from app.ai.reflow import Judgement  # noqa: E402
+from app.ai.suggest import RoundQuery  # noqa: E402
 from app.ai.refine import RefinedReply  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.main import app  # noqa: E402
@@ -29,6 +30,7 @@ class FakeLLM:
         self.error: Exception | None = None
         # 和 AI 对话、回流判断的固定结果，按输出结构取
         self.results: dict[type, object] = {
+            RoundQuery: RoundQuery(question="补全后的客户问题"),
             RefinedReply: RefinedReply(reply="您好，请先清理浏览器缓存再重新导出。", note=""),
             Judgement: Judgement(general=True, reason="导出问题，别的客户也会遇到", title="报表导出一直转圈",
                                  question="报表导出一直转圈怎么办？", answer="请先清理浏览器缓存再重新导出。",
@@ -64,6 +66,7 @@ def client(monkeypatch, fake_llm):
     monkeypatch.setattr(db, "SessionLocal", sessionmaker(bind=engine, expire_on_commit=False))
     # 建议生成改为同步执行，便于断言
     monkeypatch.setattr(worker, "submit", lambda fn, *args: fn(*args))
+    monkeypatch.setattr(worker, "schedule", lambda delay, fn, *args: worker.submit(fn, *args))
     # 测试数据的时间是固定的，不受“只为近期消息生成建议”的限制
     monkeypatch.setattr(settings, "ai_suggest_max_age_minutes", 10**8)
     with TestClient(app) as c:

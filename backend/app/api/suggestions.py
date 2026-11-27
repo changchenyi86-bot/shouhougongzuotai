@@ -26,7 +26,7 @@ VIEWS: dict[str, list[SuggestionStatus] | None] = {
 }
 OPEN = OPEN_SUGGESTION
 # 还能回复的：随会话结束的消息之后补上回复，也记为已回复
-REPLYABLE = OPEN | {S.CLOSED}
+REPLYABLE = OPEN | {S.CLOSED, S.MERGED}
 
 
 @router.get("/inbox", response_model=list[InboxItem])
@@ -152,7 +152,7 @@ def regenerate(suggestion_id: uuid.UUID, staff: Staff = Depends(current_staff),
     if sug.status not in (S.READY, S.FAILED):
         raise HTTPException(status.HTTP_409_CONFLICT, f"当前状态不能重新生成（{sug.status.value}）")
     session.rollback()  # 释放行锁，enqueue 用独立会话更新状态
-    worker.enqueue(sug.message_id)
+    worker.enqueue(sug.message_id, wait=0)
     session.refresh(sug)
     return sug
 

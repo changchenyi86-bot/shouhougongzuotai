@@ -277,7 +277,9 @@ def fake_embedding(monkeypatch):
     return fake
 
 
-def test_similar_history_and_workbench_knowledge(client, fake_llm, fake_embedding, wangwu):
+def test_similar_history_and_workbench_knowledge(client, fake_llm, fake_embedding, wangwu, monkeypatch):
+    # 本用例按一条消息一张建议测相似问答，不测一轮合并。
+    monkeypatch.setattr(settings, "ai_round_window_minutes", 0)
     _, cid = _edited_reply(client, content="报表导出一直转圈怎么办？")
     # 别的群里同样的问题：带上历史回复
     mid = _msg(client, "报表导出一直在转圈怎么办", group="wrB", name="某券商-有数群")

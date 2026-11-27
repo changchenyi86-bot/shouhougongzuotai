@@ -1,6 +1,7 @@
 import httpx
 import pytest
 
+from app.config import settings
 from app.ai.llm import LLMError, OpenAICompatibleProvider, parse_draft
 
 CUSTOMER_MSG = {
@@ -26,7 +27,9 @@ def _todo(client, view="todo"):
     return client.get("/api/inbox", params={"view": view}).json()
 
 
-def test_new_message_gets_suggestion(client, fake_llm):
+def test_new_message_gets_suggestion(client, fake_llm, monkeypatch):
+    # 本用例按一条消息一张建议测新消息出建议，不测一轮合并。
+    monkeypatch.setattr(settings, "ai_round_window_minutes", 0)
     _post(client, external_id="om_0", content="之前的问题", sent_at="2026-11-19T07:59:00Z")
     _post(client)
     items = _todo(client)
@@ -37,7 +40,7 @@ def test_new_message_gets_suggestion(client, fake_llm):
     assert sug["status"] == "ready" and sug["content"] == "您好，请清理浏览器缓存后重试。"
     assert sug["can_answer"] is True and sug["model"] == "fake-model"
     prompt = fake_llm.calls[-1][1]
-    assert "之前的问题" in prompt and "<customer_message>" in prompt and "某客户-有数项目群" in prompt
+    assert "之前的问题" in prompt and "<current_round>" in prompt and "某客户-有数项目群" in prompt
     # 重复推送不重复生成
     _post(client)
     assert len(fake_llm.calls) == 2

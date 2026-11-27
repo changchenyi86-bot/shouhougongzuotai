@@ -116,6 +116,12 @@ class Judgement(BaseModel):
         return "" if v is None else str(v)
 
 
+def _round_original(session: Session, sug: Suggestion, message: Message) -> str:
+    ids = [uuid.UUID(value) for value in (sug.covers or [str(message.id)])]
+    messages = {m.id: m for m in session.scalars(select(Message).where(Message.id.in_(ids)))}
+    return "\n".join(messages[mid].content for mid in ids if mid in messages) or message.content
+
+
 def _judge_prompt(session: Session, sug: Suggestion, message: Message) -> str:
     history = _history(session, message)[-8:]
     lines = [f"{_speaker(m)}：{m.content}" for m in history]
@@ -125,10 +131,12 @@ def _judge_prompt(session: Session, sug: Suggestion, message: Message) -> str:
     parts = [
         f"群名称：{message.group_name or message.group_id}",
         "<chat_history>\n" + ("\n".join(lines) or "（无）") + "\n</chat_history>",
-        f"<customer_question>\n{message.content}\n</customer_question>",
+        f"<customer_question>\n{_round_original(session, sug, message)}\n</customer_question>",
         "<ai_suggestion>\n" + (sug.content or "（AI 没有给出建议）") + "\n</ai_suggestion>",
         f"<actual_reply author=\"{sug.handled_by or '技术支持'}\">\n{sug.final_content}\n</actual_reply>",
     ]
+    if sug.question:
+        parts.append(f"<understood_question>\n{sug.question}\n</understood_question>")
     staff = [t.content for t in turns if t.role == "staff"]
     if staff:
         parts.append("<staff_to_ai>\n" + "\n".join(f"- {t}" for t in staff) + "\n</staff_to_ai>")
@@ -146,7 +154,7 @@ def judge(session: Session, sug: Suggestion) -> KnowledgeCandidate | None:
         status=CandidateStatus.PROPOSED if result.general and result.answer.strip() else CandidateStatus.NOT_GENERAL,
         title=result.title[:256] or result.question[:80], question=result.question, answer=result.answer,
         branch=result.branch, kind=result.kind, module=result.module[:64], reason=result.reason,
-        customer_question=message.content, customer_reply=sug.final_content, ai_suggestion=sug.content,
+        customer_question=_round_original(session, sug, message), customer_reply=sug.final_content, ai_suggestion=sug.content,
         group_name=message.group_name, author=sug.handled_by,
     )
     session.add(cand)

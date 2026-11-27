@@ -44,14 +44,15 @@ def index_reply(session: Session, sug: Suggestion) -> bool:
     """把一条已发出的回复存成相似问答（寒暄、确认类的客户消息不存）。失败抛 EmbeddingError。"""
     message = session.get(Message, sug.message_id)
     answer = (sug.final_content or "").strip()
-    if message is None or sug.status not in REPLIED or not answer or search_query(message.content) is None:
+    question = (sug.question or message.content) if message is not None else ""
+    if message is None or sug.status not in REPLIED or not answer or search_query(question) is None:
         return False
-    vectors = _embed([message.content])
+    vectors = _embed([question])
     if vectors is None:
         return False
     entry = session.scalar(select(QaEntry).where(QaEntry.suggestion_id == sug.id))
     _upsert(session, entry, source="reply", suggestion_id=sug.id, message_id=message.id,
-            question=message.content[:2000], answer=answer[:4000], branch=None,
+            question=question[:2000], answer=answer[:4000], branch=None,
             group_name=message.group_name, author=sug.handled_by, embedding=vectors[0],
             model=settings.embedding_model)
     return True

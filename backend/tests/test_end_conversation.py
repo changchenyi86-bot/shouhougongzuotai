@@ -43,7 +43,9 @@ def _end(client, group="wrA", operator="李四"):
     return client.post("/api/conversations/end", json={"channel": "wecom", "group_id": group, "operator": operator})
 
 
-def test_end_closes_unreplied_and_reopens_on_new_message(client):
+def test_end_closes_unreplied_and_reopens_on_new_message(client, monkeypatch):
+    # 本用例按一条消息一张建议测结束会话，不测一轮合并。
+    monkeypatch.setattr(settings, "ai_round_window_minutes", 0)
     for n in (1, 2, 3):
         _msg(client, n)
     _msg(client, 4, sender="lisi")  # 员工发言没有建议

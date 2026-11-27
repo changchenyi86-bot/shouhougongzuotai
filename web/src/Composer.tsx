@@ -34,6 +34,17 @@ const CONFIDENCE: Record<string, string> = { high: "把握高", medium: "把握�
 const MAX_FILES = 9;
 
 type Pending = { key: number; name: string; att?: Attachment; error?: string };
+type ChatMessage = InboxItem["message"];
+
+/** 「回复 谁：『说了什么』」：一条建议回同一轮好几条消息时，列出是谁、几条 */
+function roundLabel(msgs: ChatMessage[]): { who: string; text: string } {
+  const names = [...new Set(msgs.map((m) => senderName(m)))];
+  const who = names.length > 2 ? `${names.slice(0, 2).join("、")} 等` : names.join("、");
+  if (msgs.length <= 1) return { who, text: msgs[0]?.content ?? "" };
+  return { who: `${who}（${msgs.length} 条）`, text: msgs.map((m) => m.content).join(" / ") };
+}
+
+const clip = (text: string, n: number) => (text.length > n ? `${text.slice(0, n)}…` : text);
 /** 输入框里的文字从哪来：AI 建议、和 AI 的对话、自己打的 */
 type Basis = "suggestion" | "chat" | "typed" | null;
 
@@ -44,6 +55,8 @@ interface Props {
   canAutoSend: boolean;
   /** 当前要处理的客户消息（带 AI 建议）。 */
   focus: InboxItem | null;
+  /** 这条建议回的同一轮客户消息（连发、几个人各说一句），按时间顺序；没有就是 focus 那一条 */
+  round?: ChatMessage[];
   focusIndex: number;
   openTotal: number;
   onFocusStep: (delta: number) => void;
@@ -160,12 +173,29 @@ export default function Composer(props: Props) {
     });
   };
 
-  /** 在回复开头 @ 这位客户（已经 @ 了就不重复） */
+  /** 这条建议回的是哪几条消息：正在处理的那条用整轮，其他的就是它自己 */
+  const roundOf = (item: InboxItem | null): ChatMessage[] => {
+    if (!item) return [];
+    const same = !!item.suggestion && item.suggestion.id === focus?.suggestion?.id;
+    return same && props.round?.length ? props.round : [item.message];
+  };
+  /** 这一轮里提问的客户（去重），回复开头要 @ 的人 */
+  const askersOf = (item: InboxItem | null): Member[] => {
+    if (!canMention) return [];
+    const out: Member[] = [];
+    for (const m of roundOf(item)) {
+      const who = m.from_customer ? memberOf(m, members ?? []) : null;
+      if (who && !out.some((x) => x.name === who.name)) out.push(who);
+    }
+    return out;
+  };
+
+  /** 在回复开头 @ 提问的客户（已经 @ 了就不重复） */
   const withAt = (content: string, item: InboxItem | null): string => {
-    const who = canMention && item ? memberOf(item.message, members ?? []) : null;
-    if (!who || content.includes(`@${who.name}`)) return content;
-    setPicked((prev) => ({ ...prev, [who.name]: who }));
-    return `@${who.name} ${content}`;
+    const missing = askersOf(item).filter((who) => !content.includes(`@${who.name}`));
+    if (!missing.length) return content;
+    setPicked((prev) => ({ ...prev, ...Object.fromEntries(missing.map((who) => [who.name, who])) }));
+    return `${missing.map((who) => `@${who.name} `).join("")}${content}`;
   };
 
   const uploading = files.some((f) => !f.att && !f.error);
@@ -386,9 +416,12 @@ export default function Composer(props: Props) {
   const maybeNoReply = !!s && s.status === "ready" && s.needs_reply === false && !s.reopened_by;
   const atNames = [...new Set(spans.map((sp) => sp.member.name))];
   const atDup = [...new Set(spans.filter((sp) => sp.member.duplicate).map((sp) => sp.member.name))];
-  const asker = canMention && linked ? memberOf(linked.message, members ?? []) : null;
-  const focusAsker = canMention && focus ? memberOf(focus.message, members ?? []) : null;
-  const askerAt = !!asker && spans.some((sp) => sp.member.name === asker.name);
+  const askersToAt = askersOf(linked).filter((who) => !spans.some((sp) => sp.member.name === who.name));
+  const focusAskers = s?.content ? askersOf(focus).filter((who) => !s.content!.includes(`@${who.name}`)) : [];
+  const focusLabel = roundLabel(roundOf(focus));
+  const linkedLabel = roundLabel(roundOf(linked));
+  // AI 结合上下文补全的问题：和客户原话一样就不用再显示
+  const question = s?.question?.trim() && s.question.trim() !== focusLabel.text.trim() ? s.question.trim() : null;
   const what = [
     text.trim() && "文字",
     readyImages.length && `${readyImages.length} 张图片`,
@@ -415,9 +448,8 @@ export default function Composer(props: Props) {
         <div className={`ai-panel ${s.status}`}>
           <div className="ai-head">
             <b>AI 建议</b>
-            <span className="ai-for">
-              回复 {senderName(focus.message)}：「{focus.message.content.slice(0, 40)}
-              {focus.message.content.length > 40 ? "…" : ""}」
+            <span className="ai-for" title={roundOf(focus).map((m) => `${senderName(m)}：${m.content}`).join("\n")}>
+              回复 {focusLabel.who}：「{clip(focusLabel.text, 40)}」
             </span>
             {props.openTotal > 1 && (
               <span className="ai-nav">
@@ -445,15 +477,22 @@ export default function Composer(props: Props) {
                 {s.confidence && <span className="conf">{CONFIDENCE[s.confidence]}</span>}
                 {s.reason && <span className="reason">{s.reason}</span>}
               </div>
+              {question && (
+                <p className="ai-question" title="AI 结合前面的聊天，把这一轮客户要解决的问题补全成一句话，再拿这句去查知识">
+                  <b>AI 理解的问题</b>
+                  <span>{question}</span>
+                </p>
+              )}
               {s.note && <p className="note">转人工备注：{s.note}</p>}
               {s.content && (
                 <p className="ai-text">
-                  {focusAsker && !s.content.includes(`@${focusAsker.name}`) && (
-                    <mark className="mention" title="用这条建议时会在开头 @ 这位客户，发出后对方会收到 @ 提醒">
-                      @{focusAsker.name}
-                    </mark>
-                  )}
-                  {focusAsker && !s.content.includes(`@${focusAsker.name}`) && " "}
+                  {focusAskers.map((who) => (
+                    <span key={who.name}>
+                      <mark className="mention" title="用这条建议时会在开头 @ 这位客户，发出后对方会收到 @ 提醒">
+                        @{who.name}
+                      </mark>{" "}
+                    </span>
+                  ))}
                   {s.content}
                 </p>
               )}
@@ -522,10 +561,11 @@ export default function Composer(props: Props) {
 
       {linked && (
         <div className="reply-to">
-          回复 {senderName(linked.message)}：「{linked.message.content.slice(0, 30)}」
-          <span className="muted">（发出后这条消息记为已处理）</span>
-          {asker && !askerAt && (
+          回复 {linkedLabel.who}：「{clip(linkedLabel.text, 30)}」
+          <span className="muted">（发出后{roundOf(linked).length > 1 ? "这几条" : "这条"}消息记为已处理）</span>
+          {askersToAt.map((asker) => (
             <button
+              key={asker.name}
               className="at-asker"
               title={`在回复开头 @ ${asker.name}，对方会收到 @ 提醒`}
               onClick={() => {
@@ -536,7 +576,7 @@ export default function Composer(props: Props) {
             >
               @ {asker.name}
             </button>
-          )}
+          ))}
           <button
             className="link"
             onClick={() => {

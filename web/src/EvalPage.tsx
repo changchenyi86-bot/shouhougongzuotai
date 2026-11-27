@@ -180,6 +180,12 @@ function ResultDetail({ r }: { r: EvalResult }) {
             <p className="error">{r.error}</p>
           ) : (
             <>
+              {r.understood_question && r.understood_question.trim() !== r.question.trim() && (
+                <p className="ai-question">
+                  <b>AI 理解的问题</b>
+                  <span>{r.understood_question}</span>
+                </p>
+              )}
               <p className="eval-reply">{r.reply}</p>
               {r.verdict_reason && (
                 <p className={`eval-why ${r.passed ? "ok" : ""}`}><b>判分：{r.verdict ?? "没打分"}。</b>{r.verdict_reason}</p>

@@ -72,7 +72,7 @@ def import_cases(session: Session, set_name: str, records: list[dict]) -> dict[s
             reference=rec.get("reference") or "", expected_keys=[str(k).lower() for k in rec.get("expected_keys") or []],
             expect_reply=rec.get("expect_reply"), sort=i, active=True,
             data={k: rec.get(k) for k in ("audience", "alt_questions", "basis", "card", "signal", "dh_hit", "source",
-                                          "src_id", "answer_status", "wb_suggestion", "wb_judgement") if rec.get(k)},
+                                          "src_id", "answer_status", "wb_suggestion", "wb_judgement", "round", "expected_question") if rec.get(k)},
         )
         case = existing.get(code)
         if case is None:
@@ -108,11 +108,14 @@ class CaseSpec:
     expected_keys: list[str]
     expect_reply: bool | None
     branch: str = ""
+    round: list[str] | None = None
+    expected_question: str | None = None
 
     @classmethod
     def of(cls, c: EvalCase) -> "CaseSpec":
         return cls(c.id, c.kind, c.question, c.context, c.expected, c.must_not, c.reference,
-                   list(c.expected_keys or []), c.expect_reply, c.branch or "")
+                   list(c.expected_keys or []), c.expect_reply, c.branch or "", (c.data or {}).get("round"),
+                   (c.data or {}).get("expected_question"))
 
 
 # 评测题按分支给一个带产品标记的群名，查知识时和真实群一样按群名分产品（见 knowledge.products_for_group）
@@ -123,22 +126,34 @@ def _message(content: str, sent_at: datetime, customer: bool, branch: str = "") 
     """评测用的消息：不入库，只用来拼提示词。客户的发送人编号按企业微信外部联系人的格式。"""
     return Message(id=uuid.uuid4(), channel=Channel.WECOM, external_id="eval", group_id="eval",
                    group_name=_EVAL_GROUP.get(branch, "评测（不发到群里）"), is_external_group=True,
-                   sender_id="wm_eval_customer" if customer else "eval_support",
+                   sender_id="wm_eval_customer_0123456789abcdef" if customer else "eval_support",
                    sender_name="客户" if customer else "技术支持", msg_type=MessageType.TEXT,
                    content=content, sent_at=sent_at)
 
 
-_SPEAKER = re.compile(r"^(客户|技术支持)[：:]\s*(.*)$")
+_SPEAKER = re.compile(r"^(客户|技术支持)(?:\s+([^：:]+))?[：:]\s*(.*)$")
+_LABEL = re.compile(r"（(已回复|无需回复|已转人工，同事在处理|会话结束时没回复|已并入别的回复|还没回复)）$")
+
+
+def _parse_lines(lines: list[str], now: datetime, statuses: dict, branch: str = "") -> list[Message]:
+    out = []
+    for i, line in enumerate(lines):
+        line = line.strip()
+        label = _LABEL.search(line)
+        if label:
+            line = line[:label.start()]
+        match = _SPEAKER.match(line)
+        who, name, content = (match.group(1), match.group(2), match.group(3)) if match else ("客户", None, line)
+        message = _message(content, now - timedelta(minutes=len(lines) - i), who == "客户", branch)
+        message.sender_name = name or who
+        if label and who == "客户":
+            statuses[message.id] = label.group(1)
+        out.append(message)
+    return out
 
 
 def _context(text: str, now: datetime, branch: str = "") -> list[Message]:
-    lines = [ln for ln in (text or "").splitlines() if ln.strip()]
-    out = []
-    for i, ln in enumerate(lines):
-        m = _SPEAKER.match(ln.strip())
-        who, content = (m.group(1), m.group(2)) if m else ("客户", ln.strip())
-        out.append(_message(content, now - timedelta(minutes=len(lines) - i), who == "客户", branch))
-    return out
+    return _parse_lines([line for line in (text or "").splitlines() if line.strip()], now, {}, branch)
 
 
 def _norm(key: str | None) -> str:
@@ -156,6 +171,10 @@ def retrieval_rank(knowledge: list[dict], expected_keys: list[str]) -> int | Non
         if {_norm(k.get("source_id")), _norm(k.get("url")), (k.get("source_id") or "").lower()} & want:
             return i
     return None
+
+
+class QuestionVerdict(BaseModel):
+    reason: str = Field(description="比较补全问题与期望，说明是否准确及遗漏")
 
 
 class Verdict(BaseModel):
@@ -224,9 +243,12 @@ def run_case(case: CaseSpec) -> dict:
     out: dict = {}
     with db.SessionLocal() as session:
         try:
-            g = generate(session, _message(case.question, now, True, case.branch),
-                         history=_context(case.context, now, case.branch),
-                         evaluating=True)
+            statuses = {}
+            history = _parse_lines([line for line in (case.context or "").splitlines() if line.strip()],
+                                   now - timedelta(minutes=len(case.round or [])), statuses, case.branch)
+            current = _parse_lines(case.round, now + timedelta(minutes=1), statuses, case.branch) if case.round else None
+            message = current[-1] if current else _message(case.question, now, True, case.branch)
+            g = generate(session, message, history=history, evaluating=True, round=current, statuses=statuses)
         except SuggestionFailed as exc:
             return {"error": str(exc), "seconds": round(time.monotonic() - started, 1)}
         except Exception as exc:  # noqa: BLE001  一道题出错不影响整轮
@@ -235,7 +257,7 @@ def run_case(case: CaseSpec) -> dict:
         session.rollback()  # 评测不写任何东西
     d = g.draft
     knowledge = [k.to_record() for k in g.knowledge]
-    out.update(reply=d.reply, can_answer=d.can_answer, confidence=d.confidence, needs_reply=d.needs_reply,
+    out.update(question=g.question, reply=d.reply, can_answer=d.can_answer, confidence=d.confidence, needs_reply=d.needs_reply,
                reason=d.reason, knowledge=knowledge, knowledge_error=g.knowledge_error or g.knowledge_note,
                retrieval_rank=retrieval_rank(knowledge, case.expected_keys) if case.expected_keys else None)
     if case.expect_reply is not None:
@@ -251,6 +273,15 @@ def run_case(case: CaseSpec) -> dict:
             out.update(verdict=verdict, verdict_reason=v.reason, passed=verdict == "对")
         except LLMError as exc:
             out.update(verdict=None, verdict_reason=f"打分没成功：{exc}", passed=None)
+    if case.expected_question:
+        try:
+            qv, _ = get_provider().generate(
+                "比较补全问题与期望问题，只评价补全是否准确，不改变回复得分。",
+                f"<expected_question>\n{case.expected_question}\n</expected_question>\n"
+                f"<understood_question>\n{g.question}\n</understood_question>", QuestionVerdict)
+            out["verdict_reason"] = (out.get("verdict_reason") or "") + "；问题补全：" + qv.reason
+        except Exception as exc:
+            out["verdict_reason"] = (out.get("verdict_reason") or "") + f"；问题补全评判失败：{exc}"
     out["seconds"] = round(time.monotonic() - started, 1)
     return out
 

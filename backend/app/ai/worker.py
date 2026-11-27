@@ -2,9 +2,10 @@
 
 import logging
 import re
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
@@ -29,7 +30,16 @@ def submit(fn, *args) -> None:
     _get_executor().submit(fn, *args)
 
 
-def enqueue(message_id: uuid.UUID) -> None:
+def schedule(delay: float, fn, *args) -> None:
+    if delay <= 0:
+        submit(fn, *args)
+    else:
+        timer = threading.Timer(delay, submit, args=(fn, *args))
+        timer.daemon = True
+        timer.start()
+
+
+def enqueue(message_id: uuid.UUID, wait: float | None = None) -> None:
     """为消息创建（或重置）建议记录并排队生成。"""
     if not settings.ai_suggest_enabled:
         return
@@ -40,7 +50,7 @@ def enqueue(message_id: uuid.UUID) -> None:
             session.add(sug)
         sug.status, sug.error = SuggestionStatus.GENERATING, None
         session.commit()
-    submit(run, message_id)
+    schedule(settings.ai_round_wait_seconds if wait is None else wait, run, message_id)
 
 
 def resume_pending() -> int:
@@ -63,14 +73,33 @@ def resume_pending() -> int:
                 sug.status, sug.error = SuggestionStatus.FAILED, "生成时后台重启了，可以点「重新生成」"
         session.commit()
     for message_id in again:
-        submit(run, message_id)
+        schedule(0, run, message_id)
     if stuck:
         log.info("重启前没生成完的建议 %d 条，重新生成 %d 条", len(stuck), len(again))
     return len(again)
 
 
+def _resume_previous(session, message: Message) -> None:
+    """被人工处理的任务不能接管前面的消息，唤醒窗口内最新的待生成消息。"""
+    from app.ai.suggest import _key, round_messages
+
+    if settings.ai_round_window_minutes <= 0:
+        return
+    candidates = round_messages(session, message)
+    ids = [m.id for m in candidates if _key(m) < _key(message)]
+    generating = set(session.scalars(select(Suggestion.message_id).where(
+        Suggestion.message_id.in_(ids), Suggestion.status == SuggestionStatus.GENERATING)))
+    previous = next((m.id for m in reversed(candidates) if m.id in generating), None)
+    if previous:
+        # 测试时 schedule 立即执行；生产中也应先释放现有会话和锁。
+        session.rollback()
+        session.close()
+        schedule(0, run, previous)
+
+
 def run(message_id: uuid.UUID) -> None:
-    from app.ai.suggest import SuggestionFailed, generate
+    from app.ai.suggest import SuggestionFailed, _key, generate, round_messages
+    from app.channels import ADAPTERS
 
     with db.SessionLocal() as session:
         message = session.get(Message, message_id)
@@ -78,10 +107,26 @@ def run(message_id: uuid.UUID) -> None:
         if message is None or sug is None:
             return
         if sug.status != SuggestionStatus.GENERATING:
+            _resume_previous(session, message)
             return
+        newer = session.scalars(select(Message).join(Suggestion, Suggestion.message_id == Message.id).where(
+            Message.channel == message.channel, Message.group_id == message.group_id,
+            Message.sent_at >= message.sent_at,
+            Message.sent_at <= message.sent_at + timedelta(minutes=settings.ai_round_window_minutes),
+            Suggestion.status == SuggestionStatus.GENERATING)).all()
+        newer = [m for m in newer if _key(m) > _key(message) and ADAPTERS[m.channel].is_customer(m)]
+        if newer and settings.ai_round_window_minutes > 0:
+            # 中间有我方发言时，新消息不能合并本条，因此本条不能让出生成任务。
+            intervening = session.scalars(select(Message).where(
+                Message.channel == message.channel, Message.group_id == message.group_id,
+                Message.sent_at >= message.sent_at, Message.sent_at <= max(m.sent_at for m in newer))).all()
+            support = [m for m in intervening if not ADAPTERS[m.channel].is_customer(m)]
+            if any(not any(_key(message) < _key(m) < _key(candidate) for m in support) for candidate in newer):
+                return
+        round = round_messages(session, message) or [message]
         result = error = None
         try:
-            result = generate(session, message)
+            result = generate(session, message, round=round)
         except SuggestionFailed as exc:
             error = str(exc)
         except Exception as exc:  # noqa: BLE001
@@ -90,8 +135,20 @@ def run(message_id: uuid.UUID) -> None:
         # 生成期间可能已被转人工、忽略或采纳，只在仍处于生成中时写入结果
         session.refresh(sug, with_for_update=True)
         if sug.status != SuggestionStatus.GENERATING:
-            session.rollback()
+            _resume_previous(session, message)
             return
+        round_ids = result.round_ids if result is not None else [m.id for m in round]
+        sug.covers = [str(mid) for mid in round_ids]
+        sug.question = result.question if result is not None else "\n".join(m.content for m in round)
+        sug.merged_into = None
+        others = session.scalars(select(Suggestion).where(
+            Suggestion.message_id.in_([mid for mid in round_ids if mid != message_id])
+        ).with_for_update()).all()
+        for other in others:
+            session.refresh(other)
+            if other.status in (SuggestionStatus.GENERATING, SuggestionStatus.READY, SuggestionStatus.FAILED,
+                                 SuggestionStatus.MERGED):
+                other.status, other.merged_into = SuggestionStatus.MERGED, sug.id
         if result is None:
             sug.status, sug.error = SuggestionStatus.FAILED, error
             sug.knowledge = sug.knowledge_error = sug.knowledge_note = sug.profile = None
@@ -104,7 +161,7 @@ def run(message_id: uuid.UUID) -> None:
             sug.knowledge_error, sug.knowledge_note = result.knowledge_error, result.knowledge_note
             sug.profile = result.profile
             sug.needs_reply = draft.needs_reply
-            if not draft.needs_reply and auto_dismissable(message.content) and not sug.reopened_by:
+            if not draft.needs_reply and all(auto_dismissable(m.content) for m in round) and not sug.reopened_by:
                 # AI 判断无需回复（寒暄、致谢、测试）：直接标记，不算待处理；工作台上可以改回待回复
                 sug.status, sug.auto_dismissed = SuggestionStatus.DISMISSED, True
                 sug.handled_by, sug.handled_at = None, datetime.now(timezone.utc)

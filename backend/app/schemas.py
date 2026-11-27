@@ -92,6 +92,9 @@ class SuggestionOut(BaseModel):
     id: uuid.UUID
     message_id: uuid.UUID
     status: SuggestionStatus
+    covers: list[uuid.UUID] | None = None
+    merged_into: uuid.UUID | None = None
+    question: str | None = None
     content: str | None
     can_answer: bool | None
     confidence: str | None
@@ -120,6 +123,11 @@ class SuggestionOut(BaseModel):
     handled_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("covers", mode="before")
+    @classmethod
+    def _covers(cls, value, info):
+        return value or [info.data["message_id"]]
 
     @field_validator("knowledge", mode="before")
     @classmethod
@@ -625,6 +633,7 @@ class EvalRunDetail(EvalRunOut):
 
 
 class EvalResultOut(BaseModel):
+    understood_question: str | None = None
     case_id: uuid.UUID
     code: str
     kind: str

@@ -1055,6 +1055,10 @@ button.chip-status { cursor: pointer; font: inherit; font-size: 12px; }
 .chip-status.escalated { background: var(--warn-soft); color: var(--warn); }
 .chip-status.failed { background: var(--danger-soft); color: var(--danger); }
 .chip-status.on { border-color: currentColor; }
+/* 并进同一轮后面那条建议的消息 */
+.chip-status.merged { background: var(--hover); color: var(--text-2); }
+.chip-status.merged::before { content: "↓"; font-size: 11px; }
+button.chip-status.merged:hover { color: var(--accent-text); }
 @keyframes pulse { 50% { opacity: .3; } }
 
 /* 发件中的消息 */
@@ -1137,6 +1141,9 @@ button.chip-status { cursor: pointer; font: inherit; font-size: 12px; }
 .ai-text { margin: 8px 0 0; white-space: pre-wrap; font-size: 14px; line-height: 1.7; color: var(--text); }
 
 .sug-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; margin-top: 8px; }
+/* AI 结合上下文补全的问题 */
+.ai-question { display: flex; gap: 8px; align-items: baseline; margin: 8px 0 0; font-size: 12.5px; line-height: 1.6; color: var(--text-2); }
+.ai-question b { flex: none; font-weight: 500; color: var(--text-3); }
 .conf { color: var(--text-2); }
 .reason { color: var(--text-3); flex-basis: 100%; }
 .by { color: var(--text-3); font-size: 12px; margin-left: 8px; }

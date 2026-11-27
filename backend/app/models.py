@@ -91,6 +91,7 @@ class SuggestionStatus(str, enum.Enum):
     ESCALATED = "escalated"  # 转人工
     DISMISSED = "dismissed"  # 忽略（无需回复）
     CLOSED = "closed"  # 结束会话时还没回复，随会话一起结束
+    MERGED = "merged"  # 已并入同一轮的另一条建议
 
 
 # 还没处理完的建议；结束会话时这些随会话结束
@@ -118,6 +119,9 @@ class Suggestion(Base):
         Enum(SuggestionStatus, native_enum=False, length=16), default=SuggestionStatus.GENERATING, index=True
     )
 
+    covers: Mapped[list | None] = mapped_column(JSON)
+    merged_into: Mapped[uuid.UUID | None] = mapped_column()
+    question: Mapped[str | None] = mapped_column(Text)
     content: Mapped[str | None] = mapped_column(Text, comment="AI 建议回复")
     can_answer: Mapped[bool | None] = mapped_column(Boolean, comment="AI 是否有把握回答")
     confidence: Mapped[str | None] = mapped_column(String(16), comment="high / medium / low")
@@ -484,6 +488,7 @@ class EvalResult(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("eval_runs.id", ondelete="CASCADE"), index=True)
     case_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("eval_cases.id", ondelete="CASCADE"))
+    question: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text, comment="建议没生成出来的原因")
     reply: Mapped[str | None] = mapped_column(Text)
     can_answer: Mapped[bool | None] = mapped_column(Boolean)

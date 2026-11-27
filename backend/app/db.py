@@ -32,7 +32,9 @@ _NEW_COLUMNS = {
                     "knowledge": "JSON", "knowledge_error": "TEXT", "knowledge_note": "TEXT",
                     "needs_reply": "BOOLEAN", "auto_dismissed": "BOOLEAN NOT NULL DEFAULT FALSE",
                     "reopened_by": "VARCHAR(64)", "adoption": "VARCHAR(16)", "adoption_score": "DOUBLE PRECISION",
-                    "via_chat": "BOOLEAN NOT NULL DEFAULT FALSE", "profile": "JSON"},
+                    "via_chat": "BOOLEAN NOT NULL DEFAULT FALSE", "profile": "JSON",
+                    "covers": "JSON", "merged_into": "UUID", "question": "TEXT"},
+    "eval_results": {"question": "TEXT"},
     "messages": {"attachment_id": "UUID REFERENCES attachments(id) ON DELETE SET NULL", "media_error": "TEXT"},
     "send_tasks": {"attachment_ids": "JSON", "replaced_by": "UUID", "mentions": "JSON", "warning": "TEXT"},
 }
