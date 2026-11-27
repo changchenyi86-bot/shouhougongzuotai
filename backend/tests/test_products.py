@@ -113,6 +113,24 @@ def test_group_products_list(client, fake_llm, monkeypatch):
     assert client.get("/api/groups/products").json()[0]["manual"] is None
 
 
+def test_group_products_admin_only(client):
+    """群产品列的是全部群，技术支持只能看自己负责的群，所以只给管理员。"""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    post(client, 1, "你好", group="wrA", name="某客户-BD-支持")
+    teams = {t["name"]: t["id"] for t in client.get("/api/teams").json()}
+    r = client.post("/api/staff", json={"name": "王五", "username": "gp-support", "password": "secret-123",
+                                        "role": "support", "team_id": teams["BI 组"]})
+    assert r.status_code == 201, r.text
+    member = TestClient(app)
+    assert member.post("/api/auth/login", json={"username": "gp-support", "password": "secret-123"}).status_code == 200
+    assert member.get("/api/groups/products").status_code == 403
+    assert member.put("/api/groups/product", json={"channel": "wecom", "group_id": "wrA",
+                                                    "products": ["ed"]}).status_code == 403
+
+
 def test_recommend():
     rec, basis = products.recommend([], ["数开平台", "有数BI"], "中台组", None)
     assert rec == ["ed"] and "客户已购" in basis and "中台组" in basis

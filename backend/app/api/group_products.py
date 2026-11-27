@@ -14,8 +14,11 @@ router = APIRouter(prefix="/api", dependencies=[Depends(current_staff)])
 
 
 @router.get("/groups/products", response_model=list[GroupProductOut])
-def list_group_products(session: Session = Depends(get_session)) -> list[GroupProductOut]:
-    """所有外部群（测试群除外）的产品设置，要指定的（群名一个产品都不带）在前，并给出推荐值和依据。"""
+def list_group_products(_: Staff = Depends(require_admin),
+                        session: Session = Depends(get_session)) -> list[GroupProductOut]:
+    """所有外部群（测试群除外）的产品设置，要指定的（群名一个产品都不带）在前，并给出推荐值和依据。
+
+    只给管理员：列的是全部群，技术支持只能看自己负责的群（见 routing）。"""
     latest = (select(Message.channel, Message.group_id, func.max(Message.sent_at).label("last"))
               .where(Message.is_external_group).group_by(Message.channel, Message.group_id))
     names = {(g.channel, g.group_id): g.name for g in session.scalars(select(GroupName))}
