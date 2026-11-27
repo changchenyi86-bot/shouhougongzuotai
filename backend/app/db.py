@@ -23,6 +23,7 @@ def init_db() -> None:
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
     Base.metadata.create_all(engine)
     _add_missing_columns()
+    _merge_conversation_ends()
 
 
 # 早期版本建的表缺少的列（create_all 不会给已有表加列）
@@ -51,3 +52,18 @@ def _add_missing_columns() -> None:
 def get_session() -> Iterator[Session]:
     with SessionLocal() as session:
         yield session
+
+
+def _merge_conversation_ends() -> None:
+    """早期版本只记了结束会话（conversation_ends），现在并入会话表 conversations。"""
+    if engine.dialect.name != "postgresql":
+        return
+    with engine.begin() as conn:
+        if conn.execute(text("SELECT to_regclass('conversation_ends')")).scalar() is None:
+            return
+        conn.execute(text(
+            "INSERT INTO conversations (id, channel, group_id, opened_at, ended_at, ended_by, closed_count) "
+            "SELECT id, channel, group_id, ended_at, ended_at, ended_by, closed_count FROM conversation_ends "
+            "ON CONFLICT (id) DO NOTHING"
+        ))
+        conn.execute(text("DROP TABLE conversation_ends"))

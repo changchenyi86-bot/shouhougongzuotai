@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth import current_staff
+from app.auth import require_admin
 from app.channels import ADAPTERS
 from app.db import get_session
 from app.ingest import ingest
@@ -15,13 +15,13 @@ router = APIRouter()
 
 
 @router.post("/api/messages", response_model=MessageOut, status_code=status.HTTP_201_CREATED,
-             dependencies=[Depends(current_staff)])
+             dependencies=[Depends(require_admin)])
 def ingest_message(data: MessageIn, session: Session = Depends(get_session)) -> Message:
     """写入一条已归一的消息（重复的 channel + external_id 直接返回已有记录）。"""
     return ingest(session, data)[0]
 
 
-@router.get("/api/messages", response_model=list[MessageOut], dependencies=[Depends(current_staff)])
+@router.get("/api/messages", response_model=list[MessageOut], dependencies=[Depends(require_admin)])
 def list_messages(
     channel: Channel | None = None,
     group_id: str | None = None,

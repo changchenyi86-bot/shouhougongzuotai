@@ -155,6 +155,17 @@ export interface Group {
   message_count: number;
   pending_count: number;
   escalated_count: number;
+  /** 群负责人 */
+  owner: StaffBrief | null;
+  /** 进行中的会话分给了谁 */
+  assignee: StaffBrief | null;
+  /** 有进行中的会话 */
+  conversation_open: boolean;
+}
+
+export interface StaffBrief {
+  id: string;
+  name: string;
 }
 
 export interface SendTask {
@@ -185,9 +196,12 @@ export interface Conversation {
   outbox: SendTask[];
   /** 这个群最近的会话结束记录，从早到晚 */
   ends: ConversationEnd[];
+  owner: StaffBrief | null;
+  assignee: StaffBrief | null;
+  conversation_open: boolean;
 }
 
-export type GroupView = "todo" | "escalated" | "all";
+export type GroupView = "todo" | "escalated" | "unassigned" | "all";
 
 export function fetchGroups(view: GroupView = "all"): Promise<Group[]> {
   return call(`/api/groups?${new URLSearchParams({ view })}`);
@@ -262,6 +276,8 @@ export interface Staff {
   /** 设成在线，并且最近打开着工作台 */
   online: boolean;
   last_seen: string | null;
+  /** 手上进行中的会话数 */
+  open_count: number;
 }
 
 const put = <T>(url: string, body: unknown) => call<T>(url, { method: "PUT", body: JSON.stringify(body) });
@@ -284,3 +300,11 @@ export const editStaff = (
   id: string,
   body: Partial<{ name: string; role: Role; team_id: string; clear_team: boolean; active: boolean; password: string }>,
 ) => call<Staff>(`/api/staff/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+
+/** 指定或取消群负责人（管理员） */
+export const setGroupOwner = (channel: Channel, group_id: string, owner_id: string | null) =>
+  put<void>("/api/groups/owner", { channel, group_id, owner_id });
+
+/** 把进行中的会话转给同事 */
+export const assignConversation = (channel: Channel, group_id: string, staff_id: string) =>
+  post<StaffBrief>("/api/conversations/assign", { channel, group_id, staff_id });

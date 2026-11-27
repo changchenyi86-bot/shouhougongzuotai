@@ -9,15 +9,15 @@ from sqlalchemy.orm import Session
 
 from datetime import datetime, timedelta, timezone
 
-from app import send_queue
+from app import routing, send_queue
 from app.api.sending import task_out
 from app.api.suggestions import OPEN, REPLYABLE
-from app.auth import current_staff
+from app.auth import current_staff, require_admin
 from app.db import get_session
-from app.models import (Attachment, Channel, ConversationEnd, GroupName, Message, SendStatus, SendTask, Staff,
-                        Suggestion, SuggestionStatus)
-from app.schemas import (ConversationEndOut, ConversationOut, EndIn, GroupNameIn, GroupNameOut, GroupOut, InboxItem,
-                         MessageOut, SendIn, SendTaskOut, SuggestionOut)
+from app.models import (Attachment, Channel, Conversation, GroupName, GroupOwner, Message, SendStatus, SendTask,
+                        Staff, Suggestion, SuggestionStatus)
+from app.schemas import (AssignIn, ConversationEndOut, ConversationOut, EndIn, GroupNameIn, GroupNameOut, GroupOut,
+                         InboxItem, MessageOut, OwnerIn, SendIn, SendTaskOut, StaffBrief, SuggestionOut)
 
 router = APIRouter(prefix="/api", dependencies=[Depends(current_staff)])
 
@@ -36,15 +36,23 @@ def _unlinked_pending(session: Session) -> dict[tuple, int]:
     return {(c, g): n for c, g, n in rows}
 
 
+def _brief(staff: Staff | None) -> StaffBrief | None:
+    return StaffBrief.model_validate(staff) if staff else None
+
+
 @router.get("/groups", response_model=list[GroupOut])
 def list_groups(
-    view: Literal["todo", "escalated", "all"] = "all",
+    view: Literal["todo", "escalated", "unassigned", "all"] = "all",
     channel: Channel | None = None,
     q: str | None = Query(None, max_length=100, description="按群名搜索"),
     limit: int = Query(200, ge=1, le=500),
+    staff: Staff = Depends(current_staff),
     session: Session = Depends(get_session),
 ) -> list[GroupOut]:
-    """有消息的群，最近有消息的在前。"""
+    """有消息的群，最近有消息的在前。管理员看全部；其他人只看自己负责的群和正在替别人处理的群。
+
+    view=unassigned：有进行中的会话、但还没分给人的群（没指定负责人），等管理员分配。
+    """
     stats = (
         select(
             Message.channel, Message.group_id,
@@ -79,6 +87,17 @@ def list_groups(
                                is_external_group=m.is_external_group, last_message_at=m.sent_at,
                                last_content=m.content, message_count=total,
                                pending_count=pending + unlinked.get(key, 0), escalated_count=escalated)
+    keys = routing.visible(session, staff)
+    if keys is not None:
+        groups = {k: g for k, g in groups.items() if k in keys}
+    owners = {(o.channel, o.group_id): o.owner for o in session.scalars(select(GroupOwner))}
+    open_convs = {(c.channel, c.group_id): c for c in session.scalars(
+        select(Conversation).where(Conversation.ended_at.is_(None)))}
+    for key, g in groups.items():
+        g.owner = _brief(owners.get(key))
+        conv = open_convs.get(key)
+        g.conversation_open = conv is not None
+        g.assignee = _brief(conv.assignee) if conv else None
     result = list(groups.values())
     # 最新一条消息可能没带群名（如群名查询失败），用历史上的群名补上
     missing = [g for g in result if not g.group_name]
@@ -94,13 +113,60 @@ def list_groups(
         result = [g for g in result if g.pending_count]
     elif view == "escalated":
         result = [g for g in result if g.escalated_count]
+    elif view == "unassigned":
+        result = [g for g in result if g.conversation_open and g.assignee is None]
     return result[:limit]
+
+
+@router.put("/groups/owner", status_code=status.HTTP_204_NO_CONTENT)
+def set_owner(body: OwnerIn, staff: Staff = Depends(require_admin), session: Session = Depends(get_session)) -> None:
+    """指定或取消群负责人（管理员）。群里有进行中、还没分给人的会话时，按新负责人重新分配。"""
+    exists = session.scalar(
+        select(Message.id).where(Message.channel == body.channel, Message.group_id == body.group_id).limit(1)
+    )
+    if exists is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "没有这个群的消息")
+    row = session.get(GroupOwner, (body.channel, body.group_id))
+    if body.owner_id is None:
+        if row:
+            session.delete(row)
+    else:
+        owner = session.get(Staff, body.owner_id)
+        if owner is None or not owner.active:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "成员不存在或已停用")
+        if row is None:
+            row = GroupOwner(channel=body.channel, group_id=body.group_id, owner_id=owner.id)
+            session.add(row)
+        row.owner_id, row.updated_by = owner.id, staff.name
+    session.flush()
+    session.expire_all()
+    conv = routing.current(session, body.channel, body.group_id, lock=True)
+    if conv is not None and conv.assignee_id is None:
+        routing.assign(conv, routing.pick(session, body.channel, body.group_id))
+    session.commit()
+
+
+@router.post("/conversations/assign", response_model=StaffBrief)
+def reassign(body: AssignIn, staff: Staff = Depends(current_staff), session: Session = Depends(get_session)) -> Staff:
+    """把进行中的会话转给同事（管理员、群负责人、正在处理的人可以转）。"""
+    conv = routing.current(session, body.channel, body.group_id, lock=True)
+    if conv is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "这个群现在没有进行中的会话")
+    if not routing.can_reassign(session, staff, body.channel, body.group_id, conv):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "只有管理员、群负责人和正在处理的人能转给别人")
+    target = session.get(Staff, body.staff_id)
+    if target is None or not target.active:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "成员不存在或已停用")
+    routing.assign(conv, target)
+    session.commit()
+    return target
 
 
 @router.put("/groups/name", response_model=GroupNameOut)
 def set_group_name(body: GroupNameIn, staff: Staff = Depends(current_staff),
                    session: Session = Depends(get_session)) -> GroupNameOut:
     """手动填写群名（渠道接口查不到群名时用）。已入库的消息一并改成这个名字，之后进来的消息查不到群名时也用它。"""
+    routing.ensure_access(session, staff, body.channel, body.group_id)
     exists = session.scalar(
         select(Message.id).where(Message.channel == body.channel, Message.group_id == body.group_id).limit(1)
     )
@@ -158,6 +224,7 @@ def conversation(
     after: uuid.UUID | None = Query(None, description="加载这条消息之后的更新消息"),
     anchor: uuid.UUID | None = Query(None, description="定位到这条消息，返回它前后的消息"),
     limit: int = Query(50, ge=1, le=200),
+    staff: Staff = Depends(current_staff),
     session: Session = Depends(get_session),
 ) -> ConversationOut:
     """一个群的聊天记录，按时间从早到晚。不传 before/after/anchor 时返回最新的 limit 条。
@@ -177,9 +244,13 @@ def conversation(
             raise HTTPException(status.HTTP_404_NOT_FOUND, "消息不存在或不属于这个群")
         return m
 
+    routing.ensure_access(session, staff, channel, group_id)
     send_queue.expire_stale(session)
     outbox = _outbox(session, channel, group_id)
-    ends = _ends(session, channel, group_id)
+    conv = routing.current(session, channel, group_id)
+    extra = dict(outbox=outbox, ends=_ends(session, channel, group_id),
+                 owner=_brief(routing.owner_of(session, channel, group_id)),
+                 assignee=_brief(conv.assignee) if conv else None, conversation_open=conv is not None)
 
     if anchor:
         m = pivot(anchor)
@@ -187,21 +258,20 @@ def conversation(
         newer, more_after = _page(session, base, "after", m, limit - limit // 2)
         own = session.scalar(select(Suggestion).where(Suggestion.message_id == m.id))
         items = [_item(*r) for r in older] + [_item(m, own)] + [_item(*r) for r in newer]
-        return ConversationOut(items=items, has_more_before=more_before, has_more_after=more_after, outbox=outbox,
-                               ends=ends)
+        return ConversationOut(items=items, has_more_before=more_before, has_more_after=more_after, **extra)
     if after:
         rows, more = _page(session, base, "after", pivot(after), limit)
-        return ConversationOut(items=[_item(*r) for r in rows], has_more_before=True, has_more_after=more,
-                               outbox=outbox, ends=ends)
+        return ConversationOut(items=[_item(*r) for r in rows], has_more_before=True, has_more_after=more, **extra)
     rows, more = _page(session, base, "before", pivot(before) if before else None, limit)
     return ConversationOut(items=[_item(*r) for r in rows], has_more_before=more, has_more_after=bool(before),
-                           outbox=outbox, ends=ends)
+                           **extra)
 
 
 def _ends(session: Session, channel: Channel, group_id: str, limit: int = 100) -> list[ConversationEndOut]:
     rows = session.scalars(
-        select(ConversationEnd).where(ConversationEnd.channel == channel, ConversationEnd.group_id == group_id)
-        .order_by(ConversationEnd.ended_at.desc()).limit(limit)
+        select(Conversation).where(Conversation.channel == channel, Conversation.group_id == group_id,
+                                   Conversation.ended_at.is_not(None))
+        .order_by(Conversation.ended_at.desc()).limit(limit)
     ).all()
     return [ConversationEndOut.model_validate(e) for e in reversed(rows)]
 
@@ -224,6 +294,7 @@ def send(body: SendIn, staff: Staff = Depends(current_staff), session: Session =
 
     带 suggestion_id 时表示回复那条客户消息：该建议记为已采纳（内容和 AI 建议不同时记为修改后采纳）。
     """
+    routing.ensure_access(session, staff, body.channel, body.group_id)
     content = body.content.strip()
     if not content and not body.attachment_ids:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "没有要发送的内容")
@@ -254,13 +325,14 @@ def send(body: SendIn, staff: Staff = Depends(current_staff), session: Session =
 
 @router.post("/conversations/end", response_model=ConversationEndOut, status_code=status.HTTP_201_CREATED)
 def end_conversation(body: EndIn, staff: Staff = Depends(current_staff),
-                     session: Session = Depends(get_session)) -> ConversationEnd:
+                     session: Session = Depends(get_session)) -> Conversation:
     """结束会话。
 
     群里还没回复的客户消息（AI 建议待处理、生成中、生成失败、已转人工）随会话结束，不再算待处理；
     没发出去的回复（发送失败、已取消）不再发送。正在排队或发送中的回复照常发出。
     之后客户再发消息，这个群重新回到待处理，算新的一次会话。
     """
+    routing.ensure_access(session, staff, body.channel, body.group_id)
     send_queue.expire_stale(session)
     now = datetime.now(timezone.utc)
     # 行锁：和发送、转人工等同时操作同一条消息时，后到的一方会看到最新状态
@@ -275,27 +347,31 @@ def end_conversation(body: EndIn, staff: Staff = Depends(current_staff),
                SendTask.status.in_(send_queue.NEEDS_ACTION))
         .with_for_update()
     ).all()
-    if not open_sugs and not unsent:
-        raise HTTPException(status.HTTP_409_CONFLICT, "这个会话没有待处理的消息，不需要结束")
+    conv = routing.current(session, body.channel, body.group_id, lock=True)
+    if conv is None and not open_sugs and not unsent:
+        raise HTTPException(status.HTTP_409_CONFLICT, "这个群现在没有进行中的会话")
     for sug in open_sugs:
         sug.status, sug.handled_by, sug.handled_at = S.CLOSED, staff.name, now
     for task in unsent:
         send_queue.dismiss_task(session, task)
-    end = ConversationEnd(channel=body.channel, group_id=body.group_id, ended_by=staff.name, ended_at=now,
-                          closed_count=len(open_sugs))
-    session.add(end)
+    if conv is None:  # 分流上线前就在待处理里的群，没有会话记录，补一条
+        conv = Conversation(channel=body.channel, group_id=body.group_id, opened_at=now)
+        session.add(conv)
+    conv.ended_at, conv.ended_by, conv.closed_count = now, staff.name, len(open_sugs)
     session.commit()
-    return end
+    return conv
 
 
 @router.post("/messages/{message_id}/fetch-media", response_model=MessageOut)
-def fetch_media(message_id: uuid.UUID, session: Session = Depends(get_session)) -> Message:
+def fetch_media(message_id: uuid.UUID, staff: Staff = Depends(current_staff),
+                session: Session = Depends(get_session)) -> Message:
     """重新下载客户发的图片或文件（之前下载失败时）。"""
     from app.channels.wecom import media
 
     msg = session.get(Message, message_id)
     if msg is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "消息不存在")
+    routing.ensure_access(session, staff, msg.channel, msg.group_id)
     if msg.channel != Channel.WECOM or not media.wants_media(msg):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "这条消息没有可下载的图片或文件")
     media.fetch(msg.id)

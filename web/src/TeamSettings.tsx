@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { addStaff, editStaff, fetchStaff, fetchTeams, ROLE_LABEL, type Role, type Staff, type Team } from "./api";
+import GroupOwners from "./GroupOwners";
 
 interface Props {
   me: Staff;
@@ -25,8 +26,25 @@ function StatusCell({ s }: { s: Staff }) {
   return <span className="st muted"><i className="st-dot off" />不在线 · {lastSeen(s.last_seen)}</span>;
 }
 
-/** 团队设置：成员、角色、分组（管理员）。 */
+/** 团队设置（管理员）：成员、群负责人。 */
 export default function TeamSettings({ me, notify }: Props) {
+  const [tab, setTab] = useState<"成员" | "群负责人">("成员");
+  return (
+    <div className="settings">
+      <div className="subtabs" role="tablist">
+        {(["成员", "群负责人"] as const).map((t) => (
+          <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
+            {t}
+          </button>
+        ))}
+      </div>
+      {tab === "成员" ? <Members me={me} notify={notify} /> : <GroupOwners notify={notify} />}
+    </div>
+  );
+}
+
+/** 成员、角色、分组。 */
+function Members({ me, notify }: Props) {
   const [staff, setStaff] = useState<Staff[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
   const [adding, setAdding] = useState<Draft | null>(null);
@@ -111,10 +129,7 @@ export default function TeamSettings({ me, notify }: Props) {
   const activeCount = staff.filter((s) => s.active).length;
 
   return (
-    <div className="settings">
-      <div className="subtabs">
-        <span className="on">成员</span>
-      </div>
+    <>
       <div className="card">
         <div className="card-head">
           <div>
@@ -216,6 +231,6 @@ export default function TeamSettings({ me, notify }: Props) {
           </table>
         </div>
       </div>
-    </div>
+    </>
   );
 }
