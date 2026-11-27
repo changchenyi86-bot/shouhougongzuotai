@@ -41,7 +41,9 @@ export type SuggestionStatus =
   | "adopted"
   | "edited"
   | "escalated"
-  | "dismissed";
+  | "dismissed"
+  /** 结束会话时还没回复，随会话一起结束 */
+  | "closed";
 
 /** 生成建议时从售后数字人查到的一条参考知识。 */
 export interface KnowledgeRef {
@@ -164,11 +166,22 @@ export interface SendTask {
   finished_at: string | null;
 }
 
+/** 一次结束会话的记录 */
+export interface ConversationEnd {
+  id: string;
+  ended_by: string | null;
+  ended_at: string;
+  /** 随会话结束的未回复客户消息数 */
+  closed_count: number;
+}
+
 export interface Conversation {
   items: InboxItem[];
   has_more_before: boolean;
   has_more_after: boolean;
   outbox: SendTask[];
+  /** 这个群最近的会话结束记录，从早到晚 */
+  ends: ConversationEnd[];
 }
 
 export type GroupView = "todo" | "escalated" | "all";
@@ -216,6 +229,10 @@ export const sendToGroup = (body: {
   suggestion_id: string | null;
   operator: string;
 }) => post<SendTask>("/api/conversations/send", { ...body, operator: body.operator || null });
+
+/** 结束会话：没回复的客户消息不再算待处理，客户再发消息时重新回到待处理 */
+export const endConversation = (channel: Channel, group_id: string, operator: string) =>
+  post<ConversationEnd>("/api/conversations/end", { channel, group_id, operator: operator || null });
 
 export const resendTask = (id: string, operator: string) =>
   post<SendTask>(`/api/send-tasks/${id}/resend`, { operator: operator || null });

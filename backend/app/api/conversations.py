@@ -11,10 +11,12 @@ from datetime import datetime, timedelta, timezone
 
 from app import send_queue
 from app.api.sending import task_out
+from app.api.suggestions import OPEN, REPLYABLE
 from app.db import get_session
-from app.models import Attachment, Channel, GroupName, Message, SendStatus, SendTask, Suggestion, SuggestionStatus
-from app.schemas import (ConversationOut, GroupNameIn, GroupNameOut, GroupOut, InboxItem, MessageOut, SendIn,
-                         SendTaskOut, SuggestionOut)
+from app.models import (Attachment, Channel, ConversationEnd, GroupName, Message, SendStatus, SendTask, Suggestion,
+                        SuggestionStatus)
+from app.schemas import (ConversationEndOut, ConversationOut, EndIn, GroupNameIn, GroupNameOut, GroupOut, InboxItem,
+                         MessageOut, SendIn, SendTaskOut, SuggestionOut)
 
 router = APIRouter(prefix="/api")
 
@@ -175,6 +177,7 @@ def conversation(
 
     send_queue.expire_stale(session)
     outbox = _outbox(session, channel, group_id)
+    ends = _ends(session, channel, group_id)
 
     if anchor:
         m = pivot(anchor)
@@ -182,14 +185,23 @@ def conversation(
         newer, more_after = _page(session, base, "after", m, limit - limit // 2)
         own = session.scalar(select(Suggestion).where(Suggestion.message_id == m.id))
         items = [_item(*r) for r in older] + [_item(m, own)] + [_item(*r) for r in newer]
-        return ConversationOut(items=items, has_more_before=more_before, has_more_after=more_after, outbox=outbox)
+        return ConversationOut(items=items, has_more_before=more_before, has_more_after=more_after, outbox=outbox,
+                               ends=ends)
     if after:
         rows, more = _page(session, base, "after", pivot(after), limit)
         return ConversationOut(items=[_item(*r) for r in rows], has_more_before=True, has_more_after=more,
-                               outbox=outbox)
+                               outbox=outbox, ends=ends)
     rows, more = _page(session, base, "before", pivot(before) if before else None, limit)
     return ConversationOut(items=[_item(*r) for r in rows], has_more_before=more, has_more_after=bool(before),
-                           outbox=outbox)
+                           outbox=outbox, ends=ends)
+
+
+def _ends(session: Session, channel: Channel, group_id: str, limit: int = 100) -> list[ConversationEndOut]:
+    rows = session.scalars(
+        select(ConversationEnd).where(ConversationEnd.channel == channel, ConversationEnd.group_id == group_id)
+        .order_by(ConversationEnd.ended_at.desc()).limit(limit)
+    ).all()
+    return [ConversationEndOut.model_validate(e) for e in reversed(rows)]
 
 
 def _outbox(session: Session, channel: Channel, group_id: str) -> list[SendTaskOut]:
@@ -222,7 +234,7 @@ def send(body: SendIn, session: Session = Depends(get_session)) -> SendTaskOut:
         msg = session.get(Message, sug.message_id) if sug else None
         if msg is None or msg.channel != body.channel or msg.group_id != body.group_id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "回复的消息不存在或不属于这个群")
-        if sug.status not in (S.GENERATING, S.READY, S.FAILED, S.ESCALATED):
+        if sug.status not in REPLYABLE:
             raise HTTPException(status.HTTP_409_CONFLICT, f"这条消息已经处理过了（{sug.status.value}）")
         edited = content != (sug.content or "").strip()
         sug.status = S.EDITED if edited else S.ADOPTED
@@ -236,6 +248,41 @@ def send(body: SendIn, session: Session = Depends(get_session)) -> SendTaskOut:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     session.commit()
     return task_out(session, task)
+
+
+@router.post("/conversations/end", response_model=ConversationEndOut, status_code=status.HTTP_201_CREATED)
+def end_conversation(body: EndIn, session: Session = Depends(get_session)) -> ConversationEnd:
+    """结束会话。
+
+    群里还没回复的客户消息（AI 建议待处理、生成中、生成失败、已转人工）随会话结束，不再算待处理；
+    没发出去的回复（发送失败、已取消）不再发送。正在排队或发送中的回复照常发出。
+    之后客户再发消息，这个群重新回到待处理，算新的一次会话。
+    """
+    send_queue.expire_stale(session)
+    now = datetime.now(timezone.utc)
+    # 行锁：和发送、转人工等同时操作同一条消息时，后到的一方会看到最新状态
+    open_sugs = session.scalars(
+        select(Suggestion).join(Message, Message.id == Suggestion.message_id)
+        .where(Message.channel == body.channel, Message.group_id == body.group_id, Suggestion.status.in_(OPEN))
+        .with_for_update(of=Suggestion)
+    ).all()
+    unsent = session.scalars(
+        select(SendTask)
+        .where(SendTask.channel == body.channel, SendTask.group_id == body.group_id, SendTask.replaced_by.is_(None),
+               SendTask.status.in_(send_queue.NEEDS_ACTION))
+        .with_for_update()
+    ).all()
+    if not open_sugs and not unsent:
+        raise HTTPException(status.HTTP_409_CONFLICT, "这个会话没有待处理的消息，不需要结束")
+    for sug in open_sugs:
+        sug.status, sug.handled_by, sug.handled_at = S.CLOSED, body.operator, now
+    for task in unsent:
+        send_queue.dismiss_task(session, task)
+    end = ConversationEnd(channel=body.channel, group_id=body.group_id, ended_by=body.operator, ended_at=now,
+                          closed_count=len(open_sugs))
+    session.add(end)
+    session.commit()
+    return end
 
 
 @router.post("/messages/{message_id}/fetch-media", response_model=MessageOut)

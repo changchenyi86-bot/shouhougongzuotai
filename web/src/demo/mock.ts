@@ -1,5 +1,5 @@
 // 演示模式：不连后台，接口全部用内置的假数据应答，只用来看界面效果。
-import type { Attachment, Channel, Group, InboxItem, KnowledgeRef, Message, SendTask, Suggestion } from "../api";
+import type { Attachment, Channel, ConversationEnd, Group, InboxItem, KnowledgeRef, Message, SendTask, Suggestion } from "../api";
 
 const at = (h: number, m: number) => {
   const d = new Date();
@@ -14,6 +14,7 @@ interface Room {
   group: Group;
   items: InboxItem[];
   outbox: SendTask[];
+  ends: ConversationEnd[];
 }
 
 function room(channel: Channel, id: string, name: string | null, external: boolean, total: number): Room {
@@ -31,6 +32,7 @@ function room(channel: Channel, id: string, name: string | null, external: boole
     },
     items: [],
     outbox: [],
+    ends: [],
   };
 }
 
@@ -110,7 +112,8 @@ function build(): Room[] {
   suggest(bank, m, "adopted", { handled_by: "李四" });
   say(bank, null, 10, 1, "升级前建议先备份元数据库，6.2 的权限模型有调整，升级说明我稍后发群里。");
   m = say(bank, "x9Kq", 10, 3, "好的，升级前提醒我们一下");
-  suggest(bank, m, "dismissed", { handled_by: "李四" });
+  suggest(bank, m, "closed", { handled_by: "李四" });
+  bank.ends.push({ id: "end-demo-1", ended_by: "李四", ended_at: at(10, 4), closed_count: 1 });
   say(bank, "p3Lm", 10, 5, "[图片]", {
     msg_type: "image",
     attachment: { id: "demo-img", filename: "截图.png", mime: "image/png", size: 182000 },
@@ -205,6 +208,7 @@ function build(): Room[] {
 
 const rooms = build();
 const PENDING: Suggestion["status"][] = ["generating", "ready", "failed"];
+const OPEN: Suggestion["status"][] = [...PENDING, "escalated"];
 
 function summary(r: Room): Group {
   const last = r.items[r.items.length - 1]?.message;
@@ -285,7 +289,28 @@ async function handle(path: string, query: URLSearchParams, method: string, body
   if (path === "conversation") {
     const r = rooms.find((x) => key(x.group.channel, x.group.group_id) === key(query.get("channel") ?? "", query.get("group_id") ?? ""));
     const paging = query.get("before") || query.get("after");
-    return { items: r && !paging ? r.items : [], has_more_before: false, has_more_after: false, outbox: r?.outbox ?? [] };
+    return {
+      items: r && !paging ? r.items : [],
+      has_more_before: false,
+      has_more_after: false,
+      outbox: r?.outbox ?? [],
+      ends: r?.ends ?? [],
+    };
+  }
+
+  if (path === "conversations/end") {
+    const r = rooms.find((x) => key(x.group.channel, x.group.group_id) === key(String(data.channel), String(data.group_id)))!;
+    const open = r.items.filter((i) => i.suggestion && OPEN.includes(i.suggestion.status));
+    for (const i of open) handled(i.suggestion!, "closed", data.operator);
+    r.outbox = r.outbox.filter((t) => t.status !== "failed" && t.status !== "cancelled");
+    const end: ConversationEnd = {
+      id: `end${++seq}`,
+      ended_by: typeof data.operator === "string" && data.operator ? data.operator : "李四",
+      ended_at: new Date().toISOString(),
+      closed_count: open.length,
+    };
+    r.ends.push(end);
+    return end;
   }
 
   if (path === "attachments" && method === "POST" && body instanceof FormData) {
