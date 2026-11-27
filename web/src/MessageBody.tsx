@@ -159,6 +159,55 @@ export function AttachmentView({ att }: { att: Attachment }) {
   return <FileCard name={att.filename} size={att.size} href={attachmentUrl(att.id, true)} />;
 }
 
+/** 跳过识别的原因，压成一句给技术支持看的话；不需要让人知道的返回 null */
+function skipReason(error: string | null | undefined): string | null {
+  const e = error ?? "";
+  if (e.includes("非客户渠道")) return null;
+  if (e.includes("扫描件")) return "扫描件暂不识别";
+  if (e.includes("老格式")) return "老格式文件暂不识别";
+  if (e.includes("未配置")) return "未配置识图，没有识别";
+  return "这种文件暂不识别";
+}
+
+/** 图片、文件下方的「识别内容」：默认收起成一行，点开看 AI 自动识别出的文字（生成建议时用的就是它）。 */
+function ExtractNote({ att }: { att: Attachment }) {
+  const [open, setOpen] = useState(false);
+  const status = att.extract_status;
+  if (!status) return null;
+  if (status === "pending") return <div className="extract-line">识别中…</div>;
+  if (status === "failed")
+    return (
+      <div className="extract-line" title={att.extract_error ?? undefined}>
+        没识别出来，AI 建议看不到这{isImage(att) ? "张图" : "个文件"}的内容
+      </div>
+    );
+  if (status === "skipped") {
+    const reason = skipReason(att.extract_error);
+    return reason ? <div className="extract-line">{reason}</div> : null;
+  }
+  const text = att.extracted_text?.trim();
+  if (!text) return null;
+  return (
+    <div className={`extract ${open ? "open" : ""}`}>
+      <button type="button" className="extract-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
+        识别内容
+        <svg viewBox="0 0 16 16" aria-hidden>
+          <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {open && (
+        <div className="extract-box">
+          <div className="extract-text">{text}</div>
+          <div className="extract-foot">
+            <small>自动识别，可能有错字</small>
+            <CopyButton text={text} label="复制" title="复制识别内容" />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const RiskTip = () => (
   <div className="risk-tip">
     <svg viewBox="0 0 16 16" aria-hidden>
@@ -181,6 +230,7 @@ export default function MessageBody({ message: m, onChanged }: { message: Messag
       <>
         <AttachmentView att={m.attachment} />
         {tip && <RiskTip />}
+        {m.from_customer && <ExtractNote att={m.attachment} />}
       </>
     );
   }

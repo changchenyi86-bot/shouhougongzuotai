@@ -930,6 +930,47 @@ a.file-card:hover .dl-icon { color: var(--accent); }
 .file-error .link { margin: 0 0 0 8px; font-size: 12px; }
 .risk-tip { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--warn); }
 .risk-tip svg { width: 13px; height: 13px; flex: none; }
+/* 图片、文件下方的「识别内容」：默认一行，点开看自动识别的文字 */
+.extract-line { margin-top: 4px; font-size: 12px; color: var(--text-3); }
+.extract { margin-top: 4px; max-width: min(420px, 100%); }
+.extract-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 4px 1px 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.extract-toggle:hover, .extract.open .extract-toggle { color: var(--accent-text); }
+.extract-toggle:focus-visible { outline: none; border-radius: 4px; box-shadow: var(--focus-ring); }
+.extract-toggle svg { width: 12px; height: 12px; flex: none; transition: transform .15s; }
+.extract.open .extract-toggle svg { transform: rotate(90deg); }
+.extract-box {
+  margin-top: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--sunken);
+  border: 1px solid var(--border);
+}
+.extract-text {
+  max-height: 260px;
+  overflow: auto;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-2);
+  -webkit-user-select: text;
+  user-select: text;
+}
+.extract-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 4px 4px 10px; border-top: 1px solid var(--border); }
+.extract-foot small { font-size: 11.5px; color: var(--text-3); }
+.extract-foot .copy-btn { height: 24px; padding: 0 6px; border-color: transparent; background: none; font-size: 12px; color: var(--text-2); }
+.extract-foot .copy-btn:hover { background: var(--hover); color: var(--accent-text); }
 .chip .file-icon { flex: none; }
 .chip-img { display: inline-flex; align-items: center; gap: 6px; min-width: 0; padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: zoom-in; }
 .chip-img img { width: 22px; height: 22px; flex: none; object-fit: cover; border-radius: 4px; border: 1px solid var(--border); background: #fff; }

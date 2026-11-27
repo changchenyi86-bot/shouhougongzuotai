@@ -33,6 +33,7 @@ class AttachmentOut(BaseModel):
     size: int
     extract_status: str | None = None
     extracted_text: str | None = None
+    extract_error: str | None = None
 
 
 class MessageOut(MessageIn):
