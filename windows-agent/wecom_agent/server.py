@@ -8,6 +8,10 @@ from pathlib import Path
 
 from wecom_agent import VERSION
 from wecom_agent.config import ServerConfig
+from wecom_agent.mention import Mention
+
+# 告诉工作台这个版本会做的事：mentions = 能在企业微信里真正 @ 人（旧版本只会把「@名字」当普通文字发）
+FEATURES = ["mentions"]
 
 
 class ServerError(Exception):
@@ -30,6 +34,7 @@ class Task:
     group_name: str
     content: str
     attachments: list[Attachment] = field(default_factory=list)
+    mentions: list[Mention] = field(default_factory=list)  # 文字里要真正 @ 的人，按出现的先后
 
 
 class Server:
@@ -67,16 +72,19 @@ class Server:
 
     def claim(self, wait: float = 0) -> tuple[Task | None, float]:
         """领取下一条任务。wait > 0 时请工作台最多留着这次请求 wait 秒：一有任务马上返回。"""
-        data = self._post("/api/agent/claim", {"agent_id": self.cfg.agent_id, "wait": wait},
+        data = self._post("/api/agent/claim", {"agent_id": self.cfg.agent_id, "wait": wait, "features": FEATURES},
                           timeout=self.timeout + wait)
         t = data.get("task")
         task = Task(id=t["id"], group_name=t["group_name"], content=t["content"],
-                    attachments=[Attachment(a["id"], a["filename"]) for a in t.get("attachments") or []]) if t else None
+                    attachments=[Attachment(a["id"], a["filename"]) for a in t.get("attachments") or []],
+                    mentions=[Mention(m["name"], m.get("kind") or "", m.get("user_id") or "")
+                              for m in t.get("mentions") or [] if m.get("name")]) if t else None
         return task, float(data.get("retry_after") or 0)
 
-    def report(self, task_id: str, ok: bool, error: str | None) -> None:
+    def report(self, task_id: str, ok: bool, error: str | None, warning: str | None = None) -> None:
         self._post(f"/api/agent/tasks/{task_id}/result",
-                   {"agent_id": self.cfg.agent_id, "ok": ok, "error": (error or "")[:2000] or None})
+                   {"agent_id": self.cfg.agent_id, "ok": ok, "error": (error or "")[:2000] or None,
+                    "warning": (warning or "")[:2000] or None})
 
     def download(self, att: Attachment, folder: Path) -> Path:
         """下载要发出的图片、文件，按原文件名保存（企业微信里显示的就是这个名字）。"""

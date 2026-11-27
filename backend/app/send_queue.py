@@ -106,8 +106,11 @@ def _sync(session: Session, task: SendTask) -> None:
 
 
 def enqueue(session: Session, channel: Channel, group_id: str, content: str, attachment_ids: list[uuid.UUID],
-            operator: str | None, sug: Suggestion | None = None) -> SendTask:
-    """建发送任务（调用方负责 commit）。不能自动发送时抛 SendRejected。"""
+            operator: str | None, sug: Suggestion | None = None, mentions: list[dict] | None = None) -> SendTask:
+    """建发送任务（调用方负责 commit）。不能自动发送时抛 SendRejected。
+
+    mentions：文字里要真正 @ 的群成员（mentions.check 核对过的），发送程序在企业微信里逐个 @。
+    """
     if channel not in SUPPORTED_CHANNELS:
         raise SendRejected("这个渠道暂不支持自动发送，请复制后手动发送")
     if not enabled():
@@ -120,7 +123,7 @@ def enqueue(session: Session, channel: Channel, group_id: str, content: str, att
     _check_group_rate(session, group_id)
     task = SendTask(suggestion_id=sug.id if sug else None, channel=channel, group_id=group_id, group_name=name,
                     content=content, attachment_ids=[str(a) for a in attachment_ids] or None,
-                    created_by=operator, created_at=_now())
+                    mentions=mentions or None, created_by=operator, created_at=_now())
     session.add(task)
     session.flush()
     _sync(session, task)
@@ -154,8 +157,15 @@ def has_queued(session: Session) -> bool:
     return session.scalar(select(SendTask.id).where(SendTask.status == S.QUEUED).limit(1)) is not None
 
 
-def claim(session: Session, agent_id: str) -> tuple[SendTask | None, float]:
-    """发送程序领取下一条任务。返回 (任务或 None, 建议多少秒后再来)。"""
+OLD_AGENT_MENTION = "发送电脑上的发送程序是旧版本，{names}没 @ 上，按普通文字发出，对方收不到 @ 提醒。请更新发送程序"
+
+
+def claim(session: Session, agent_id: str, features: list[str] | None = None) -> tuple[SendTask | None, float]:
+    """发送程序领取下一条任务。返回 (任务或 None, 建议多少秒后再来)。
+
+    features 是发送程序会做的事。旧版本没有 mentions：任务照常交给它（「@名字」按普通文字发出），
+    并先记下提示，发出后工作台能看到这些人没有真正 @ 上。
+    """
     expire_stale(session)
     last = _aware(session.scalar(select(func.max(SendTask.claimed_at))))
     if last is not None:
@@ -177,6 +187,9 @@ def claim(session: Session, agent_id: str) -> tuple[SendTask | None, float]:
         session.rollback()
         return None, 0
     session.refresh(task)
+    if task.mentions and "mentions" not in (features or []):
+        names = "、".join(f"「{m.get('name')}」" for m in task.mentions)
+        task.warning = OLD_AGENT_MENTION.format(names=names)
     _sync(session, task)
     session.commit()
     return task, 0
@@ -186,8 +199,9 @@ class ReportConflict(Exception):
     pass
 
 
-def report(session: Session, task_id: uuid.UUID, agent_id: str, ok: bool, error: str | None) -> SendTask | None:
-    """发送程序回报结果。重复回报同一结果是幂等的。"""
+def report(session: Session, task_id: uuid.UUID, agent_id: str, ok: bool, error: str | None,
+           warning: str | None = None) -> SendTask | None:
+    """发送程序回报结果。重复回报同一结果是幂等的。warning：发出去了、但有没做到的（如有人没 @ 上）。"""
     task = session.get(SendTask, task_id, with_for_update=True)
     if task is None:
         return None
@@ -198,6 +212,8 @@ def report(session: Session, task_id: uuid.UUID, agent_id: str, ok: bool, error:
     if task.status == S.SENDING or (task.status == S.FAILED and task.timed_out):
         task.status, task.finished_at, task.timed_out = new_status, _now(), False
         task.error = None if ok else (error or "发送失败")
+        if warning:
+            task.warning = warning
         _sync(session, task)
         session.commit()
     elif task.status != new_status:
@@ -222,7 +238,7 @@ def resend_task(session: Session, task: SendTask, operator: str | None) -> SendT
         raise ReportConflict("已经重新发送过了")
     sug = session.get(Suggestion, task.suggestion_id) if task.suggestion_id else None
     new = enqueue(session, task.channel, task.group_id, task.content,
-                  [uuid.UUID(a) for a in task.attachment_ids or []], operator, sug)
+                  [uuid.UUID(a) for a in task.attachment_ids or []], operator, sug, task.mentions)
     task.replaced_by = new.id  # 原任务由新任务接替，不再算待处理
     return new
 

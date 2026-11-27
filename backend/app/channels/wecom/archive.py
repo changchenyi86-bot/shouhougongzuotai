@@ -141,6 +141,11 @@ class ArchiveSyncer:
         random_key = key.decrypt(base64.b64decode(item["encrypt_random_key"]), padding.PKCS1v15()).decode()
         return json.loads(self.client.decrypt(random_key, item["encrypt_chat_msg"]))
 
+    @property
+    def directory(self) -> GroupDirectory | None:
+        """查群名、群成员名单（工作台 @ 人时也用）。"""
+        return self._directory
+
     def _group(self, room_id: str, sender: str | None = None) -> GroupInfo:
         return self._directory.lookup(room_id, sender) if self._directory else GroupInfo(None, None)
 

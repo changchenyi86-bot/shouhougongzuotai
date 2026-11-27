@@ -89,7 +89,8 @@ docker-compose.yml
 - `POST /api/conversations/assign`：把进行中的会话转给同事（管理员、群负责人、正在处理的人）
 - `GET /api/conversation?channel=&group_id=&before=|after=|anchor=`：一个群的聊天记录（含 AI 建议、附件、工作台发出的消息状态）
 - `POST /api/attachments`（表单上传）、`GET /api/attachments/{id}`：图片、文件
-- `POST /api/conversations/send`：在会话里发文字 + 图片 + 文件（可带 `suggestion_id` 表示回复哪条客户消息）
+- `GET /api/conversation/members?channel=&group_id=`：群里能 @ 的人（输入框打 @ 时选）
+- `POST /api/conversations/send`：在会话里发文字 + 图片 + 文件（可带 `suggestion_id` 表示回复哪条客户消息，`mentions` 表示文字里要真正 @ 的人）
 - `POST /api/send-tasks/{id}/resend|cancel|mark-manual-sent`：发送失败后重发、取消排队、标记已手动发送
 - `POST /api/conversations/end`：结束会话（群里没回复的客户消息不再算待处理，没发出去的回复不再发送；客户再发消息时重新回到待处理），记录是谁结束的
 - `POST /api/messages/{id}/fetch-media`：重新下载客户发的图片或文件
@@ -188,6 +189,12 @@ npm run demo
 - 自动发送（原型）：一台常开的 Windows 电脑登录专用客服企业微信账号，运行 `windows-agent/` 里的发送程序。
   技术支持在工作台「会话」里写好回复（可加图片、文件）并确认后，发送程序操作官方企业微信客户端：搜索群名、点开、
   截屏识字核对群名、通过剪贴板粘贴（图片、文件、文字依次）、发送，再把成功或失败回报给工作台。详见 [windows-agent/使用说明.md](windows-agent/使用说明.md)。
+
+回复里可以 @ 群成员：输入框打 @ 弹出群成员（外部群用群成员名单，最近说过话的在前，发送电脑上的客服账号自己不列），
+用 AI 建议时开头自动 @ 提问的客户（比较采纳情况时不算改动）。发送程序在企业微信里像人一样打 @、输入名字、
+在弹出的成员列表里识字点中这个人，对方收到的是真正的 @ 提醒；同名的按来源标签（员工、@微信、@公司名）区分，
+分不清、找不到、列表没弹出时按普通文字发出，并在工作台提示谁没 @ 上。内部员工在客服账号眼里显示的可能是内部姓名，
+和外部群名单里的名字不一样，这时也会按普通文字发出。
 
 自动发送的安全措施：只通过操作客户端界面发送，不碰通信协议、不注入客户端；群名未知或有同名群时不发；
 发送前后三次核对（标题是目标群、内容在输入框里、发送后输入框已清空）；两次发送至少间隔 5 秒、每群每小时最多 20 条；

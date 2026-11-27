@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from datetime import datetime, timedelta, timezone
 
-from app import routing, send_queue
+from app import mentions, routing, send_queue
 from app.ai import reflow, worker
 from app.api.sending import task_out
 from app.api.suggestions import OPEN, REPLYABLE
@@ -18,7 +18,7 @@ from app.db import get_session
 from app.models import (Attachment, Channel, Conversation, GroupName, GroupOwner, Message, SendStatus, SendTask,
                         Staff, Suggestion, SuggestionStatus)
 from app.schemas import (AssignIn, ConversationEndOut, ConversationOut, EndIn, GroupNameIn, GroupNameOut, GroupOut,
-                         InboxItem, MessageOut, OwnerIn, SendIn, SendTaskOut, StaffBrief, SuggestionOut)
+                         InboxItem, MemberOut, MessageOut, OwnerIn, SendIn, SendTaskOut, StaffBrief, SuggestionOut)
 
 router = APIRouter(prefix="/api", dependencies=[Depends(current_staff)])
 
@@ -302,6 +302,14 @@ def _outbox(session: Session, channel: Channel, group_id: str) -> list[SendTaskO
     return [task_out(session, t) for t in tasks]
 
 
+@router.get("/conversation/members", response_model=list[MemberOut])
+def group_members(channel: Channel, group_id: str, staff: Staff = Depends(current_staff),
+                  session: Session = Depends(get_session)) -> list[MemberOut]:
+    """群里能 @ 的人（输入框打 @ 时选）。最近说过话的排在前面。"""
+    routing.ensure_access(session, staff, channel, group_id)
+    return mentions.group_members(session, channel, group_id)
+
+
 @router.post("/conversations/send", response_model=SendTaskOut, status_code=status.HTTP_201_CREATED)
 def send(body: SendIn, staff: Staff = Depends(current_staff), session: Session = Depends(get_session)) -> SendTaskOut:
     """在会话里发消息（文字、图片、文件），由电脑端发送程序自动发到群里。
@@ -315,6 +323,12 @@ def send(body: SendIn, staff: Staff = Depends(current_staff), session: Session =
     found = set(session.scalars(select(Attachment.id).where(Attachment.id.in_(body.attachment_ids))))
     if missing := [a for a in body.attachment_ids if a not in found]:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"附件不存在：{missing[0]}")
+    try:
+        at = mentions.check(body.channel, content, body.mentions)
+    except mentions.MentionError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    # 填建议时自动加上的「@客户」不算改动
+    plain = mentions.without_mentions(content, [m.name for m in body.mentions])
     sug = None
     if body.suggestion_id:
         sug = session.get(Suggestion, body.suggestion_id, with_for_update=True)
@@ -323,14 +337,14 @@ def send(body: SendIn, staff: Staff = Depends(current_staff), session: Session =
             raise HTTPException(status.HTTP_404_NOT_FOUND, "回复的消息不存在或不属于这个群")
         if sug.status not in REPLYABLE:
             raise HTTPException(status.HTTP_409_CONFLICT, f"这条消息已经处理过了（{sug.status.value}）")
-        edited = content != (sug.content or "").strip()
+        edited = plain != (sug.content or "").strip()
         sug.status = S.EDITED if edited else S.ADOPTED
         sug.handled_by, sug.handled_at = staff.name, datetime.now(timezone.utc)
         sug.final_content = content
-        reflow.record(session, sug, content, body.via_chat)
+        reflow.record(session, sug, plain, body.via_chat)
     try:
         task = send_queue.enqueue(session, body.channel, body.group_id, content, body.attachment_ids,
-                                  staff.name, sug)
+                                  staff.name, sug, at)
     except send_queue.SendRejected as exc:
         session.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc

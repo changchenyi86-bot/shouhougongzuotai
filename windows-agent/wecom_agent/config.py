@@ -56,6 +56,7 @@ class UIConfig:
     search_wait: float = 1.5  # 输入群名后最多等搜索结果多少秒（结果出来并稳定后就继续，不用等满）
     open_wait: float = 1.2  # 点开群后最多等聊天窗口切换多少秒（标题换过来就继续，不用等满）
     ocr_threads: int = 4  # 识字用几个线程。大小核的 CPU 上填大核的个数最快；0 = 每个核心一个（通常更慢）
+    mention_debug: bool = False  # true：@ 群成员时每一步都截图存到 logs/screens（排查用，会慢一些）
     calibrated: bool = False
 
 

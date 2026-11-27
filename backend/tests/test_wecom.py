@@ -405,6 +405,21 @@ def test_group_directory_rechecks_new_member(monkeypatch):
     assert d.lookup("wrEXT", "wmGONE").members and len(bodies) == 2  # 刚重查过，查不到的人不再反复查
 
 
+def test_group_directory_members_for_mentions_refresh_after_10_minutes(monkeypatch):
+    """工作台 @ 人时要新一些的名单：缓存超过 10 分钟就重查。"""
+    from app.channels.wecom import directory as directory_mod
+
+    now = [1000.0]
+    monkeypatch.setattr(directory_mod.time, "time", lambda: now[0])
+    d, bodies = _member_directory([[{"userid": "wmA", "name": "老客户"}],
+                                   [{"userid": "wmA", "name": "老客户"}, {"userid": "wmNEW", "name": "新客户"}]])
+    assert d.members("wrEXT") == {"wmA": "老客户"}
+    now[0] += directory_mod.MEMBER_RECHECK - 1
+    assert d.members("wrEXT") == {"wmA": "老客户"} and len(bodies) == 1
+    now[0] += 1
+    assert d.members("wrEXT")["wmNEW"] == "新客户" and len(bodies) == 2
+
+
 def test_archive_poll_backs_off_after_error(monkeypatch):
     """拉取出错后隔 30 秒再试，正常时按配置的间隔（默认 3 秒）拉。"""
     import asyncio

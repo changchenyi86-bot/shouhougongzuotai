@@ -9,6 +9,7 @@ import type {
   Group,
   InboxItem,
   KnowledgeRef,
+  Member,
   Message,
   SenderKind,
   SendTask,
@@ -391,12 +392,34 @@ function findTask(id: string): { room: Room; task: SendTask } | undefined {
   }
 }
 
+/** 演示群里能 @ 的人：在群里说过话、有名字的客户，加上几位员工；「张伟」有两个，演示同名的提示。 */
+function membersOf(r: Room): Member[] {
+  const seen = new Map<string, Member>();
+  for (const { message: m } of [...r.items].reverse()) {
+    if (!m.sender_name || seen.has(m.sender_id)) continue;
+    seen.set(m.sender_id, {
+      id: m.sender_id, name: m.sender_name, kind: m.sender_kind, customer: m.from_customer, last_spoke_at: m.sent_at, duplicate: false,
+    });
+  }
+  const extra: Member[] = [
+    { id: "wmDEMOzw1", name: "张伟", kind: "wechat", customer: true, last_spoke_at: null, duplicate: true },
+    { id: "woDEMOzw2", name: "张伟", kind: "wecom", customer: true, last_spoke_at: null, duplicate: true },
+    { id: "wmDEMOlj", name: "刘静", kind: "wechat", customer: true, last_spoke_at: null, duplicate: false },
+    { id: "jiangyu", name: "姜瑜", kind: "internal", customer: false, last_spoke_at: null, duplicate: false },
+  ];
+  return [...seen.values(), ...extra.filter((x) => !seen.has(x.id))];
+}
+
 /** 模拟发送电脑：排队 → 发送中 → 已发出 → 出现在聊天记录里。 */
-function deliver(r: Room, task: SendTask) {
+function deliver(r: Room, task: SendTask, warning: string | null = null) {
   const step = (ms: number, fn: () => void) => setTimeout(() => r.outbox.includes(task) && task.status !== "cancelled" && fn(), ms);
   step(1500, () => (task.status = "sending"));
-  step(3500, () => (task.status = "sent"));
-  step(6500, () => {
+  step(3500, () => {
+    task.status = "sent";
+    task.finished_at = new Date().toISOString();
+    task.warning = warning;
+  });
+  step(12000, () => {
     r.outbox = r.outbox.filter((t) => t !== task);
     const now = new Date().toISOString();
     const who = { sender_name: task.created_by ?? "李四" };
@@ -500,6 +523,11 @@ async function handle(path: string, query: URLSearchParams, method: string, body
     };
   }
 
+  if (path === "conversation/members") {
+    const r = rooms.find((x) => key(x.group.channel, x.group.group_id) === key(query.get("channel") ?? "", query.get("group_id") ?? ""));
+    return r ? membersOf(r) : [];
+  }
+
   if (path === "groups/owner") {
     const r = rooms.find((x) => key(x.group.channel, x.group.group_id) === key(String(data.channel), String(data.group_id)))!;
     const owner = STAFF.find((x) => x.id === data.owner_id);
@@ -543,10 +571,14 @@ async function handle(path: string, query: URLSearchParams, method: string, body
     const r = rooms.find((x) => x.group.group_id === data.group_id)!;
     const s = typeof data.suggestion_id === "string" ? findSuggestion(data.suggestion_id) : undefined;
     if (s) handled(s, "adopted").final_content = String(data.content ?? "");
+    const mentions = (data.mentions as SendTask["mentions"]) ?? [];
+    const dup = mentions.filter((x) => membersOf(r).find((m) => m.name === x.name)?.duplicate).map((x) => x.name);
     const task: SendTask = {
       id: `t${++seq}`,
       suggestion_id: s?.id ?? null,
       content: String(data.content ?? ""),
+      mentions,
+      warning: null,
       attachments: ((data.attachment_ids as string[]) ?? []).map((id) => uploaded.get(id)!).filter(Boolean),
       status: "queued",
       error: null,
@@ -555,7 +587,9 @@ async function handle(path: string, query: URLSearchParams, method: string, body
       finished_at: null,
     };
     r.outbox.push(task);
-    deliver(r, task);
+    deliver(r, task, dup.length
+      ? `「${dup[0]}」（群里有 2 个叫「${dup[0]}」的人，分不清是哪一个）没 @ 上，按普通文字发出，对方收不到 @ 提醒`
+      : null);
     return task;
   }
 

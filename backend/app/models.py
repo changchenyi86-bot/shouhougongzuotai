@@ -168,11 +168,14 @@ class SendTask(Base):
     group_name: Mapped[str] = mapped_column(String(256), comment="群在客户端里显示的名字，发送前用它核对")
     content: Mapped[str] = mapped_column(Text, default="")
     attachment_ids: Mapped[list | None] = mapped_column(JSON, comment="要一起发出的图片、文件，按顺序")
+    mentions: Mapped[list | None] = mapped_column(
+        JSON, comment="文字里要真正 @ 的群成员 [{user_id, name, kind}]，按在文字里出现的先后")
     status: Mapped[SendStatus] = mapped_column(
         Enum(SendStatus, native_enum=False, length=16), default=SendStatus.QUEUED, index=True
     )
     agent_id: Mapped[str | None] = mapped_column(String(64), comment="领取任务的发送程序")
     error: Mapped[str | None] = mapped_column(Text)
+    warning: Mapped[str | None] = mapped_column(Text, comment="发出去了、但有没做到的（如有人没 @ 上）")
     timed_out: Mapped[bool] = mapped_column(Boolean, default=False, comment="发送中超时、结果未知")
     replaced_by: Mapped[uuid.UUID | None] = mapped_column(comment="失败后重新发送时，接替它的新任务")
     created_by: Mapped[str | None] = mapped_column(String(64))

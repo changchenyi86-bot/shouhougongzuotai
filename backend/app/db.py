@@ -34,7 +34,7 @@ _NEW_COLUMNS = {
                     "reopened_by": "VARCHAR(64)", "adoption": "VARCHAR(16)", "adoption_score": "DOUBLE PRECISION",
                     "via_chat": "BOOLEAN NOT NULL DEFAULT FALSE", "profile": "JSON"},
     "messages": {"attachment_id": "UUID REFERENCES attachments(id) ON DELETE SET NULL", "media_error": "TEXT"},
-    "send_tasks": {"attachment_ids": "JSON", "replaced_by": "UUID"},
+    "send_tasks": {"attachment_ids": "JSON", "replaced_by": "UUID", "mentions": "JSON", "warning": "TEXT"},
 }
 # 早期版本的非空约束需要放开
 _DROP_NOT_NULL = {"send_tasks": ["suggestion_id"]}

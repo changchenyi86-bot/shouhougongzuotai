@@ -23,6 +23,7 @@ from app.schemas import (
     AgentResultIn,
     AgentTask,
     AttachmentOut,
+    MentionIn,
     SendStatusOut,
     SendTaskOut,
     SuggestionOut,
@@ -103,8 +104,9 @@ def task_out(session: Session, task: SendTask) -> SendTaskOut:
     return SendTaskOut(
         id=task.id, suggestion_id=task.suggestion_id, content=task.content,
         attachments=[AttachmentOut.model_validate(a) for a in attachments_of(session, task)],
-        status=task.status, error=task.error, created_by=task.created_by, created_at=task.created_at,
-        finished_at=task.finished_at,
+        mentions=[MentionIn.model_validate(m) for m in task.mentions or []],
+        status=task.status, error=task.error, warning=task.warning, created_by=task.created_by,
+        created_at=task.created_at, finished_at=task.finished_at,
     )
 
 
@@ -191,13 +193,14 @@ async def claim(body: AgentClaimIn, request: Request, session: Session = Depends
     """
 
     def attempt() -> tuple[AgentTask | None, float]:
-        task, retry_after = send_queue.claim(session, body.agent_id)
+        task, retry_after = send_queue.claim(session, body.agent_id, body.features)
         if task is None:
             session.rollback()  # 等待期间不占着数据库事务
             return None, retry_after
         return AgentTask(id=task.id, channel=task.channel, group_id=task.group_id, group_name=task.group_name,
                          content=task.content, created_at=task.created_at,
-                         attachments=[AttachmentOut.model_validate(a) for a in attachments_of(session, task)]), 0
+                         attachments=[AttachmentOut.model_validate(a) for a in attachments_of(session, task)],
+                         mentions=[MentionIn.model_validate(m) for m in task.mentions or []]), 0
 
     def has_queued() -> bool:
         found = send_queue.has_queued(session)
@@ -227,7 +230,7 @@ async def claim(body: AgentClaimIn, request: Request, session: Session = Depends
 @agent_router.post("/tasks/{task_id}/result")
 def result(task_id: uuid.UUID, body: AgentResultIn, session: Session = Depends(get_session)) -> dict:
     try:
-        task = send_queue.report(session, task_id, body.agent_id, body.ok, body.error)
+        task = send_queue.report(session, task_id, body.agent_id, body.ok, body.error, body.warning)
     except send_queue.ReportConflict as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     if task is None:

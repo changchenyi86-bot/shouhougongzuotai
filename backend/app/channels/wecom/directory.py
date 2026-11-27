@@ -51,14 +51,16 @@ class GroupDirectory:
         self._contact = _TokenCache(corp_id, contact_secret) if contact_secret else None
         self._cache: dict[str, tuple[GroupInfo, float, float]] = {}  # 群 → (信息, 过期时间, 查询时间)
 
-    def lookup(self, room_id: str, member: str | None = None) -> GroupInfo:
-        """member：发这条消息的人。缓存的成员名单里没有他（刚进群）时重查一次成员名单。"""
+    def lookup(self, room_id: str, member: str | None = None, max_age: float | None = None) -> GroupInfo:
+        """member：发这条消息的人。缓存的成员名单里没有他（刚进群）时重查一次成员名单。
+        max_age：缓存超过这么多秒就重查（工作台 @ 人时要新一些的名单）。"""
         now = time.time()
         cached = self._cache.get(room_id)
         if cached:
             info, expires, fetched = cached
             new_member = bool(member and info.members and member not in info.members)
-            if now < expires and not (new_member and now - fetched >= MEMBER_RECHECK):
+            stale = max_age is not None and now - fetched >= max_age
+            if now < expires and not (new_member and now - fetched >= MEMBER_RECHECK) and not stale:
                 return info
         info = self._lookup_external(room_id) or self._lookup_internal(room_id)
         # 查询成功缓存 1 天（群名、成员可能变）；失败只缓存 10 分钟，之后重试，期间沿用上次查到的
@@ -66,6 +68,10 @@ class GroupDirectory:
         info = info or (cached[0] if cached else GroupInfo(None, None))
         self._cache[room_id] = (info, now + ttl, now)
         return info
+
+    def members(self, room_id: str) -> dict[str, str]:
+        """群成员 userid → 群里显示的名字。缓存超过 10 分钟就重查，刚进群的人也能 @ 到。"""
+        return self.lookup(room_id, max_age=MEMBER_RECHECK).members
 
     def _post(self, tokens: _TokenCache, path: str, body: dict, client: httpx.Client | None = None) -> dict | None:
         client = client or self._client
