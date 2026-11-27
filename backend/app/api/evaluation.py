@@ -141,7 +141,7 @@ def run_results(run_id: uuid.UUID, session: Session = Depends(get_session)) -> l
                                                   "knowledge", "knowledge_error", "retrieval_rank", "verdict",
                                                   "verdict_reason", "passed", "seconds")}
         out.append(EvalResultOut(
-            case_id=c.id, code=c.code, kind=c.kind, area=c.area, branch=c.branch, question=c.question,
+            case_id=c.id, code=c.code, kind=c.kind, area=c.area, branch=c.branch, question=c.question, understood_question=r.question if r else None,
             context=c.context, expected=c.expected, must_not=c.must_not, reference=c.reference,
             expect_reply=c.expect_reply, data=c.data, done=r is not None, has_expected_docs=bool(c.expected_keys),
             previous_passed=before.get(c.id), **fields))

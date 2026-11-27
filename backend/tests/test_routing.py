@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete
 
 from app import db, routing
+from app.config import settings
 from app.main import app
 from app.models import Conversation
 
@@ -59,7 +60,9 @@ def _end(c, group):
     return c.post("/api/conversations/end", json={"channel": "wecom", "group_id": group})
 
 
-def test_owner_online_gets_it_and_others_cannot_see(client):
+def test_owner_online_gets_it_and_others_cannot_see(client, monkeypatch):
+    # 本用例按一条消息一张建议测分流，不测一轮合并。
+    monkeypatch.setattr(settings, "ai_round_window_minutes", 0)
     jy, jy_c = _member(client, "姜瑜", "BI 组")
     sb, sb_c = _member(client, "宋奔", "BI 组")
     _owner(client, "wrA", jy)

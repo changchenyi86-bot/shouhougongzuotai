@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     llm_model: str = ""
     llm_json_mode: bool = True  # 接口不支持 response_format 时设为 false
     llm_timeout: float = 60
+    ai_round_wait_seconds: float = 8
+    ai_round_window_minutes: int = 30
     ai_context_messages: int = 20  # 生成建议时带上的群内最近消息条数
     ai_workers: int = 4
     ai_suggest_max_age_minutes: int = 120  # 超过这个时间的旧消息（如首次导入的历史记录）不生成建议
