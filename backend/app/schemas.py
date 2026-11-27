@@ -206,6 +206,28 @@ class ConversationOut(BaseModel):
     outbox: list[SendTaskOut] = Field(default=[], description="工作台发出、还没出现在聊天记录里的消息（排队、发送中、失败，及刚发出的）")
 
 
+class GroupNameIn(BaseModel):
+    channel: Channel
+    group_id: str = Field(min_length=1, max_length=128)
+    name: str = Field(max_length=256, description="和群在企业微信客户端里显示的名字一致")
+    operator: str | None = Field(default=None, max_length=64)
+
+    @field_validator("name")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("群名不能为空")
+        return v
+
+
+class GroupNameOut(BaseModel):
+    channel: Channel
+    group_id: str
+    name: str
+    duplicate: bool = Field(description="还有别的群也叫这个名字（这些群不能自动发送）")
+
+
 class SendIn(BaseModel):
     channel: Channel
     group_id: str = Field(max_length=128)

@@ -38,8 +38,12 @@ class _TokenCache:
 
 class GroupDirectory:
     def __init__(self, corp_id: str, archive_secret: str, contact_secret: str = "",
-                 client: httpx.Client | None = None):
+                 client: httpx.Client | None = None, contact_proxy: str = "",
+                 contact_client: httpx.Client | None = None):
         self._client = client or httpx.Client(timeout=10)
+        # 客户联系接口可以单独走代理（经有可信 IP 的服务器出网）；会话存档接口仍然直连
+        self._contact_client = contact_client or (
+            httpx.Client(timeout=10, proxy=contact_proxy) if contact_proxy else self._client)
         self._archive = _TokenCache(corp_id, archive_secret) if archive_secret else None
         self._contact = _TokenCache(corp_id, contact_secret) if contact_secret else None
         self._cache: dict[str, tuple[GroupInfo, float]] = {}
@@ -55,20 +59,25 @@ class GroupDirectory:
         self._cache[room_id] = (info, time.time() + ttl)
         return info
 
-    def _post(self, tokens: _TokenCache, path: str, body: dict) -> dict | None:
+    def _post(self, tokens: _TokenCache, path: str, body: dict, client: httpx.Client | None = None) -> dict | None:
+        client = client or self._client
         try:
-            token = tokens.get(self._client)
-            data = self._client.post(f"{API}/{path}", params={"access_token": token}, json=body).json()
+            token = tokens.get(client)
+            data = client.post(f"{API}/{path}", params={"access_token": token}, json=body).json()
         except Exception as exc:  # noqa: BLE001  查群名失败不影响消息入库
             log.warning("查询群信息失败 %s: %s", path, exc)
             return None
-        return None if data.get("errcode") else data
+        if data.get("errcode"):
+            log.warning("查询群信息失败 %s: %s %s", path, data.get("errcode"), data.get("errmsg"))
+            return None
+        return data
 
     def _lookup_external(self, room_id: str) -> GroupInfo | None:
         """外部客户群：需要「客户联系」Secret。"""
         if not self._contact:
             return None
-        data = self._post(self._contact, "externalcontact/groupchat/get", {"chat_id": room_id, "need_name": 0})
+        data = self._post(self._contact, "externalcontact/groupchat/get", {"chat_id": room_id, "need_name": 0},
+                          self._contact_client)
         if data:
             return GroupInfo(data.get("group_chat", {}).get("name") or None, True)
         return None

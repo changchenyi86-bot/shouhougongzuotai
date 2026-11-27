@@ -16,7 +16,7 @@ interface Room {
   outbox: SendTask[];
 }
 
-function room(channel: Channel, id: string, name: string, external: boolean, total: number): Room {
+function room(channel: Channel, id: string, name: string | null, external: boolean, total: number): Room {
   return {
     group: {
       channel,
@@ -190,7 +190,17 @@ function build(): Room[] {
   const team = room("wecom", "g5", "售后内部协作群", false, 41);
   say(team, null, 8, 20, "今天值班：李四、王五");
 
-  return [bank, factory, retail, broker, team];
+  // 企业微信查不到群名的外部客户群（没有客户联系查询权限），需要技术支持手动填写群名
+  const unnamed = room("wecom", "wrOgQ1cDEMO7Fk3a", null, true, 3);
+  m = say(unnamed, "u7Lp", 9, 48, "你好，看板分享出去的链接别人打不开，提示没有权限");
+  suggest(unnamed, m, "ready", {
+    content: "您好，分享链接需要对方有项目的查看权限。请在「项目设置 → 成员」里把对方加为查看者，或者改用公开链接分享。",
+    can_answer: true,
+    confidence: "high",
+    reason: "常见权限问题",
+  });
+
+  return [bank, factory, retail, broker, team, unnamed];
 }
 
 const rooms = build();
@@ -261,6 +271,15 @@ async function handle(path: string, query: URLSearchParams, method: string, body
       .map(summary)
       .filter((g) => (view === "todo" ? g.pending_count > 0 : view === "escalated" ? g.escalated_count > 0 : true))
       .sort((a, b) => b.last_message_at.localeCompare(a.last_message_at));
+  }
+
+  if (path === "groups/name" && method === "PUT") {
+    const r = rooms.find((x) => key(x.group.channel, x.group.group_id) === key(String(data.channel), String(data.group_id)))!;
+    const name = String(data.name ?? "").trim();
+    r.group.group_name = name;
+    for (const i of r.items) i.message.group_name = name;
+    const duplicate = rooms.some((x) => x !== r && x.group.group_name === name);
+    return { channel: r.group.channel, group_id: r.group.group_id, name, duplicate };
   }
 
   if (path === "conversation") {

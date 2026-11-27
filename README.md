@@ -115,7 +115,10 @@ npm run demo
 2. 下载官方 Linux C SDK（`libWeWorkFinanceSdk_C.so`），和私钥一起放到项目根目录 `secrets/wecom/`（已在 .gitignore 中），docker-compose 会挂载到容器 `/opt/wecom`。
 3. 在 `backend/.env` 填写 `WECOM_CORP_ID`、`WECOM_ARCHIVE_SECRET`、`WECOM_ARCHIVE_PRIVATE_KEY_FILES`（见 `.env.example`）。后端每 30 秒增量拉取一次。
 4. 可选：存档应用「接收事件服务器」填 `https://<域名>/webhooks/wecom` 并配置 `WECOM_CALLBACK_TOKEN` / `WECOM_CALLBACK_AES_KEY`，有新消息时会立即拉取。
-5. 可选：填写 `WECOM_CONTACT_SECRET`（客户联系 Secret），工作台可显示外部客户群名称。
+5. 可选：填写 `WECOM_CONTACT_SECRET`（客户联系 Secret），工作台可显示外部客户群名称。新开通的企业没有单独的客户联系 Secret，用「客户联系 → 客户 → API → 可调用接口的应用」里那个自建应用的 Secret。
+   自建应用的「企业可信IP」不收第三方服务商的 IP；本机出口 IP 加不进去时，经一台已在可信 IP 里的服务器转发：
+   本机开 `ssh -N -D 127.0.0.1:18968 <服务器>`，`.env` 里填 `WECOM_CONTACT_PROXY=socks5://host.docker.internal:18968`（只有查群名走它）。
+   还是查不到群名的群，技术支持可以在「会话」页群名旁点「填写群名」手动填，要和企业微信里显示的群名一字不差，自动发送靠它找群。
 
 ### 消息加密密钥（和七鱼共用）
 
