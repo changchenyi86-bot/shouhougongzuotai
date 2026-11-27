@@ -6,6 +6,8 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
+from sqlalchemy import select
+
 from app import db
 from app.config import settings
 from app.models import Message, Suggestion, SuggestionStatus
@@ -39,6 +41,32 @@ def enqueue(message_id: uuid.UUID) -> None:
         sug.status, sug.error = SuggestionStatus.GENERATING, None
         session.commit()
     submit(run, message_id)
+
+
+def resume_pending() -> int:
+    """后台启动时调用：重启前还在生成中的建议（生成任务随进程丢了）重新排队，返回排队条数。
+
+    太久以前的消息不再生成（和入库时的规则一样），标为生成失败，工作台上可以点「重新生成」。
+    """
+    from app.ingest import _is_recent
+
+    if not settings.ai_suggest_enabled:
+        return 0
+    with db.SessionLocal() as session:
+        stuck = session.scalars(select(Suggestion).where(Suggestion.status == SuggestionStatus.GENERATING)).all()
+        again = []
+        for sug in stuck:
+            message = session.get(Message, sug.message_id)
+            if message is not None and _is_recent(message):
+                again.append(message.id)
+            else:
+                sug.status, sug.error = SuggestionStatus.FAILED, "生成时后台重启了，可以点「重新生成」"
+        session.commit()
+    for message_id in again:
+        submit(run, message_id)
+    if stuck:
+        log.info("重启前没生成完的建议 %d 条，重新生成 %d 条", len(stuck), len(again))
+    return len(again)
 
 
 def run(message_id: uuid.UUID) -> None:
@@ -86,8 +114,11 @@ _STRIP = re.compile(r"@\S+|[\W_]+")
 
 
 def auto_dismissable(text: str) -> bool:
-    """AI 判为无需回复时，只有短、不带问号的消息才自动标记；其余只提示，避免漏回客户的问题。"""
-    if "?" in text or "？" in text:
+    """AI 判为无需回复时，只有短、不带问号、不 @ 人的消息才自动标记；其余只提示，避免漏回客户。
+
+    @ 了技术支持的（如同步进度、交代事情），对方通常在等一句回应。
+    """
+    if any(c in text for c in "?？@＠"):
         return False
     return len(_STRIP.sub("", text or "")) <= settings.auto_dismiss_max_chars
 

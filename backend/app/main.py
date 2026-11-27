@@ -35,7 +35,8 @@ async def lifespan(_: FastAPI):
     with db.SessionLocal() as session:
         auth.seed_teams(session)
         routing.backfill(session)
-    # 接入 embedding 之前、或隧道断开期间发出的回复，补存相似问答向量
+    # 重启前没生成完的建议重新生成；接入 embedding 之前、或隧道断开期间发出的回复，补存相似问答向量
+    worker.resume_pending()
     worker.submit(similar.backfill)
     poller = None
     if settings.wecom_archive_enabled and settings.wecom_archive_poll_interval > 0:
