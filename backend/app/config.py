@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     vision_max_tokens: int = 8000  # deepseek-flash 看密集截图有时先思考 4000 多 token，给少了只有思考没有正文
     media_wait_seconds: float = 25
     media_text_max_chars: int = 2000
+    # 写建议时把这一轮客户刚发的原图直接交给模型看（模型要能收图）；更早的图只用识别出的文字
+    media_direct_images: bool = True
+    media_direct_max_images: int = 3
+    media_direct_max_side: int = 1600
 
     # ---- 售后数字人知识检索（自建实例的检索服务，MCP 接口） ----
     # 如 http://host.docker.internal:<本机端口>/messages，留空表示生成建议时不查知识库

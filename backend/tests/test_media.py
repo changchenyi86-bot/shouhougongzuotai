@@ -20,7 +20,7 @@ from app.channels.wecom import media as wecom_media
 from app.channels.wecom.archive import ArchiveSyncer, set_syncer
 from app.config import settings
 from app.models import Message
-from tests.test_round_context import collect, post, run_pending, snapshot
+from tests.test_round_context import CUSTOMER as CUSTOMER_ID, collect, post, run_pending, snapshot
 from tests.test_workspace import MediaArchive
 from tests.test_wecom import CUST, KEY, FakeDirectory, _item, rec
 
@@ -324,3 +324,93 @@ def test_wait_running_out_keeps_pending_and_retries_in_background(monkeypatch):
         fn(*args)
         session.refresh(att)
         assert att.extract_status == 'done' and att.extracted_text
+
+
+def _image_message(client, n, seconds, sender=CUSTOMER_ID):
+    mid = post(client, n, '[图片]', seconds, sender=sender)
+    with db.SessionLocal() as session:
+        att = save(session, image_bytes((3000, 1500)))
+        att.extract_status = 'done'
+        att.extracted_text = f'第{n}张图的识别文字'
+        session.get(Message, mid).attachment_id = att.id
+        session.commit()
+    return mid
+
+
+def test_round_images_sent_as_originals(client, fake_llm, monkeypatch):
+    """这一轮客户刚发的图片原图直接交给写建议的模型；更早（技术支持回过之后之前）的图只用识别文字。"""
+    pending = collect(monkeypatch)
+    _image_message(client, 1, 0)  # 技术支持回复之前的旧图：不附原图
+    post(client, 2, '收到，正在看', 10, sender='lisi')
+    monkeypatch.setattr(settings, 'media_direct_max_images', 2)
+    for n in (3, 4, 5):
+        _image_message(client, n, 20 + n)
+    last = post(client, 6, '一点击批量补数据就是这个样子', 30)
+    run_pending(pending)
+    assert snapshot(last).status.value == 'ready'
+    system, prompt = fake_llm.calls[-1]
+    images = fake_llm.images[-1]
+    assert [label.split('：')[0] for label, _ in images] == ['图片1', '图片2']  # 只附最近 2 张
+    assert all(url.startswith('data:image/jpeg;base64,') for _, url in images)
+    with Image.open(io.BytesIO(base64.b64decode(images[0][1].split(',', 1)[1]))) as im:
+        assert max(im.size) <= settings.media_direct_max_side
+    assert '附了这一轮客户刚发的截图原图' in system
+    assert '第1张图的识别文字' in prompt and 'data:image/' not in prompt  # 旧图仍以文字出现在聊天记录里
+
+
+def test_round_images_fallback_to_text_and_switch_off(client, fake_llm, monkeypatch):
+    from app.ai.llm import LLMError
+
+    pending = collect(monkeypatch)
+    _image_message(client, 1, 0)
+    last = post(client, 2, '这个报错怎么办', 5)
+    original = fake_llm.draft
+
+    def refuse_images(system, prompt, images=None):
+        if images:
+            fake_llm.images.append(images)
+            raise LLMError('Unsupported Image')
+        return original(system, prompt, images)
+
+    monkeypatch.setattr(fake_llm, 'draft', refuse_images)
+    run_pending(pending)
+    assert snapshot(last).status.value == 'ready'  # 模型收不了图时退回只用文字，建议照常出来
+    assert fake_llm.images[-2] and fake_llm.images[-1] is None
+    assert '附了这一轮客户刚发的截图原图' not in fake_llm.calls[-1][0]
+
+    monkeypatch.setattr(fake_llm, 'draft', original)
+    monkeypatch.setattr(settings, 'media_direct_images', False)
+    with db.SessionLocal() as session:
+        message = session.get(Message, last)
+        suggest.generate(session, message)
+    assert fake_llm.images[-1] is None
+
+
+def test_missing_original_file_is_skipped(client, fake_llm, monkeypatch):
+    pending = collect(monkeypatch)
+    mid = _image_message(client, 1, 0)
+    last = post(client, 2, '看下这个', 5)
+    with db.SessionLocal() as session:
+        attachments.path_of(session.get(Message, mid).attachment_id).unlink()
+    run_pending(pending)
+    assert snapshot(last).status.value == 'ready' and fake_llm.images[-1] is None
+
+
+def test_openai_provider_sends_images():
+    from app.ai.llm import OpenAICompatibleProvider
+
+    seen = {}
+
+    def handler(request):
+        seen['body'] = json.loads(request.content)
+        return httpx.Response(200, json={'choices': [{'message': {'content':
+            '{"can_answer": true, "confidence": "high", "reply": "好", "reason": "看图"}'}}]})
+
+    p = OpenAICompatibleProvider('https://x/v1', 'k', 'm', client=httpx.Client(transport=httpx.MockTransport(handler)))
+    p.draft('sys', 'prompt', images=[('图片1：客户发的截图', 'data:image/jpeg;base64,AAAA')])
+    content = seen['body']['messages'][1]['content']
+    assert content[0] == {'type': 'text', 'text': 'prompt'}
+    assert content[1] == {'type': 'text', 'text': '图片1：客户发的截图'}
+    assert content[2] == {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,AAAA'}}
+    p.draft('sys', 'prompt')
+    assert seen['body']['messages'][1]['content'] == 'prompt'

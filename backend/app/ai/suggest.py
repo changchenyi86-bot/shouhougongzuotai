@@ -10,11 +10,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
-from app import customers
+from app import attachments, customers
 from app.ai import knowledge, media, similar
 from app.ai.embedding import EmbeddingError
 from app.ai.knowledge import KnowledgeError, KnowledgeItem
-from app.ai.llm import LLMError, SuggestionDraft, get_provider
+from app.ai.llm import ImageInput, LLMError, SuggestionDraft, get_provider
 from app.cards import CARD_PREFIX
 from app.config import settings
 from app.models import Message, MessageType, Suggestion, SuggestionStatus
@@ -294,6 +294,35 @@ def _wait_media(session: Session, message: Message, round: list[Message], histor
         session.rollback()
 
 
+DIRECT_IMAGE_NOTE = ("\n\n提示词后面附了这一轮客户刚发的截图原图，按「图片N」编号，对应聊天记录里同一时间、同一个人发的「[图片]」。"
+                     "看图时以原图为准，「识别内容」只作参考；只描述和依据图里看得到的内容，不要猜看不清的字。")
+
+
+def _direct_images(message: Message, round: list[Message], history: list[Message]) -> list[ImageInput]:
+    """这一轮客户刚发的图片原图（最近几张），直接交给写建议的模型看。读不了的图跳过。"""
+    from app.channels import ADAPTERS
+
+    if not settings.media_direct_images or settings.media_direct_max_images <= 0:
+        return []
+    ordered = sorted({m.id: m for m in history + round}.values(), key=_key)
+    last_support = next((i for i in range(len(ordered) - 1, -1, -1)
+                         if not ADAPTERS[ordered[i].channel].is_customer(ordered[i])), -1)
+    cutoff = message.sent_at - timedelta(minutes=max(settings.ai_round_window_minutes, 10))
+    picked = [m for m in ordered[last_support + 1:]
+              if m.attachment is not None and m.attachment.is_image and m.sent_at >= cutoff
+              and _key(m) <= _key(message) and ADAPTERS[m.channel].is_customer(m)]
+    images = []
+    for m in picked[-settings.media_direct_max_images:]:
+        try:
+            data = attachments.path_of(m.attachment.id).read_bytes()
+            url = media.image_data_url(data, settings.media_direct_max_side)
+        except Exception as exc:  # noqa: BLE001  文件丢了、图片坏了：这张不附原图，照常用识别文字
+            log.warning("读取原图失败 attachment=%s：%s", m.attachment.id, exc)
+            continue
+        images.append((f"图片{len(images) + 1}：{_speaker(m)} 在 {m.sent_at:%m-%d %H:%M} 发的截图", url))
+    return images
+
+
 def generate(session: Session, message: Message, history: list[Message] | None = None,
              evaluating: bool = False, round: list[Message] | None = None,
              statuses: dict | None = None) -> Generated:
@@ -352,9 +381,17 @@ def generate(session: Session, message: Message, history: list[Message] | None =
     except Exception:  # noqa: BLE001  档案是可选的，不影响生成建议
         log.exception("读客户档案出错 message=%s", message.id)
         context = None
+    prompt = build_prompt(session, message, refs, history, context[0] if context else None, round, statuses, question)
+    images = [] if evaluating else _direct_images(message, round, history)
     try:
-        draft, model = get_provider().draft(SYSTEM_PROMPT, build_prompt(session, message, refs, history,
-                                                                       context[0] if context else None, round, statuses, question))
+        draft = None
+        if images:
+            try:
+                draft, model = get_provider().draft(SYSTEM_PROMPT + DIRECT_IMAGE_NOTE, prompt, images=images)
+            except LLMError as exc:  # 模型收不了图、图太大等：退回只用识别出的文字
+                log.warning("附原图生成建议失败，改为只用文字 message=%s：%s", message.id, exc)
+        if draft is None:
+            draft, model = get_provider().draft(SYSTEM_PROMPT, prompt)
     except LLMError as exc:
         raise SuggestionFailed(str(exc)) from exc
     cited = {r.strip().strip("[]").upper() for r in draft.references}

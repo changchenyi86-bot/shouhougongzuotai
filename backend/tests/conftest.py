@@ -37,9 +37,11 @@ class FakeLLM:
                                  module="报表导出", branch="有数", kind="troubleshoot"),
         }
         self.generated: list[tuple[type, str]] = []
+        self.images: list = []  # 每次 draft 附带的原图（None 表示没附）
 
-    def draft(self, system: str, prompt: str):
+    def draft(self, system: str, prompt: str, images=None):
         self.calls.append((system, prompt))
+        self.images.append(images)
         if self.error:
             raise self.error
         return self.draft_result, "fake-model"

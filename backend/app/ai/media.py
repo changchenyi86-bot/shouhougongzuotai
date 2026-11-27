@@ -58,6 +58,19 @@ def prompt_text(attachment: Attachment, limit: int = 600) -> str | None:
     return _truncate(re.sub(r'\s+', ' ', value), limit)
 
 
+def image_data_url(data: bytes, max_side: int = 2000) -> str:
+    """把图片缩到最长边不超过 max_side，转成发给模型的 data URL（有透明背景用 PNG，否则 JPEG）。"""
+    with Image.open(io.BytesIO(data)) as image:
+        image.seek(0)
+        image.thumbnail((max_side, max_side))
+        transparent = image.mode in ('RGBA', 'LA') or 'transparency' in image.info
+        image = image.convert('RGBA' if transparent else 'RGB')
+        output = io.BytesIO()
+        image.save(output, format='PNG' if transparent else 'JPEG')
+    mime = 'image/png' if transparent else 'image/jpeg'
+    return f'data:{mime};base64,' + base64.b64encode(output.getvalue()).decode('ascii')
+
+
 def _image(data: bytes, timeout: float | None) -> tuple[str, str]:
     base = settings.vision_base_url or settings.llm_base_url
     key = settings.vision_api_key if settings.vision_base_url else (settings.vision_api_key or settings.llm_api_key)
@@ -65,16 +78,7 @@ def _image(data: bytes, timeout: float | None) -> tuple[str, str]:
     if not base or not key or not model:
         raise SkipMedia('未配置识图接口')
     deadline = time.monotonic() + timeout if timeout is not None else None
-    with Image.open(io.BytesIO(data)) as image:
-        image.seek(0)
-        image.thumbnail((2000, 2000))
-        transparent = image.mode in ('RGBA', 'LA') or 'transparency' in image.info
-        image = image.convert('RGBA' if transparent else 'RGB')
-        output = io.BytesIO()
-        fmt = 'PNG' if transparent else 'JPEG'
-        image.save(output, format=fmt)
-    mime = 'image/png' if transparent else 'image/jpeg'
-    url = f'data:{mime};base64,' + base64.b64encode(output.getvalue()).decode('ascii')
+    url = image_data_url(data)
     errors = []
     for name in [model] + ([settings.vision_fallback_model] if settings.vision_fallback_model else []):
         remaining = deadline - time.monotonic() if deadline is not None else settings.vision_timeout
