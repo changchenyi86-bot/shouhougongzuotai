@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { KnowledgeRef, Suggestion } from "./api";
 
-const KIND: Record<string, string> = {
+export const KIND: Record<string, string> = {
   card: "纠错卡",
   manual: "产品手册",
   faq: "FAQ",

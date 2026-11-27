@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AUTH_REQUIRED, fetchAuthState, fetchCandidateCounts, fetchMe, fetchSendState, type SendState, type Staff } from "./api";
 import Conversations from "./Conversations";
+import EvalPage from "./EvalPage";
 import KnowledgePage from "./KnowledgePage";
 import Login, { Logo } from "./Login";
 import StatsPage from "./StatsPage";
@@ -14,15 +15,16 @@ const ICONS: Record<string, string> = {
   工单: "M7 3h10a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM9 8h6M9 12h6M9 16h3",
   知识库: "M4 5a2 2 0 0 1 2-2h5v18H6a2 2 0 0 1-2-2zM13 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5z",
   采纳统计: "M4 19h16M7 16v-4M12 16V8M17 16v-6",
+  评测: "M9 4h6M10 4v5.5L5.2 17.4A1.7 1.7 0 0 0 6.7 20h10.6a1.7 1.7 0 0 0 1.5-2.6L14 9.5V4M7.5 14h9",
   积分排名: "M5 20V11M12 20V5M19 20v-6",
   团队设置:
     "M16 19v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 17.5V19M10 10.5a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM20 19v-1.5a3.5 3.5 0 0 0-2.5-3.35M15.5 4.6a3 3 0 0 1 0 5.8",
 };
 
-type Page = "会话" | "知识库" | "采纳统计" | "团队设置";
-const PAGES: Page[] = ["会话", "知识库", "采纳统计", "团队设置"];
+type Page = "会话" | "知识库" | "采纳统计" | "评测" | "团队设置";
+const PAGES: Page[] = ["会话", "知识库", "采纳统计", "评测", "团队设置"];
 const SOON = ["工单", "积分排名"];
-const HASH: Record<Page, string> = { 会话: "", 知识库: "#knowledge", 采纳统计: "#stats", 团队设置: "#team" };
+const HASH: Record<Page, string> = { 会话: "", 知识库: "#knowledge", 采纳统计: "#stats", 评测: "#eval", 团队设置: "#team" };
 
 function pageFromHash(): Page {
   return PAGES.find((p) => HASH[p] && HASH[p] === location.hash) ?? "会话";
@@ -138,7 +140,7 @@ export default function App() {
           <span className="brand">售后工作台</span>
         </h1>
         <nav>
-          {(["会话", "知识库", "采纳统计"] as Page[]).map((p) => (
+          {(["会话", "知识库", "采纳统计", "评测"] as Page[]).map((p) => (
             <a key={p} href={HASH[p] || "#"} className={current === p ? "active" : ""} onClick={(e) => {
               e.preventDefault();
               setPage(p);
@@ -204,6 +206,7 @@ export default function App() {
         </div>
         {current === "知识库" && <KnowledgePage me={me.name} notify={notify} onCountsChanged={loadCounts} />}
         {current === "采纳统计" && <StatsPage />}
+        {current === "评测" && <EvalPage me={me} notify={notify} />}
         {current === "团队设置" && <TeamSettings me={me} notify={notify} />}
       </main>
       {toast && <div className="toast">{toast}</div>}

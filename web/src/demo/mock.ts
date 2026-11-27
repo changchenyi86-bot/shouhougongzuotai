@@ -16,6 +16,7 @@ import type {
   Suggestion,
   Team,
 } from "../api";
+import { handleEval } from "./evalMock";
 
 const at = (h: number, m: number) => {
   const d = new Date();
@@ -613,6 +614,11 @@ async function handle(path: string, query: URLSearchParams, method: string, body
       for (const i of r.items)
         if (i.suggestion?.candidate?.id === c.id) i.suggestion.candidate = { id: c.id, status: c.status, question: c.question };
     return c;
+  }
+
+  if (path.startsWith("eval/")) {
+    const out = handleEval(path, method, data);
+    if (out !== undefined) return out;
   }
 
   if (path === "stats/adoption") {

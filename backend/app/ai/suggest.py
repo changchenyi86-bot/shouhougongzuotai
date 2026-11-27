@@ -105,7 +105,12 @@ def build_prompt(session: Session, message: Message, references: list[KnowledgeI
 SIMILAR_KINDS = ("workbench", "history")
 
 
-def generate(session: Session, message: Message) -> Generated:
+def generate(session: Session, message: Message, history: list[Message] | None = None,
+             evaluating: bool = False) -> Generated:
+    """生成回复建议。
+
+    评测时（evaluating）消息不入库：history 传题目自带的上下文，相似问答里去掉问题原文相同的那条（就是答案）。
+    """
     refs, errors = [], []
     note = knowledge.skip_reason(message.content)
     if note is None:
@@ -117,9 +122,11 @@ def generate(session: Session, message: Message) -> Generated:
         except Exception as exc:  # noqa: BLE001  返回格式意外变化等：参考资料是可选的，不影响生成建议
             log.exception("处理售后数字人知识出错 message=%s", message.id)
             errors.append(f"售后数字人知识库返回的内容无法处理，本条建议没有参考资料（{type(exc).__name__}）")
-    history = _history(session, message)
+    if history is None:
+        history = _history(session, message)
     try:
-        refs += similar.search(session, message.content, {m.id for m in history} | {message.id})
+        refs += similar.search(session, message.content, {m.id for m in history} | {message.id},
+                               exclude_same_question=evaluating)
     except EmbeddingError as exc:
         log.warning("查相似历史问答失败 message=%s：%s", message.id, exc)
         errors.append(f"相似历史问答没查成（{exc}）")

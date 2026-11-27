@@ -28,6 +28,7 @@ backend/
     api/assist.py    和 AI 对话润色回复
     api/candidates.py   候选知识：确认 / 审核 / 停用，以及给同步脚本用的纠错卡
     api/stats.py     AI 建议采纳情况（按人按周）
+    ai/evaluate.py、api/evaluation.py  回复建议评测：导入题库、后台一键跑一轮、打分、按块统计、和上一轮对比
     cards.py         审核通过的知识转成售后数字人的 BI 纠错卡
     api/conversations.py 会话：群列表、聊天记录、在会话里发文字 / 图片 / 文件
     api/attachments.py  图片、文件上传和下载（客户发来的也会下载保存）
@@ -39,7 +40,7 @@ backend/
 scripts/sync_digital_human_cards.py  把审核通过的知识写进售后数字人的 BI 纠错卡库（在能 SSH 到数字人服务器的电脑上运行）
 windows-agent/       电脑端发送程序：在常开的 Windows 电脑上操作官方企业微信客户端发消息
 web/                 React 工作台（登录；会话：群列表 + 聊天记录 + AI 建议 + 和 AI 对话 + 输入框；知识库：候选知识确认和审核；
-                     采纳统计；团队设置：成员、群负责人；工单/积分排名占位）
+                     采纳统计；评测；团队设置：成员、群负责人；工单/积分排名占位）
 docker-compose.yml
 ```
 
@@ -98,6 +99,9 @@ docker-compose.yml
 - `POST /api/candidates/{id}/confirm|decline|approve|reject|retire`：确认加入候选知识 / 不用 / 审核通过 / 不通过 / 停用
 - `GET /api/digital-human/cards`、`POST /api/digital-human/cards/synced`：同步脚本取要写入售后数字人的纠错卡、回报写入结果
 - `GET /api/stats/adoption?weeks=8`：AI 建议采纳情况，按人按周
+- `GET /api/eval/sets`、`POST /api/eval/sets/{name}/import`（管理员，上传 .jsonl）：评测题库
+- `GET /api/eval/runs`、`POST /api/eval/runs`（管理员）、`POST /api/eval/runs/{id}/stop`（管理员）：评测轮次
+- `GET /api/eval/runs/{id}`、`GET /api/eval/runs/{id}/results`：一轮的分块统计、和上一轮对比、逐题结果
 - `GET /api/send/status`：自动发送程序是否在线
 - `POST /api/suggestions/{id}/adopt` 传 `send: true`：确认后交给发送程序自动发到群里
 - `POST /api/suggestions/{id}/resend|cancel-send|mark-manual-sent`：自动发送失败后重发、取消排队、标记已手动发送
@@ -240,6 +244,21 @@ AI 建议下方点「和 AI 对话」，技术支持说自己的方案、要点�
 
 同步脚本读服务器上数字人正在用的卡库，替换其中工作台的卡片、其他卡片原样保留，存成新版本上传，数字人自动重新加载。
 数字人那边以后发布了更高版本的卡库，再运行一次脚本即可把工作台的卡合进去。服务器和目录配在 `backend/.env`（见 `.env.example`）。
+
+### 回复建议评测
+
+「评测」页拿一批固定的题，在后台直接走一遍生成建议的流程（查售后数字人、相似问答、模型起草），再打分。
+题目不入消息表、不生成建议记录、不发到任何群、不算进采纳统计。用来对比改提示词、换模型、补知识前后的效果。
+
+- 题库：管理员在评测页「导入题目」，上传评测集文件（.jsonl，一行一题）。同编号的题覆盖，文件里没有了的题停用。
+  评测集由客户问题整理而来（已脱敏），放在本机项目目录，不进代码仓库。每题的字段：`id`、`kind`（题型）、`group`（分块）、
+  `question`、`context`（提问前的群聊，每行「客户：…」或「技术支持：…」）、`expected`（期望答案要点）、`must_not`、
+  `reference`（期望要点为空时作参照的回答）、`expected_keys`（依据文档或纠错卡编号）、`expect_reply`（是否需要回复题）。
+- 打分：带依据编号的题看检索有没有查到、排第几；「是否需要回复」题看 AI 的判断；其余由模型对照期望要点判
+  对 / 部分对 / 错 / 没答上。知识库没有可靠答案的题，如实说明、追问或转人工算对，编造算错。
+- 分块出分：「有数 + 知数」「数据中台」「通用」分开算。数据中台的知识还没接进售后数字人自建实例时，那块单独看。
+- 一次只跑一轮，同时跑 `EVAL_WORKERS` 道题（默认 2）。每道题调两次模型（起草 + 打分），几百道题一轮约半小时，按用量计费。
+  后台重启时没跑完的一轮会接着跑，已跑完的题不重跑。
 
 ### 知识库向量模型（embedding）
 
