@@ -21,6 +21,7 @@ function lastSeen(iso: string | null) {
 
 function StatusCell({ s }: { s: Staff }) {
   if (!s.active) return <span className="st muted">已停用</span>;
+  if (!s.has_password) return <span className="st warn-text">还没设密码，登录不了</span>;
   if (s.online) return <span className="st"><i className="st-dot online" />在线</span>;
   if (s.status === "away") return <span className="st"><i className="st-dot away" />离开</span>;
   return <span className="st muted"><i className="st-dot off" />不在线 · {lastSeen(s.last_seen)}</span>;
@@ -182,7 +183,7 @@ function Members({ me, notify }: Props) {
                       <td>{f.team}</td>
                       <td>
                         <div className="edit-extra">
-                          <input type="password" value={editing.draft.password} maxLength={128} autoComplete="new-password" placeholder="重设密码，不改就留空" onChange={(e) => setEditing({ ...editing, draft: { ...editing.draft, password: e.target.value } })} />
+                          <input type="password" value={editing.draft.password} maxLength={128} autoComplete="new-password" placeholder={s.has_password ? "重设密码，不改就留空" : "设初始密码，至少 8 位"} onChange={(e) => setEditing({ ...editing, draft: { ...editing.draft, password: e.target.value } })} />
                           <label className="check">
                             <input type="checkbox" checked={!editing.active} disabled={s.id === me.id} onChange={(e) => setEditing({ ...editing, active: !e.target.checked })} />
                             停用这个账号

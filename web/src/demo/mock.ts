@@ -32,7 +32,7 @@ const TEAMS: Team[] = [
 ];
 const seen = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
 function member(name: string, username: string, role: Staff["role"], team: Team | null, online: boolean, extra: Partial<Staff> = {}): Staff {
-  return { id: `u-${username}`, name, username, role, team, active: true, status: "online", online, last_seen: seen(online ? 0 : 300), open_count: 0, ...extra };
+  return { id: `u-${username}`, name, username, role, team, active: true, status: "online", online, last_seen: seen(online ? 0 : 300), open_count: 0, has_password: true, ...extra };
 }
 const STAFF: Staff[] = [
   member("李四", "lisi", "admin", null, true),

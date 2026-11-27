@@ -96,6 +96,23 @@ def test_edit_member(client):
     assert _login("songben", "new-secret-1")[1].status_code == 403
 
 
+def test_imported_member_without_password(client):
+    """批量导入的成员没有密码：登录不了，管理员设了密码以后才能登录。"""
+    from app import db
+    from app.models import Staff
+
+    with db.SessionLocal() as s:
+        s.add(Staff(name="王博", username="王博", password_hash=""))
+        s.commit()
+    row = next(x for x in client.get("/api/staff").json() if x["name"] == "王博")
+    assert row["has_password"] is False
+    assert _login("王博", "")[1].status_code == 422
+    assert _login("王博", "anything")[1].status_code == 401
+    client.patch(f"/api/staff/{row['id']}", json={"password": "wb-pass-123"})
+    assert _login("王博", "wb-pass-123")[1].status_code == 200
+    assert next(x for x in client.get("/api/staff").json() if x["name"] == "王博")["has_password"]
+
+
 def test_keep_one_admin(client):
     me = client.get("/api/auth/me").json()["id"]
     assert client.patch(f"/api/staff/{me}", json={"role": "support"}).status_code == 409

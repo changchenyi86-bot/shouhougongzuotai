@@ -357,6 +357,7 @@ class StaffOut(BaseModel):
     online: bool = Field(description="设成在线，并且最近打开着工作台")
     last_seen: datetime | None
     open_count: int = Field(default=0, description="手上进行中的会话数")
+    has_password: bool = Field(default=True, description="设过密码；批量导入的成员要管理员设了密码才能登录")
 
 
 class StaffIn(BaseModel):
