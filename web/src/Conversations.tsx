@@ -20,6 +20,7 @@ import {
   type Group,
   type GroupView,
   type InboxItem,
+  type Message,
   type SendTask,
   type Staff,
   type StaffBrief,
@@ -110,6 +111,32 @@ function shortTime(iso: string) {
 
 const CANDIDATE_TAG: Partial<Record<string, string>> = { pending: "已进候选知识", approved: "已沉淀为知识" };
 
+/** 并入的建议可能又并进了更后面的一条：顺着找到最终那条（找不到就是没加载到） */
+function mergedTarget(s: Suggestion, byId: Map<string, Suggestion>): Suggestion | null {
+  let t = s.merged_into ? byId.get(s.merged_into) ?? null : null;
+  for (let i = 0; t && t.status === "merged" && t.merged_into && i < 10; i++) t = byId.get(t.merged_into) ?? null;
+  return t && t.status !== "merged" ? t : null;
+}
+
+function MergedChip({ target, focused, onFocus }: { target: Suggestion | null; focused: boolean; onFocus: () => void }) {
+  const t = target;
+  if (t && (t.status === "adopted" || t.status === "edited"))
+    return (
+      <span className="chip-status ok" title={t.final_content ?? undefined}>
+        已一并回复{t.handled_by ? ` · ${t.handled_by}` : ""}
+      </span>
+    );
+  if (t && t.status === "dismissed") return <span className="chip-status">已一并标为无需回复</span>;
+  if (t && t.status === "closed") return <span className="chip-status">会话已结束</span>;
+  const tip = "客户接着又说了话，AI 把这几条合在一起写了一条建议";
+  if (!t) return <span className="chip-status merged" title={tip}>已并入后面的建议</span>;
+  return (
+    <button className={`chip-status merged ${focused ? "on" : ""}`} title={tip} onClick={onFocus}>
+      已并入下面的建议
+    </button>
+  );
+}
+
 function SugChip({ s, focused, onFocus, onReopen }: { s: Suggestion; focused: boolean; onFocus: () => void; onReopen: () => void }) {
   if (s.status === "adopted" || s.status === "edited") {
     const tag = s.candidate && CANDIDATE_TAG[s.candidate.status];
@@ -134,7 +161,9 @@ function SugChip({ s, focused, onFocus, onReopen }: { s: Suggestion; focused: bo
         会话已结束
       </span>
     );
-  const label = { generating: "AI 生成中…", ready: "AI 建议待处理", failed: "AI 建议生成失败", escalated: "已转人工" }[s.status];
+  const label = { generating: "AI 生成中…", ready: "AI 建议待处理", failed: "AI 建议生成失败", escalated: "已转人工" }[
+    s.status as "generating" | "ready" | "failed" | "escalated"
+  ];
   return (
     <button className={`chip-status open ${s.status} ${focused ? "on" : ""}`} onClick={onFocus}>
       {label}
@@ -587,6 +616,18 @@ export default function Conversations({ me, canAutoSend, notify, onOpenKnowledge
   );
   const focus = open.find((i) => i.suggestion!.id === focusId) ?? open[open.length - 1] ?? null;
   const shownIndex = focus ? open.indexOf(focus) : 0;
+  // 一条建议可能回同一轮的好几条客户消息（连发、几个人各说一句），这几条一起高亮
+  const sugById = useMemo(
+    () => new Map(items.flatMap((i) => (i.suggestion ? [[i.suggestion.id, i.suggestion] as const] : []))),
+    [items],
+  );
+  const focusRound = useMemo(() => {
+    if (!focus) return [];
+    const ids = focus.suggestion?.covers?.length ? focus.suggestion.covers : [focus.message.id];
+    const found = ids.map((id) => items.find((i) => i.message.id === id)?.message).filter((m): m is Message => !!m);
+    return found.length ? found : [focus.message];
+  }, [focus, items]);
+  const roundIds = useMemo(() => new Set(focusRound.map((m) => m.id)), [focusRound]);
 
   const shown = groups.filter((g) => !search.trim() || groupLabel(g.group_name, g.group_id).includes(search.trim()));
   const current = target ? groups.find((g) => sameGroup(target, g)) : undefined;
@@ -849,13 +890,22 @@ export default function Conversations({ me, canAutoSend, notify, onOpenKnowledge
                     )}
                     <div
                       id={`m-${m.id}`}
-                      className={`bubble-row ${m.from_customer ? "cust" : "staff"} ${focus?.message.id === m.id ? "focused" : ""}`}
+                      className={`bubble-row ${m.from_customer ? "cust" : "staff"} ${roundIds.has(m.id) ? "focused" : ""}`}
                     >
                       <Avatar name={m.sender_name} customer={m.from_customer} />
                       <div className="msg-col">
                         <SenderLine name={senderName(m)} kind={m.sender_kind} time={hm(m.sent_at)} />
                         <MessageBody message={m} onChanged={() => refresh()} />
-                        {suggestion && (
+                        {suggestion?.status === "merged" ? (
+                          <MergedChip
+                            target={mergedTarget(suggestion, sugById)}
+                            focused={!!focus && roundIds.has(m.id)}
+                            onFocus={() => {
+                              const t = mergedTarget(suggestion, sugById);
+                              if (t) setFocusId(t.id);
+                            }}
+                          />
+                        ) : suggestion && (
                           <SugChip
                             s={suggestion}
                             focused={focus?.suggestion?.id === suggestion.id}
@@ -894,6 +944,7 @@ export default function Conversations({ me, canAutoSend, notify, onOpenKnowledge
               groupName={groupName}
               canAutoSend={canAutoSend(target.channel)}
               focus={focus}
+              round={focusRound}
               focusIndex={shownIndex}
               openTotal={open.length}
               onFocusStep={(d) => {

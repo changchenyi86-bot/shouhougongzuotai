@@ -47,7 +47,9 @@ export type SuggestionStatus =
   | "escalated"
   | "dismissed"
   /** 结束会话时还没回复，随会话一起结束 */
-  | "closed";
+  | "closed"
+  /** 客户接着又说了话，这条并进了同一轮后面那条建议（merged_into） */
+  | "merged";
 
 /** 生成建议时从售后数字人查到的一条参考知识。 */
 export interface KnowledgeRef {
@@ -103,6 +105,12 @@ export interface Suggestion {
   via_chat?: boolean;
   /** 生成时带给 AI 的客户档案：哪家客户、建议卡上显示的一句摘要 */
   profile?: { customer: string | null; summary: string } | null;
+  /** 这条建议回的是哪几条客户消息（同一轮连发或几个人各说的），按时间顺序，最后一条是自己 */
+  covers?: string[];
+  /** 已并入的那条建议（status 为 merged 时） */
+  merged_into?: string | null;
+  /** AI 结合上下文补全的、这一轮要解决的问题 */
+  question?: string | null;
   /** 回复发出后 AI 判断要不要沉淀成知识 */
   candidate?: { id: string; status: CandidateStatus; question: string } | null;
   final_content: string | null;

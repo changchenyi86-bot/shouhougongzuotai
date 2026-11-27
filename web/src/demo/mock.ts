@@ -268,17 +268,31 @@ function build(): Room[] {
     media_error: "文件超过 20MB，未下载，请到企业微信里查看",
   });
   m = say(bank, "p3Lm", 10, 9, "你好，报表导出一直转圈怎么办？日志发上面了");
-  suggest(bank, m, "ready", {
+  suggest(bank, m, "adopted", {
+    handled_by: "李四",
     content:
-      "您好，从日志看是导出请求超时（504）。这张报表数据量较大，建议先在「导出设置」里把导出方式改成「后台导出」，导出完成后会在消息中心提醒您下载。如果仍然失败，麻烦告诉我们报表名称，我们帮您排查。",
+      "您好，从日志看是导出请求超时（504）。这张报表数据量较大，建议先在「导出设置」里把导出方式改成「后台导出」，导出完成后会在消息中心提醒您下载。",
+    final_content:
+      "您好，从日志看是导出请求超时（504）。这张报表数据量较大，建议先在「导出设置」里把导出方式改成「后台导出」，导出完成后会在消息中心提醒您下载。",
+    adoption: "exact",
+  });
+  say(bank, null, 10, 11, "@sln 您好，从日志看是导出请求超时（504）。这张报表数据量较大，建议先在「导出设置」里把导出方式改成「后台导出」，导出完成后会在消息中心提醒您下载。");
+  // 客户接着连发两句追问：两句并成一轮，AI 只写一条建议，先把追问补全成完整的问题再查知识
+  const first = say(bank, "p3Lm", 10, 24, "改成后台导出了，还是不行");
+  m = say(bank, "p3Lm", 10, 24, "消息中心里一直显示排队中，等了十几分钟了");
+  suggest(bank, first, "merged", { merged_into: `s-${m.id}` });
+  suggest(bank, m, "ready", {
+    covers: [first.id, m.id],
+    question: "报表导出超时（504），改成后台导出后，消息中心里的导出任务一直排队中，十几分钟没有完成",
+    content:
+      "您好，改成后台导出后一直排队，一般是导出任务队列被占满，或者导出服务没有正常运行。麻烦您确认一下：同一时间是否还有其他同事在批量导出？我们这边同时查一下导出服务的状态，有结果马上告诉您。",
     can_answer: true,
-    confidence: "high",
-    reason: "FAQ 里有导出超时的处理办法，日志里的 504 和它一致",
+    confidence: "medium",
+    reason: "前面已经让客户改成后台导出，客户反馈任务一直排队，FAQ 里有后台导出排队的排查办法",
     knowledge: [
-      kn("K2", "faq", "有数", "excel导出问题排查方法", true, "https://study.sf.163.com/documents/read/privatization/bgdc03"),
-      kn("K1", "manual", "有数", "导出", true, "https://study.sf.163.com/documents/read/manual/daochu.md"),
+      kn("K1", "faq", "有数", "后台导出任务一直排队中的排查方法", true, "https://study.sf.163.com/documents/read/privatization/bgdc03"),
+      kn("K2", "manual", "有数", "导出", false, "https://study.sf.163.com/documents/read/manual/daochu.md"),
       kn("K3", "card", "有数", "表格勾选显示序号后，导出不会带出序号", false, null, "draft"),
-      kn("K4", "bug", "知数", "导出Excel失效", false, null),
     ],
   });
 
