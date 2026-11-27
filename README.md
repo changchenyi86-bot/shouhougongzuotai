@@ -35,11 +35,12 @@ backend/
     api/sending.py   自动发送：发送程序心跳 / 领取 / 回报，工作台重发 / 取消 / 改为手动
     auth.py、api/staff.py  登录（账号密码）、成员、角色（管理员 / 技术支持）、分组（BI 组 / 中台组）
     routing.py       会话分流（群负责人 → 同组在线、手上会话最少的人 → 都不在线还给负责人）和可见范围
+    customers.py、api/customers.py  客户档案：从售后系统、运维门户只读同步客户资料和服务记录，群对应客户，团队补充，带给 AI
     channels/        各 IM 渠道适配器（wecom 已实现：会话内容存档；dingtalk / feishu 待实现）
   tests/
 scripts/sync_digital_human_cards.py  把审核通过的知识写进售后数字人的 BI 纠错卡库（在能 SSH 到数字人服务器的电脑上运行）
 windows-agent/       电脑端发送程序：在常开的 Windows 电脑上操作官方企业微信客户端发消息
-web/                 React 工作台（登录；会话：群列表 + 聊天记录 + AI 建议 + 和 AI 对话 + 输入框；知识库：候选知识确认和审核；
+web/                 React 工作台（登录；会话：群列表 + 聊天记录 + AI 建议 + 和 AI 对话 + 输入框 + 右边的客户档案；知识库：候选知识确认和审核；
                      采纳统计；评测；团队设置：成员、群负责人；工单/积分排名占位）
 docker-compose.yml
 ```
@@ -102,6 +103,11 @@ docker-compose.yml
 - `GET /api/eval/sets`、`POST /api/eval/sets/{name}/import`（管理员，上传 .jsonl）：评测题库
 - `GET /api/eval/runs`、`POST /api/eval/runs`（管理员）、`POST /api/eval/runs/{id}/stop`（管理员）：评测轮次
 - `GET /api/eval/runs/{id}`、`GET /api/eval/runs/{id}/results`：一轮的分块统计、和上一轮对比、逐题结果
+- `GET /api/customers/card?channel=&group_id=`：一个群的客户档案（对应哪家客户、同步来的资料、只给内部看的提醒、团队补充、最近服务记录、同步状态）
+- `GET /api/customers/records?channel=&group_id=&offset=`、`GET /api/customers/search?q=`：这个群的全部服务记录；按简称或签约公司找客户
+- `PUT /api/customers/link`：手动指定群对应的客户（管理员、群负责人；同步不覆盖）
+- `POST /api/customers/notes`、`PATCH|DELETE /api/customers/notes/{id}`：团队补充、资料有误（能看这个群的人都能写；自己写的自己改，管理员都能改）
+- `POST /api/customers/sync`：马上同步一次客户档案（管理员）
 - `GET /api/send/status`：自动发送程序是否在线
 - `POST /api/suggestions/{id}/adopt` 传 `send: true`：确认后交给发送程序自动发到群里
 - `POST /api/suggestions/{id}/resend|cancel-send|mark-manual-sent`：自动发送失败后重发、取消排队、标记已手动发送
@@ -260,6 +266,22 @@ AI 建议下方点「和 AI 对话」，技术支持说自己的方案、要点�
 - 一次只跑一轮，同时跑 `EVAL_WORKERS` 道题（默认 2）。每道题调两次模型（起草 + 打分），几百道题一轮约半小时，按用量计费。
   后台重启时没跑完的一轮会接着跑，已跑完的题不重跑。
 
+### 客户档案
+
+会话页右边显示这个群对应客户的档案，AI 写建议时也会带上（只用于判断，不写进回复）：
+
+- 群对应哪家客户：售后系统的群绑定为主（企业微信群 id 对得上就自动对上），任务表库的企微群对照为辅；对不上或对错了，
+  群负责人和管理员可以手动选，手动选的同步不会覆盖
+- 签约公司、等级、分组、销售、已购产品（售后系统客户增购表）；按有数BI、数据中台两条线的维保状态和到期日（售后系统维保总览）、商务状态
+- 环境：各产品的生产、测试等环境和版本、集群类型、负责的技术支持和运维（运维门户「客户环境」、售后系统环境表）
+- 最近服务记录：售后系统里按群记的服务小结（七鱼时代起），按更新时间增量同步
+- 团队补充、资料有误：写在工作台里，跟着客户走（这家的几个群都看得到）；同步来的资料在工作台里只读，不对就报资料有误，管理员去源头改
+- 这个群对应产品线的维保过期或流失时，AI 建议下方提醒「仅内部」，不会写进回复
+
+在 `backend/.env` 配 `CUSTOMER_DB_CONFIG_FILE`（数据库连接文件，JSON：host、port、username、password）后，后台每
+`CUSTOMER_SYNC_MINUTES` 分钟（默认 60）只读同步一次：只读事务、只查固定的表和列；运维门户环境表里的账号密码、访问地址、
+服务器信息，以及金额、客户联系人一律不取。连接文件放在本机，用 docker-compose.override.yml 只读挂进容器，不进仓库。
+
 ### 知识库向量模型（embedding）
 
 使用 OpenAI 兼容的 `/v1/embeddings` 接口，在 `backend/.env` 配置 `EMBEDDING_BASE_URL` / `EMBEDDING_MODEL` / `EMBEDDING_DIM`（见 `.env.example`）。
@@ -275,6 +297,7 @@ AI 建议下方点「和 AI 对话」，技术支持说自己的方案、要点�
 - [ ] 钉钉、飞书群消息接入
 - [x] AI 预处理与回复建议
 - [x] 企业微信自动发送原型（电脑端发送程序操作客户端；发文字、图片、文件已在一台真机上测通，和工作台的整条流程待联调）
+- [x] 客户档案：群对应客户、签约公司、维保、环境版本、服务记录、团队补充，AI 建议参考档案
 - [ ] 转技术支持协助
 - [x] 回复建议参考售后数字人的知识（纠错卡、手册、FAQ、工单），并标出引用
 - [x] 知识库沉淀与自迭代：AI 判断通用问题 → 回复的人确认 → 工作台审核 → 工作台马上用上，经 BI 纠错卡写入售后数字人

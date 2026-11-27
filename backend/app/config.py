@@ -57,6 +57,13 @@ class Settings(BaseSettings):
     # ---- 回复建议评测（评测页一键跑题库，不发到群里）：一轮里同时跑几道题，每道题调两次模型（起草 + 打分） ----
     eval_workers: int = 2
 
+    # ---- 客户档案：从售后系统、运维门户的数据库只读同步 ----
+    # 数据库连接文件（JSON：host、port、username、password），留空表示不同步、档案卡只显示团队补充。
+    # 只读事务、只查固定的表和列，账号密码、地址、金额等一律不取
+    customer_db_config_file: str = ""
+    customer_sync_minutes: int = 60  # 多久同步一次；服务记录按更新时间增量取
+    customer_records_in_prompt: int = 5  # 生成建议时带上这个群最近几条服务记录
+
     # ---- 企业微信 会话内容存档 ----
     wecom_corp_id: str = ""
     wecom_archive_secret: str = ""  # 「会话内容存档」应用的 Secret

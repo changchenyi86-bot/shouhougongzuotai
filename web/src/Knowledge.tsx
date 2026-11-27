@@ -57,6 +57,12 @@ export default function Knowledge({ s }: { s: Suggestion }) {
   return (
     <div className="knowledge">
       {s.knowledge_error && <p className="kn-error">{s.knowledge_error}</p>}
+      {s.profile && (
+        <p className="kn-profile" title="生成建议时把这个群的客户档案（环境版本、集群类型、团队补充、最近服务记录）带给了 AI，只用于判断，不会写进回复">
+          <span className="kn-kind">客户档案</span>
+          <span className="kn-title">{s.profile.summary}</span>
+        </p>
+      )}
       {(cited.length > 0 || none || rest.length > 0) && (
         <div className="kn-head">
           {cited.length > 0 ? (

@@ -45,6 +45,8 @@ interface Props {
   onFocusStep: (delta: number) => void;
   onChanged: () => void;
   notify: (text: string) => void;
+  /** 客户档案里只给内部看的提醒（如这个群对应产品线的维保已过期），显示在 AI 建议下方，不会进回复 */
+  alerts?: string[];
 }
 
 /** 会话底部：AI 建议 + 输入框（文字、图片、文件），确认后由发送电脑发到群里。 */
@@ -299,6 +301,14 @@ export default function Composer(props: Props) {
               {s.note && <p className="note">转人工备注：{s.note}</p>}
               {s.content && <p className="ai-text">{s.content}</p>}
               <Knowledge s={s} />
+              {props.alerts && props.alerts.length > 0 && (
+                <p className="inner-warn">
+                  <b>仅内部</b>
+                  <span>
+                    客户档案：{props.alerts.join("；")}。回复前确认是否继续支持。这句不会写进回复。
+                  </span>
+                </p>
+              )}
             </>
           )}
           <div className="actions">

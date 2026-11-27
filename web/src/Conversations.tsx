@@ -6,6 +6,7 @@ import {
   dismissTask,
   endConversation,
   fetchConversation,
+  fetchCustomerCard,
   fetchGroups,
   fetchUpdates,
   fetchStaff,
@@ -15,6 +16,7 @@ import {
   type Attachment,
   type Channel,
   type ConversationEnd,
+  type CustomerCard as CustomerCardData,
   type Group,
   type GroupView,
   type InboxItem,
@@ -24,6 +26,7 @@ import {
   type Suggestion,
 } from "./api";
 import Composer from "./Composer";
+import CustomerCard from "./CustomerCard";
 import { ImageGallery } from "./ImageViewer";
 import MessageBody, { AttachmentView, isImage } from "./MessageBody";
 import { Avatar, SenderLine, senderName } from "./Sender";
@@ -64,6 +67,25 @@ const whoOf = (c: { owner: StaffBrief | null; assignee: StaffBrief | null; conve
   open: c.conversation_open,
 });
 const OPEN: Suggestion["status"][] = ["generating", "ready", "failed", "escalated"];
+
+// 客户档案展开还是收起，记在各人自己的浏览器里；没记过时，宽屏默认展开
+const CARD_KEY = "customerCard";
+function loadCardOpen(): boolean {
+  try {
+    const v = localStorage.getItem(CARD_KEY);
+    if (v) return v === "open";
+  } catch {
+    /* 浏览器禁用存储时忽略 */
+  }
+  return window.innerWidth >= 1440;
+}
+function saveCardOpen(open: boolean) {
+  try {
+    localStorage.setItem(CARD_KEY, open ? "open" : "closed");
+  } catch {
+    /* 同上 */
+  }
+}
 
 const sameGroup = (a: ChatTarget | null, b: ChatTarget) => !!a && a.channel === b.channel && a.group_id === b.group_id;
 
@@ -217,6 +239,13 @@ export default function Conversations({ me, canAutoSend, notify, onOpenKnowledge
   const [focusId, setFocusId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [nameDraft, setNameDraft] = useState<string | null>(null); // 正在填写的群名
+  const [card, setCard] = useState<CustomerCardData | null>(null);
+  const [cardError, setCardError] = useState<string | null>(null);
+  const [cardOpen, setCardOpenState] = useState(loadCardOpen);
+  const setCardOpen = (open: boolean) => {
+    setCardOpenState(open);
+    saveCardOpen(open);
+  };
   const listRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true); // 停在最底部时，图片加载完撑高了页面也保持在底部
   const scrollPlan = useRef<{ kind: "bottom" } | { kind: "keep"; height: number; top: number } | null>(null);
@@ -262,6 +291,28 @@ export default function Conversations({ me, canAutoSend, notify, onOpenKnowledge
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
   }, [target]);
+
+  // 客户档案：换群时加载；同步一小时一次，开着的群每 5 分钟重新取一次
+  const cardFor = useRef<ChatTarget | null>(null); // 档案请求回来时已经换了群，就不用它
+  const loadCard = useCallback(() => {
+    cardFor.current = target;
+    if (!target) return;
+    fetchCustomerCard(target.channel, target.group_id)
+      .then((c) => {
+        if (cardFor.current !== target) return;
+        setCard(c);
+        setCardError(null);
+      })
+      .catch((e: Error) => cardFor.current === target && setCardError(e.message));
+  }, [target]);
+
+  useEffect(() => {
+    setCard(null);
+    setCardError(null);
+    loadCard();
+    const t = setInterval(loadCard, 300_000);
+    return () => clearInterval(t);
+  }, [loadCard]);
 
   useLayoutEffect(() => {
     const el = listRef.current;
@@ -554,7 +605,7 @@ export default function Conversations({ me, canAutoSend, notify, onOpenKnowledge
   }, [ends, items, moreBefore, moreAfter]);
 
   return (
-    <div className="chat-layout">
+    <div className={`chat-layout ${target && cardOpen ? "with-card" : ""}`}>
       <div className={`group-list ${target ? "has-target" : ""}`}>
         <div className="tabs group-tabs">
           {VIEWS.filter((v) => admin || !v.admin).map((v) => (
@@ -694,6 +745,13 @@ export default function Conversations({ me, canAutoSend, notify, onOpenKnowledge
               )}
               <span className={`tag ${target.channel}`}>{CHANNEL_LABEL[target.channel]}</span>
               {current && <span className="msg-count">共 {current.message_count} 条消息</span>}
+              {!cardOpen && (
+                <button className="cust-chip" title="打开客户档案" onClick={() => setCardOpen(true)}>
+                  {card?.profile?.name ?? card?.link.customer ?? "客户档案"}
+                  {card?.profile?.level && card.profile.level !== "普通" && <span className="lvl imp">{card.profile.level}</span>}
+                  {card && card.alerts.length > 0 && <span className="cust-dot" title={card.alerts.join("；")} />}
+                </button>
+              )}
               <WhoChip who={who} me={me} />
               <div className="head-actions" ref={transferBox}>
                 {canTransfer && (
@@ -831,10 +889,22 @@ export default function Conversations({ me, canAutoSend, notify, onOpenKnowledge
               }}
               onChanged={changed}
               notify={notify}
+              alerts={card?.alerts}
             />
           </>
         )}
       </section>
+      {target && cardOpen && (
+        <CustomerCard
+          target={target}
+          card={card}
+          error={cardError}
+          me={me}
+          onClose={() => setCardOpen(false)}
+          onChanged={loadCard}
+          notify={notify}
+        />
+      )}
     </div>
   );
 }

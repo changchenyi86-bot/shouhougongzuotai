@@ -101,6 +101,8 @@ export interface Suggestion {
   adoption_score?: number | null;
   /** 回复是和 AI 对话润色出来的 */
   via_chat?: boolean;
+  /** 生成时带给 AI 的客户档案：哪家客户、建议卡上显示的一句摘要 */
+  profile?: { customer: string | null; summary: string } | null;
   /** 回复发出后 AI 判断要不要沉淀成知识 */
   candidate?: { id: string; status: CandidateStatus; question: string } | null;
   final_content: string | null;
@@ -556,3 +558,108 @@ export async function importEvalSet(name: string, file: File) {
   if (!res.ok) throw await failure(res);
   return (await res.json()) as { name: string; added: number; updated: number; retired: number };
 }
+
+// ---------- 客户档案 ----------
+
+export interface CustomerEnvInstance {
+  /** 生产、测试，或运维门户里起的环境名 */
+  env: string;
+  version: string | null;
+  /** 运维门户里确认版本的日期 */
+  confirmed_at: string | null;
+}
+
+export interface CustomerEnv {
+  /** 有数BI / 知数 / 指标平台 / 数据中台 */
+  product: string;
+  tech_support: string | null;
+  ops_support: string | null;
+  instances: CustomerEnvInstance[];
+}
+
+export interface CustomerMaintenance {
+  line: string;
+  /** 有数BI / 数据中台 */
+  label: string;
+  /** 在保 / 半过期 / 过期 / 流失 / 交付 */
+  status: string | null;
+  /** 如 1在保+2过期 */
+  structure: string | null;
+  next_expire: string | null;
+  expire: string | null;
+}
+
+export interface CustomerProfile {
+  name: string;
+  /** 签约公司，可能有多家（含集成商、代理商） */
+  companies: string[];
+  level: string | null;
+  industry: string | null;
+  sales: string | null;
+  purchased: string[];
+  business_status: string | null;
+  maintenance: CustomerMaintenance[];
+  environments: CustomerEnv[];
+  cluster_type: string | null;
+  synced_at: string;
+}
+
+export interface CustomerNote {
+  id: string;
+  /** note 团队补充 / error 资料有误 */
+  kind: "note" | "error";
+  content: string;
+  author: string;
+  author_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ServiceRecord {
+  id: number;
+  served_on: string;
+  category: string | null;
+  description: string | null;
+  solution: string | null;
+  /** 0 待跟进 / 1 已解决 / 2 部分解决 / null 未评定 */
+  resolved: number | null;
+  staff_name: string | null;
+}
+
+export interface CustomerCard {
+  group_name: string | null;
+  link: {
+    customer: string | null;
+    /** bind 售后系统群绑定 / tasks 任务表群对照 / manual 人工选 */
+    source: string | null;
+    candidates: string[];
+    updated_by: string | null;
+  };
+  profile: CustomerProfile | null;
+  /** 只给内部看的提醒，如这个群对应产品线的维保已过期 */
+  alerts: string[];
+  notes: CustomerNote[];
+  records: ServiceRecord[];
+  record_total: number;
+  sync: { configured: boolean; synced_at: string | null; error: string | null; maintenance_updated_on: string | null };
+  /** 能不能改这个群对应的客户（管理员、群负责人） */
+  can_link: boolean;
+}
+
+const groupQs = (channel: Channel, groupId: string, extra: Record<string, string> = {}) =>
+  new URLSearchParams({ channel, group_id: groupId, ...extra }).toString();
+
+export const fetchCustomerCard = (channel: Channel, groupId: string) =>
+  call<CustomerCard>(`/api/customers/card?${groupQs(channel, groupId)}`);
+export const fetchServiceRecords = (channel: Channel, groupId: string, offset: number, limit = 50) =>
+  call<ServiceRecord[]>(`/api/customers/records?${groupQs(channel, groupId, { offset: String(offset), limit: String(limit) })}`);
+export const searchCustomers = (q: string) =>
+  call<{ name: string; companies: string[] }[]>(`/api/customers/search?${new URLSearchParams({ q })}`);
+export const setCustomerLink = (channel: Channel, group_id: string, customer: string | null) =>
+  put<CustomerCard["link"]>("/api/customers/link", { channel, group_id, customer });
+export const addCustomerNote = (channel: Channel, group_id: string, kind: "note" | "error", content: string) =>
+  post<CustomerNote>("/api/customers/notes", { channel, group_id, kind, content });
+export const editCustomerNote = (id: string, content: string) =>
+  call<CustomerNote>(`/api/customers/notes/${id}`, { method: "PATCH", body: JSON.stringify({ content }) });
+export const deleteCustomerNote = (id: string) => call<void>(`/api/customers/notes/${id}`, { method: "DELETE" });
+export const syncCustomers = () => post<{ status: string }>("/api/customers/sync");

@@ -136,6 +136,7 @@ class Suggestion(Base):
     adoption: Mapped[str | None] = mapped_column(String(16), index=True)
     adoption_score: Mapped[float | None] = mapped_column(comment="实际回复和 AI 原建议的相似度，0～1")
     via_chat: Mapped[bool] = mapped_column(Boolean, default=False, comment="回复是和 AI 对话润色出来的")
+    profile: Mapped[dict | None] = mapped_column(JSON, comment="生成时带给 AI 的客户档案摘要：{customer, summary}")
 
     final_content: Mapped[str | None] = mapped_column(Text, comment="实际发出的回复")
     delivery: Mapped[str | None] = mapped_column(String(16), comment="manual：复制后人工发送；agent：由电脑端发送程序自动发送")
@@ -494,3 +495,78 @@ class EvalResult(Base):
     passed: Mapped[bool | None] = mapped_column(Boolean)
     seconds: Mapped[float | None] = mapped_column()
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+# ---- 客户档案：从售后系统、运维门户只读同步来的客户资料，加上团队自己写的补充 ----
+
+
+class CustomerProfile(Base):
+    """一家客户的档案（按售后系统里的客户简称）。每次同步整体替换，工作台里只读。
+
+    只存档案卡要显示的字段：账号密码、访问地址、IP、连接串、金额、客户联系人一律不同步。
+    """
+
+    __tablename__ = "customer_profiles"
+
+    name: Mapped[str] = mapped_column(String(100), primary_key=True, comment="客户简称，和售后系统一致")
+    companies: Mapped[list | None] = mapped_column(JSON, comment="签约公司（可能有多家，含集成商、代理商）")
+    level: Mapped[str | None] = mapped_column(String(20), comment="重要 / 次重要 / 普通")
+    industry: Mapped[str | None] = mapped_column(String(100), comment="客户分组：金融 / 通用")
+    sales: Mapped[str | None] = mapped_column(String(60))
+    purchased: Mapped[list | None] = mapped_column(JSON, comment="已购产品")
+    business_status: Mapped[str | None] = mapped_column(String(20), comment="商务状态：售后 / 售前 / 过保 / 流失 / 交付")
+    maintenance: Mapped[list | None] = mapped_column(
+        JSON, comment="按产品线的维保：[{line, status, structure, next_expire, expire}]")
+    environments: Mapped[list | None] = mapped_column(
+        JSON, comment="环境：[{product, tech_support, ops_support, instances: [{env, version, confirmed_at}]}]")
+    cluster_type: Mapped[str | None] = mapped_column(String(40), comment="集群类型，如 NDH全家桶、对接CDH/CDP")
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class CustomerGroupLink(Base):
+    """群对应哪家客户。自动对上的每次同步更新；人工选的（manual）同步不覆盖。"""
+
+    __tablename__ = "customer_group_links"
+
+    channel: Mapped[Channel] = mapped_column(Enum(Channel, native_enum=False, length=16), primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    customer: Mapped[str | None] = mapped_column(String(100), index=True, comment="客户简称；为空表示没对上")
+    source: Mapped[str] = mapped_column(String(16), comment="bind 售后系统群绑定 / tasks 任务表群对照 / manual 人工选")
+    candidates: Mapped[list | None] = mapped_column(JSON, comment="对不准时的几个候选客户，等人选")
+    updated_by: Mapped[str | None] = mapped_column(String(64))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class CustomerNote(Base):
+    """团队在档案上写的补充（note），或报的资料有误（error，管理员去源头改好后删掉）。"""
+
+    __tablename__ = "customer_notes"
+    __table_args__ = (Index("ix_customer_notes_group", "channel", "group_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    customer: Mapped[str | None] = mapped_column(String(100), index=True, comment="写的时候群对应的客户；没对上为空")
+    channel: Mapped[Channel] = mapped_column(Enum(Channel, native_enum=False, length=16))
+    group_id: Mapped[str] = mapped_column(String(128), comment="在哪个群的档案上写的")
+    kind: Mapped[str] = mapped_column(String(8), default="note", comment="note 补充 / error 资料有误")
+    content: Mapped[str] = mapped_column(Text)
+    author: Mapped[str] = mapped_column(String(64))
+    author_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("staff.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class ServiceRecord(Base):
+    """售后系统里的一条服务记录（七鱼时代起，每次服务一句话小结），按企业微信群对上。只读同步。"""
+
+    __tablename__ = "service_records"
+    __table_args__ = (Index("ix_service_records_group", "chat_id", "served_on"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=False, comment="售后系统里的记录编号")
+    chat_id: Mapped[str] = mapped_column(String(128), comment="企业微信群 chat_id")
+    served_on: Mapped[str] = mapped_column(String(10), comment="服务日期 YYYY-MM-DD")
+    category: Mapped[str | None] = mapped_column(String(32))
+    description: Mapped[str | None] = mapped_column(Text)
+    solution: Mapped[str | None] = mapped_column(Text)
+    resolved: Mapped[int | None] = mapped_column(comment="0 待跟进 / 1 已解决 / 2 部分解决 / 空 未评定")
+    staff_name: Mapped[str | None] = mapped_column(String(64))
+    source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
