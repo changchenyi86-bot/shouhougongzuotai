@@ -108,6 +108,7 @@ class SuggestionOut(BaseModel):
         default=None, description="采纳情况：原样采纳 / 小改 / 大改 / 未用")
     adoption_score: float | None = None
     via_chat: bool = Field(default=False, description="回复是和 AI 对话润色出来的")
+    profile: dict | None = Field(default=None, description="生成时带给 AI 的客户档案：{customer, summary}")
     candidate: CandidateBrief | None = None
     final_content: str | None
     delivery: str | None
@@ -624,3 +625,138 @@ class EvalResultOut(BaseModel):
     passed: bool | None = None
     previous_passed: bool | None = None  # 上一轮这道题过没过；上一轮没跑这道题为空
     seconds: float | None = None
+
+
+# ---- 客户档案 ----
+
+
+def _strip_text(v: str) -> str:
+    v = v.strip()
+    if not v:
+        raise ValueError("内容不能为空")
+    return v
+
+
+class CustomerEnvInstance(BaseModel):
+    env: str = Field(description="生产、测试，或运维门户里起的环境名")
+    version: str | None = None
+    confirmed_at: str | None = Field(default=None, description="运维门户里确认版本的日期")
+
+
+class CustomerEnv(BaseModel):
+    product: str = Field(description="有数BI / 知数 / 指标平台 / 数据中台")
+    tech_support: str | None = None
+    ops_support: str | None = None
+    instances: list[CustomerEnvInstance] = []
+
+
+class CustomerMaintenance(BaseModel):
+    line: str = Field(description="BI / BD")
+    label: str = Field(description="有数BI / 数据中台")
+    status: str | None = Field(default=None, description="在保 / 半过期 / 过期 / 流失 / 交付")
+    structure: str | None = Field(default=None, description="如 1在保+2过期")
+    next_expire: str | None = None
+    expire: str | None = None
+
+
+class CustomerProfileOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    name: str
+    companies: list[str] = Field(default=[], description="签约公司")
+    level: str | None = None
+    industry: str | None = None
+    sales: str | None = None
+    purchased: list[str] = []
+    business_status: str | None = None
+    maintenance: list[CustomerMaintenance] = []
+    environments: list[CustomerEnv] = []
+    cluster_type: str | None = None
+    synced_at: datetime
+
+    @field_validator("companies", "purchased", "maintenance", "environments", mode="before")
+    @classmethod
+    def _none_as_empty(cls, v):
+        return v or []
+
+
+class CustomerNoteOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    kind: Literal["note", "error"]
+    content: str
+    author: str
+    author_id: uuid.UUID | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ServiceRecordOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    served_on: str
+    category: str | None
+    description: str | None
+    solution: str | None
+    resolved: int | None = Field(description="0 待跟进 / 1 已解决 / 2 部分解决 / 空 未评定")
+    staff_name: str | None
+
+
+class CustomerLinkOut(BaseModel):
+    customer: str | None = None
+    source: str | None = Field(default=None, description="bind 售后系统群绑定 / tasks 任务表群对照 / manual 人工选")
+    candidates: list[str] = []
+    updated_by: str | None = None
+
+
+class CustomerSyncOut(BaseModel):
+    configured: bool
+    synced_at: datetime | None = None
+    error: str | None = None
+    maintenance_updated_on: str | None = Field(default=None, description="售后系统维保总览最后一次计算的日期")
+
+
+class CustomerCardOut(BaseModel):
+    group_name: str | None = None
+    link: CustomerLinkOut
+    profile: CustomerProfileOut | None = None
+    alerts: list[str] = Field(default=[], description="只给内部看的提醒，如这个群对应产品线的维保已过期")
+    notes: list[CustomerNoteOut] = []
+    records: list[ServiceRecordOut] = Field(default=[], description="这个群最近的服务记录")
+    record_total: int = 0
+    sync: CustomerSyncOut
+    can_link: bool = Field(description="当前的人能不能改这个群对应的客户（管理员、群负责人）")
+
+
+class CustomerBrief(BaseModel):
+    name: str
+    companies: list[str] = []
+
+
+class CustomerLinkIn(BaseModel):
+    channel: Channel
+    group_id: str = Field(min_length=1, max_length=128)
+    customer: str | None = Field(default=None, max_length=100, description="客户简称；为空表示这个群不对应任何客户")
+
+
+class CustomerNoteIn(BaseModel):
+    channel: Channel
+    group_id: str = Field(min_length=1, max_length=128)
+    kind: Literal["note", "error"] = "note"
+    content: str = Field(max_length=1000)
+
+    @field_validator("content")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        return _strip_text(v)
+
+
+class CustomerNoteEdit(BaseModel):
+    content: str = Field(max_length=1000)
+
+    @field_validator("content")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        return _strip_text(v)

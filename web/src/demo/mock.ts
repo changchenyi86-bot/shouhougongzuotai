@@ -16,6 +16,7 @@ import type {
   Suggestion,
   Team,
 } from "../api";
+import { handleCustomers } from "./customerMock";
 import { handleEval } from "./evalMock";
 
 const at = (h: number, m: number) => {
@@ -614,6 +615,11 @@ async function handle(path: string, query: URLSearchParams, method: string, body
       for (const i of r.items)
         if (i.suggestion?.candidate?.id === c.id) i.suggestion.candidate = { id: c.id, status: c.status, question: c.question };
     return c;
+  }
+
+  if (path.startsWith("customers/")) {
+    const out = handleCustomers(path, query, method, data, (g) => rooms.find((r) => r.group.group_id === g)?.group.group_name ?? null);
+    if (out !== undefined) return out;
   }
 
   if (path.startsWith("eval/")) {

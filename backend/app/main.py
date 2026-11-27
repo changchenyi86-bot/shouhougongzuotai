@@ -6,10 +6,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app import auth, db, routing
+from app import auth, customers, db, routing
 from app.ai import evaluate, similar, worker
-from app.api import (assist, attachments, candidates, conversations, evaluation, messages, sending, staff, stats,
-                     suggestions)
+from app.api import (assist, attachments, candidates, conversations, customers as customers_api, evaluation, messages,
+                     sending, staff, stats, suggestions)
 from app.channels.wecom import router as wecom_router
 from app.channels.wecom.archive import get_syncer
 from app.config import settings
@@ -35,6 +35,16 @@ async def _poll_wecom_archive() -> None:
         await asyncio.sleep(wait)
 
 
+async def _sync_customers() -> None:
+    """定时从售后系统、运维门户只读同步客户档案。"""
+    while True:
+        try:
+            await asyncio.to_thread(customers.sync_once)
+        except Exception:  # noqa: BLE001  源库连不上等，记日志，下一轮再试
+            log.exception("客户档案同步出错")
+        await asyncio.sleep(max(settings.customer_sync_minutes, 5) * 60)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
@@ -45,14 +55,16 @@ async def lifespan(_: FastAPI):
     worker.resume_pending()
     worker.submit(similar.backfill)
     evaluate.resume()  # 重启前没跑完的评测接着跑
-    poller = None
+    tasks = []
     if settings.wecom_archive_enabled and settings.wecom_archive_poll_interval > 0:
-        poller = asyncio.create_task(_poll_wecom_archive())
+        tasks.append(asyncio.create_task(_poll_wecom_archive()))
+    if settings.customer_db_config_file:
+        tasks.append(asyncio.create_task(_sync_customers()))
     yield
-    if poller:
-        poller.cancel()
+    for task in tasks:
+        task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
-            await poller
+            await task
     worker.shutdown()
     evaluate.shutdown()
 
@@ -77,6 +89,7 @@ app.include_router(candidates.router)
 app.include_router(candidates.sync_router)
 app.include_router(stats.router)
 app.include_router(evaluation.router)
+app.include_router(customers_api.router)
 app.include_router(sending.agent_router)
 
 

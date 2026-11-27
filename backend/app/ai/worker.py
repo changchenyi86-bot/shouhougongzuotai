@@ -94,7 +94,7 @@ def run(message_id: uuid.UUID) -> None:
             return
         if result is None:
             sug.status, sug.error = SuggestionStatus.FAILED, error
-            sug.knowledge = sug.knowledge_error = sug.knowledge_note = None
+            sug.knowledge = sug.knowledge_error = sug.knowledge_note = sug.profile = None
         else:
             draft = result.draft
             sug.status = SuggestionStatus.READY
@@ -102,6 +102,7 @@ def run(message_id: uuid.UUID) -> None:
             sug.confidence, sug.reason, sug.model = draft.confidence, draft.reason, result.model
             sug.knowledge = [k.to_record() for k in result.knowledge]
             sug.knowledge_error, sug.knowledge_note = result.knowledge_error, result.knowledge_note
+            sug.profile = result.profile
             sug.needs_reply = draft.needs_reply
             if not draft.needs_reply and auto_dismissable(message.content) and not sug.reopened_by:
                 # AI 判断无需回复（寒暄、致谢、测试）：直接标记，不算待处理；工作台上可以改回待回复
