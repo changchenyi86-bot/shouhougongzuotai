@@ -430,6 +430,16 @@ def differs(a, b) -> bool:
     return diff.histogram()[255] > a.size[0] * a.size[1] * 0.0003
 
 
+def changed_box(a, b) -> tuple[int, int, int, int] | None:
+    """两张同样大小的截图里，看得出变化的部分在图里的范围（左、上、右、下）；没变化返回 None。"""
+    if a.size != b.size:
+        return None
+    from PIL import ImageChops
+
+    diff = ImageChops.difference(a.convert("L"), b.convert("L")).point(lambda v: 255 if v > 32 else 0)
+    return diff.getbbox()
+
+
 class Ocr:
     """离线识字（RapidOCR，不联网）。模型在发送程序启动时加载好（约 1~2 秒），不占第一条消息的时间。"""
 
@@ -1008,8 +1018,8 @@ class WeComDriver:
         for part in parts:
             if isinstance(part, str):
                 # 企业微信 @ 完会自己加一个空格，回复里名字后面的空格就不再重复输入
-                if after_at and self._at_space and part[:1] == " ":
-                    part = part[1:]
+                if after_at and self._at_space:
+                    part = part.lstrip(" ")
                 after_at = False
                 if part:
                     self.clip.set_text(part)
@@ -1141,6 +1151,8 @@ class WeComDriver:
     def _mention(self, rect: Rect, m: Mention) -> str | None:
         """在输入框当前位置真正 @ 这个人。做到了返回 None；没做到返回原因，并把名字按普通文字补齐。"""
         query = mentions.query_of(m.name)
+        pane = self._pane_box(rect)
+        pane_before = self._grab(pane)[0]  # 打 @ 之前聊天区的样子：认不出成员列表窗口时，靠画面变化找它
         popup = self._type_at()
         if popup is None:
             self._debug_shot("mention-nopopup")
@@ -1153,6 +1165,18 @@ class WeComDriver:
         lines = self._popup_lines(rect, hwnds, before) if before else []
         texts = [line.text for line in lines]
         index, why = mentions.pick(texts, m)
+        if index is None and not any(mentions.candidate(t, m.name) for t in texts):
+            # 窗口范围里没认出这个人：按打 @ 前后聊天区画面变了的地方再认一次（弹出的成员列表就在那里）
+            found = changed_box(pane_before, self._grab(pane)[0])
+            if found:
+                area = (pane[0] + found[0], pane[1] + found[1], pane[0] + found[2], pane[1] + found[3])
+                whole = self._results_box(rect)
+                lines = self.ocr.read(area, like=(whole[2] - whole[0], whole[3] - whole[1]))
+                texts = [line.text for line in lines]
+                index, why = mentions.pick(texts, m)
+                cls += f"；按画面变化找的范围 {area}"
+                if "按画面变化找的成员列表" not in self._notes:
+                    self._notes.append("按画面变化找的成员列表")
         log.info("@%s：成员列表（%s，识字范围 %s）里识别到：%s", m.name, cls, popup_box(hwnds) or box,
                  "；".join(f"{ln.text}@({ln.x0},{ln.y0})" for ln in lines) or "没有识别到文字")
         self._debug_shot("mention-list")

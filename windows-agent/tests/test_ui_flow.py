@@ -199,6 +199,8 @@ def chat(monkeypatch, request):
                         lambda pid, main: {98: ("PerryShadowWnd", shadow), 99: ("AtListWnd", fake.at_box)}
                         if fake.at_query is not None else {})
     monkeypatch.setattr(ui, "popup_box", lambda hwnds: fake.at_box if fake.at_query is not None else None)
+    monkeypatch.setattr(ui, "changed_box", lambda a, b: fake.changed)
+    fake.changed = None  # 打 @ 前后聊天区画面变了的范围（相对聊天区）
     monkeypatch.setattr(ui, "find_search_popup", lambda pid: fake.popup if fake.search else None)
     monkeypatch.setattr(ui, "window_alive", lambda win: True)
     monkeypatch.setattr(ui, "prepare_window", lambda win, cfg: RECT)
@@ -718,3 +720,25 @@ def test_unexpected_input_falls_back_to_plain_text(chat):
 def test_mention_missing_from_text(chat):
     r = chat.driver.send(G, "您好", mentions=[at("王五")])
     assert r.ok and "找不到「@王五」" in r.warning and chat.sent == [(G, "您好")]
+
+
+def test_member_list_found_by_screen_change_when_window_box_has_no_text(chat, monkeypatch):
+    # 真机上先认到的窗口是成员列表外面的阴影，那个范围里认不出字：改按打 @ 前后画面变了的地方去认
+    chat.members = ["sln@微信"]
+    pane = chat.driver._pane_box(RECT)
+    chat.changed = (10, 10, 200, 80)
+    area = (pane[0] + 10, pane[1] + 10, pane[0] + 200, pane[1] + 80)
+    original_ocr = chat.ocr
+
+    def ocr(box, image=None, like=None):
+        if box == chat.at_box:
+            return []  # 阴影窗口的范围：没有字
+        if box == area:
+            return chat.at_lines()
+        return original_ocr(box, image, like)
+
+    monkeypatch.setattr(chat.driver.ocr, "read", ocr)
+    r = chat.driver.send(G, "@sln  你好", mentions=[at("sln", "wechat")])
+    assert r.ok and r.warning is None, r.warning
+    assert chat.picked == ["sln"]
+    assert chat.sent == [(G, "@sln\u2005你好")]  # 名字后面多打的空格也不重复
