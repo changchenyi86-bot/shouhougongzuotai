@@ -17,6 +17,8 @@
   --accent: #5b5bd6;
   --accent-hover: #4d4dc6;
   --accent-soft: #efeffd;
+  /* 选中文字的底色：要看得出来（原来用 accent-soft，和浅紫气泡、AI 建议底色几乎一样，选中了也看不见） */
+  --selection: rgba(91, 91, 214, .28);
   --accent-text: #4747b8;
   --on-accent: #ffffff;
   --primary-bg: var(--accent);
@@ -74,6 +76,7 @@
   --accent: #3b5bfd;
   --accent-hover: #2f4ef0;
   --accent-soft: #edf1ff;
+  --selection: rgba(59, 91, 253, .26);
   --accent-text: #2f4ef0;
   --on-accent: #ffffff;
   --primary-bg: linear-gradient(135deg, #3b5bfd, #7c4dff);
@@ -125,7 +128,10 @@ body {
     var(--bg);
 }
 button, input, textarea { font: inherit; color: inherit; }
-::selection { background: var(--accent-soft); }
+::selection { background: var(--selection); }
+/* 渐变风格里自己发的气泡是深色底白字：选中时用半透明白底，字保持白色 */
+[data-theme="aurora"] .bubble-row.staff .bubble::selection,
+[data-theme="aurora"] .bubble-row.staff .bubble *::selection { background: rgba(255, 255, 255, .38); color: #fff; }
 .icon { width: 18px; height: 18px; flex: none; }
 
 /* 通用按钮：次要按钮、主按钮 */
