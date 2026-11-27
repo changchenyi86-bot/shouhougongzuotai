@@ -148,6 +148,15 @@ class Suggestion(Base):
     adoption_score: Mapped[float | None] = mapped_column(comment="实际回复和 AI 原建议的相似度，0～1")
     via_chat: Mapped[bool] = mapped_column(Boolean, default=False, comment="回复是和 AI 对话润色出来的")
     profile: Mapped[dict | None] = mapped_column(JSON, comment="生成时带给 AI 的客户档案摘要：{customer, summary}")
+    # 查的是哪个产品的知识（bi 有数 / zs 知数 / ed 数据中台）、怎么定的、依据
+    products: Mapped[list | None] = mapped_column(JSON)
+    product_source: Mapped[str | None] = mapped_column(
+        String(16), comment="manual 管理员指定 / group 群名 / ai AI 判断 / all 几个都查 / override 客服改的")
+    product_reason: Mapped[str | None] = mapped_column(Text)
+    product_override: Mapped[list | None] = mapped_column(JSON, comment="客服在建议卡上改成的产品，重新生成时用它")
+    product_original: Mapped[dict | None] = mapped_column(
+        JSON, comment="客服改之前的判断 {products, source, reason}，留作评测")
+    product_corrected_by: Mapped[str | None] = mapped_column(String(64))
 
     final_content: Mapped[str | None] = mapped_column(Text, comment="实际发出的回复")
     delivery: Mapped[str | None] = mapped_column(String(16), comment="manual：复制后人工发送；agent：由电脑端发送程序自动发送")
@@ -311,6 +320,18 @@ class GroupOwner(Base):
     updated_by: Mapped[str | None] = mapped_column(String(64))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
     owner: Mapped["Staff"] = relationship(lazy="selectin")
+
+
+class GroupProduct(Base):
+    """管理员给群指定的产品（有数 bi / 知数 zs / 数据中台 ed，可以多个）。查知识时优先于群名和 AI 判断。"""
+
+    __tablename__ = "group_products"
+
+    channel: Mapped[Channel] = mapped_column(Enum(Channel, native_enum=False, length=16), primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    products: Mapped[list] = mapped_column(JSON, comment="如 [\"ed\"]、[\"bi\", \"zs\"]")
+    updated_by: Mapped[str | None] = mapped_column(String(64))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
 
 class SyncCursor(Base):

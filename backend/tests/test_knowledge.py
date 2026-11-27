@@ -137,26 +137,18 @@ def test_retrieve_links_beyond_read_full(mcp, monkeypatch):
             "公开链接（客户能打开）：https://study.sf.163.com/documents/read/privatization/cjwt14\n原因是有重名报表") == faq.to_prompt()
 
 
-def test_products_for_group():
-    pf = knowledge.products_for_group
-    assert pf("某银行-BD售后群") == ["ed"] and pf("某证券 DB 运维群") == ["ed"]
-    assert pf("某客户-BD&BI技术支持群") == ["bi", "ed"] and pf("某客户BD有数群") == ["bi", "ed"]
-    assert pf("某客户-BI售后群") == ["bi"] and pf("某客户知数群") == ["bi"] and pf(None) == ["bi"]
-    # 英文单词里的字母不算标记
-    assert pf("ABDC 项目群") == ["bi"] and pf("MOBILE 群") == ["bi"]
-
-
-def test_retrieve_by_group_product(mcp):
-    items = knowledge.retrieve(MSG["content"], "某银行-BD售后群")
+def test_retrieve_by_products(mcp):
+    items = knowledge.retrieve(MSG["content"], ["ed"])
     assert {a["product"] for n, a in mcp.calls if n in ("search", "case_match")} == {"ed"}
     assert len(items) == 4
     mcp.calls.clear()
-    # BD 和 BI 都带：两个产品都查，文档按名次轮流合并，篇数不超过设置
-    items = knowledge.retrieve(MSG["content"], "某客户-BD&BI技术支持群")
+    # 几个产品都查：各查一遍，按名次轮流合并；假接口两个产品返回同样的文件，按文件去重
+    items = knowledge.retrieve(MSG["content"], ["bi", "ed"])
     assert [a["product"] for n, a in mcp.calls if n == "case_match"] == ["bi", "ed"]
-    # 假接口两个产品返回同样的文件：按文件去重，不重复带给模型
     assert [k.source_id for k in items] == [CARD["card_id"], "bi-manual-daochu.md", "bi-faq-cjwt14.md", "zs-bug-188123.md"]
     assert [k.ref for k in items] == ["K1", "K2", "K3", "K4"]
+    # 只读最后入选的几篇
+    assert len([1 for n, a in mcp.calls if n == "read_article"]) == 3
 
 
 class FakeEmbedder:

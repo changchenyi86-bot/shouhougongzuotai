@@ -19,7 +19,7 @@ CUSTOMER = "wmAbCdEfGhIjKlMnOpQrStUvWxYz012345"
 def post(client, n, text, seconds=0, sender=CUSTOMER, group="wrA"):
     response = client.post("/api/messages", json={
         "channel": "wecom", "external_id": str(n), "group_id": group,
-        "group_name": "客户项目群", "is_external_group": True, "sender_id": sender,
+        "group_name": "客户项目-BI-支持群", "is_external_group": True, "sender_id": sender,
         "sender_name": "张三" if sender.startswith("wm") else "李四", "content": text,
         "sent_at": (BASE + timedelta(seconds=seconds)).isoformat(),
     })
@@ -92,7 +92,7 @@ def test_support_window_escalated_and_status_history(client, fake_llm, monkeypat
 def test_query_retrieval_failure_and_single(client, fake_llm, monkeypatch):
     seen = []
     monkeypatch.setattr(knowledge, "skip_reason", lambda text: None)
-    monkeypatch.setattr(knowledge, "retrieve", lambda text, group_name=None: seen.append(("knowledge", text)) or [])
+    monkeypatch.setattr(knowledge, "retrieve", lambda text, products=None: seen.append(("knowledge", text)) or [])
     monkeypatch.setattr(similar, "search", lambda session, query, exclude, **kw: seen.append(("similar", query, exclude)) or [])
     one = post(client, 1, "导出报错？")
     assert not any(schema == suggest.RoundQuery for schema, _ in fake_llm.generated)
@@ -324,7 +324,7 @@ def test_no_question_round_skips_lookup(client, fake_llm, monkeypatch):
     """这一轮只是致谢、确认或客户之间商量：不改写成技术问题，也不查知识和相似问答。"""
     seen = []
     monkeypatch.setattr(knowledge, "skip_reason", lambda text: None)
-    monkeypatch.setattr(knowledge, "retrieve", lambda text, group_name=None: seen.append(("knowledge", text)) or [])
+    monkeypatch.setattr(knowledge, "retrieve", lambda text, products=None: seen.append(("knowledge", text)) or [])
     monkeypatch.setattr(similar, "search", lambda session, query, exclude, **kw: seen.append(("similar", query)) or [])
     fake_llm.results[suggest.RoundQuery] = suggest.RoundQuery(has_question=False, question="客户在商量明天谁来升级")
     post(client, 1, "导出报错？")

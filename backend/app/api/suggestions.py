@@ -13,7 +13,7 @@ from app.ai import reflow, worker
 from app.auth import current_staff
 from app.db import get_session
 from app.models import OPEN_SUGGESTION, Channel, Message, Staff, Suggestion, SuggestionStatus
-from app.schemas import AdoptIn, AdoptOut, HandleIn, InboxItem, MessageOut, SuggestionOut
+from app.schemas import AdoptIn, AdoptOut, HandleIn, InboxItem, MessageOut, ProductIn, SuggestionOut
 
 router = APIRouter(prefix="/api", dependencies=[Depends(current_staff)])
 
@@ -152,6 +152,23 @@ def regenerate(suggestion_id: uuid.UUID, staff: Staff = Depends(current_staff),
     if sug.status not in (S.READY, S.FAILED):
         raise HTTPException(status.HTTP_409_CONFLICT, f"当前状态不能重新生成（{sug.status.value}）")
     session.rollback()  # 释放行锁，enqueue 用独立会话更新状态
+    worker.enqueue(sug.message_id, wait=0)
+    session.refresh(sug)
+    return sug
+
+
+@router.post("/suggestions/{suggestion_id}/product", response_model=SuggestionOut)
+def change_product(suggestion_id: uuid.UUID, body: ProductIn, staff: Staff = Depends(current_staff),
+                   session: Session = Depends(get_session)) -> Suggestion:
+    """技术支持改这条建议查知识的产品（AI 判断错了时），按新产品重新生成；第一次改之前的判断留作评测。"""
+    sug = _get(session, suggestion_id, staff)
+    if sug.status not in (S.READY, S.FAILED):
+        raise HTTPException(status.HTTP_409_CONFLICT, f"当前状态不能改（{sug.status.value}）")
+    codes = [c for c in ("bi", "zs", "ed") if c in body.products]
+    if sug.product_original is None and sug.products:
+        sug.product_original = {"products": sug.products, "source": sug.product_source, "reason": sug.product_reason}
+    sug.product_override, sug.product_corrected_by = codes, staff.name
+    session.commit()
     worker.enqueue(sug.message_id, wait=0)
     session.refresh(sug)
     return sug

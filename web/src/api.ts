@@ -117,6 +117,12 @@ export interface Suggestion {
   merged_into?: string | null;
   /** AI 结合上下文补全的、这一轮要解决的问题 */
   question?: string | null;
+  /** 查的是哪个产品的知识 */
+  products?: ProductCode[] | null;
+  /** 产品怎么定的：manual 管理员指定 / group 群名 / ai AI 判断 / all 几个都查 / override 技术支持改的 */
+  product_source?: ProductSource | null;
+  product_reason?: string | null;
+  product_corrected_by?: string | null;
   /** 回复发出后 AI 判断要不要沉淀成知识 */
   candidate?: { id: string; status: CandidateStatus; question: string } | null;
   final_content: string | null;
@@ -400,6 +406,44 @@ export const editStaff = (
 /** 指定或取消群负责人（管理员） */
 export const setGroupOwner = (channel: Channel, group_id: string, owner_id: string | null) =>
   put<void>("/api/groups/owner", { channel, group_id, owner_id });
+
+// ---------- 产品（有数 / 知数 / 数据中台）：查哪个产品的知识 ----------
+
+export type ProductCode = "bi" | "zs" | "ed";
+export type ProductSource = "manual" | "group" | "ai" | "all" | "override";
+export const PRODUCT_LABEL: Record<ProductCode, string> = { bi: "有数", zs: "知数", ed: "中台" };
+export const PRODUCT_CODES: ProductCode[] = ["bi", "zs", "ed"];
+export const productLabel = (codes: ProductCode[] | null | undefined) =>
+  (codes ?? []).map((c) => PRODUCT_LABEL[c] ?? c).join("、");
+
+export interface GroupProduct {
+  channel: Channel;
+  group_id: string;
+  group_name: string | null;
+  /** 群名里带的产品标记 */
+  by_name: ProductCode[];
+  /** 管理员指定的产品 */
+  manual: ProductCode[] | null;
+  /** 现在怎么定：manual 指定 / group 按群名 / ai 每轮由 AI 判断 */
+  effective: "manual" | "group" | "ai";
+  /** 群名一个产品都不带，建议指定 */
+  needs_setting: boolean;
+  recommend: ProductCode[];
+  recommend_basis: string;
+  ai_stats: Partial<Record<ProductCode, number>>;
+  owner: string | null;
+  owner_team: string | null;
+  customer: string | null;
+  last_message_at: string | null;
+  updated_by: string | null;
+}
+
+export const fetchGroupProducts = () => call<GroupProduct[]>("/api/groups/products");
+export const setGroupProduct = (channel: Channel, group_id: string, products: ProductCode[] | null) =>
+  put<void>("/api/groups/product", { channel, group_id, products });
+/** 建议卡上改这条建议查知识的产品，按新产品重新生成 */
+export const setSuggestionProduct = (id: string, products: ProductCode[]) =>
+  post<Suggestion>(`/api/suggestions/${id}/product`, { products });
 
 /** 把进行中的会话转给同事 */
 export const assignConversation = (channel: Channel, group_id: string, staff_id: string) =>
