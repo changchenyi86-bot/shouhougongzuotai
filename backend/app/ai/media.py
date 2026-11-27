@@ -17,8 +17,9 @@ from PIL import Image
 from pypdf import PdfReader
 
 from app import attachments, db
+from app.ai import usage
 from app.config import settings
-from app.models import Attachment
+from app.models import Attachment, Message
 
 log = logging.getLogger(__name__)
 _locks = {}
@@ -80,6 +81,7 @@ def _image(data: bytes, timeout: float | None) -> tuple[str, str]:
         if remaining <= 0:
             errors.append('识图等待超时')
             break
+        started, body = time.monotonic(), None
         try:
             response = httpx.post(base.rstrip('/') + '/chat/completions',
                                   headers={'Authorization': f'Bearer {key}'},
@@ -90,6 +92,7 @@ def _image(data: bytes, timeout: float | None) -> tuple[str, str]:
                                   timeout=min(settings.vision_timeout, remaining))
             response.raise_for_status()
             body = response.json()
+            _record_vision(body, name, started)
             choice = body['choices'][0]
             content = choice['message'].get('content')
             if not isinstance(content, str) or not content.strip():
@@ -98,8 +101,20 @@ def _image(data: bytes, timeout: float | None) -> tuple[str, str]:
                 raise ValueError('识图接口返回空内容')
             return content.strip(), body.get('model') or name
         except Exception as exc:
+            if body is None:  # 接口没回（超时、报错）；回了的上面已经记过
+                _record_vision(None, name, started, error=f'{type(exc).__name__}: {exc}')
             errors.append(f'{name}: {type(exc).__name__}: {str(exc)[:300]}')
     raise ValueError('；'.join(errors))
+
+
+def _record_vision(body, model: str, started: float, error: str | None = None) -> None:
+    """识图的 token：图片本身折成的 token 估不准，接口没返回用量时只记次数。"""
+    tokens = usage.openai_tokens(body.get('usage') if isinstance(body, dict) else None)
+    i, o, c = tokens or (0, 0, 0)
+    actual = body.get('model') if isinstance(body, dict) else None
+    usage.record('vision', actual or model, i, o, c,
+                 ok=error is None, estimated=tokens is None and error is None,
+                 duration_ms=int((time.monotonic() - started) * 1000), error=error)
 
 
 def _kind(data: bytes, filename: str, mime: str) -> str:
@@ -233,7 +248,9 @@ def run(attachment_id) -> None:
             attachment = session.get(Attachment, attachment_id)
             if attachment is None:
                 return
-            extract(session, attachment)
+            message = session.query(Message).filter(Message.attachment_id == attachment_id).first()
+            with usage.scope(**usage.for_message(message)):
+                extract(session, attachment)
             session.refresh(attachment)
             done = attachment.extract_status == 'done'
     except Exception:

@@ -3,6 +3,7 @@
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.ai import usage
 from app.ai.llm import LLMError, get_provider
 from app.ai.suggest import _history, _speaker
 from app.models import Message, Suggestion, SuggestionChat
@@ -50,7 +51,8 @@ def build_prompt(session: Session, sug: Suggestion, turns: list[SuggestionChat],
 
 def refine(session: Session, sug: Suggestion, turns: list[SuggestionChat], request: str) -> tuple[RefinedReply, str]:
     """失败抛 LLMError。"""
-    result, model = get_provider().generate(SYSTEM_PROMPT, build_prompt(session, sug, turns, request), RefinedReply)
+    with usage.scope(**usage.for_message(session.get(Message, sug.message_id))):
+        result, model = get_provider().generate(SYSTEM_PROMPT, build_prompt(session, sug, turns, request), RefinedReply)
     if not result.reply.strip():
         raise LLMError("AI 没有写出回复，请换个说法再试")
     return result, model

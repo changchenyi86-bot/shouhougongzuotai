@@ -584,3 +584,38 @@ class ServiceRecord(Base):
     resolved: Mapped[int | None] = mapped_column(comment="0 待跟进 / 1 已解决 / 2 部分解决 / 空 未评定")
     staff_name: Mapped[str | None] = mapped_column(String(64))
     source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TokenUsage(Base):
+    """工作台调用一次模型接口消耗的 token（见 app/ai/usage.py）。"""
+
+    __tablename__ = "token_usage"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
+    purpose: Mapped[str] = mapped_column(String(32), comment="用途，见 app.ai.usage.PURPOSES")
+    model: Mapped[str] = mapped_column(String(128))
+    input_tokens: Mapped[int] = mapped_column(default=0)
+    output_tokens: Mapped[int] = mapped_column(default=0)
+    cached_tokens: Mapped[int] = mapped_column(default=0, comment="输入里命中缓存的部分（计价更便宜）")
+    ok: Mapped[bool] = mapped_column(Boolean, default=True, comment="调用是否成功；失败的通常不计 token")
+    estimated: Mapped[bool] = mapped_column(Boolean, default=False, comment="接口没返回用量，按字数估的")
+    is_eval: Mapped[bool] = mapped_column(Boolean, default=False, comment="评测里的调用，不算线上")
+    duration_ms: Mapped[int | None]
+    error: Mapped[str | None] = mapped_column(String(300))
+    channel: Mapped[str | None] = mapped_column(String(16))
+    group_id: Mapped[str | None] = mapped_column(String(128))
+    group_name: Mapped[str | None] = mapped_column(String(255))
+
+
+class ModelPrice(Base):
+    """模型单价（元 / 百万 token），管理员在「模型用量」页填，用来估算费用。"""
+
+    __tablename__ = "model_prices"
+
+    model: Mapped[str] = mapped_column(String(128), primary_key=True)
+    input_price: Mapped[float] = mapped_column(default=0)
+    output_price: Mapped[float] = mapped_column(default=0)
+    cached_price: Mapped[float | None] = mapped_column(comment="命中缓存的输入单价；空表示按输入单价算")
+    updated_by: Mapped[str | None] = mapped_column(String(64))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)

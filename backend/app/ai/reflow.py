@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.ai import similar
+from app.ai import similar, usage
 from app.ai.embedding import EmbeddingError
 from app.ai.llm import LLMError, get_provider
 from app.ai.suggest import _history, _speaker
@@ -148,7 +148,8 @@ def judge(session: Session, sug: Suggestion) -> KnowledgeCandidate | None:
     message = session.get(Message, sug.message_id)
     if message is None or not sug.final_content:
         return None
-    result, _ = get_provider().generate(JUDGE_PROMPT, _judge_prompt(session, sug, message), Judgement)
+    with usage.scope(**usage.for_message(message)):
+        result, _ = get_provider().generate(JUDGE_PROMPT, _judge_prompt(session, sug, message), Judgement)
     cand = KnowledgeCandidate(
         suggestion_id=sug.id,
         status=CandidateStatus.PROPOSED if result.general and result.answer.strip() else CandidateStatus.NOT_GENERAL,

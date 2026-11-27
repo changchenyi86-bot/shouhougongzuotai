@@ -6,6 +6,7 @@ import KnowledgePage from "./KnowledgePage";
 import Login, { Logo } from "./Login";
 import StatsPage from "./StatsPage";
 import TeamSettings from "./TeamSettings";
+import UsagePage from "./UsagePage";
 import { applyTheme, loadTheme, saveTheme, THEMES, type Theme } from "./theme";
 import UserMenu from "./UserMenu";
 
@@ -17,16 +18,18 @@ const ICONS: Record<string, string> = {
   采纳统计: "M4 19h16M7 16v-4M12 16V8M17 16v-6",
   评测: "M9 4h6M10 4v5.5L5.2 17.4A1.7 1.7 0 0 0 6.7 20h10.6a1.7 1.7 0 0 0 1.5-2.6L14 9.5V4M7.5 14h9",
   积分排名: "M5 20V11M12 20V5M19 20v-6",
+  模型用量: "M4 16a8 8 0 1 1 16 0M12 16l3.5-4.5M3 20h18",
   收起: "M15 6l-6 6 6 6",
   展开: "M9 6l6 6-6 6",
   团队设置:
     "M16 19v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 17.5V19M10 10.5a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM20 19v-1.5a3.5 3.5 0 0 0-2.5-3.35M15.5 4.6a3 3 0 0 1 0 5.8",
 };
 
-type Page = "会话" | "知识库" | "采纳统计" | "评测" | "团队设置";
-const PAGES: Page[] = ["会话", "知识库", "采纳统计", "评测", "团队设置"];
+type Page = "会话" | "知识库" | "采纳统计" | "评测" | "模型用量" | "团队设置";
+const PAGES: Page[] = ["会话", "知识库", "采纳统计", "评测", "模型用量", "团队设置"];
+const ADMIN_PAGES: Page[] = ["模型用量", "团队设置"];
 const SOON = ["工单", "积分排名"];
-const HASH: Record<Page, string> = { 会话: "", 知识库: "#knowledge", 采纳统计: "#stats", 评测: "#eval", 团队设置: "#team" };
+const HASH: Record<Page, string> = { 会话: "", 知识库: "#knowledge", 采纳统计: "#stats", 评测: "#eval", 模型用量: "#usage", 团队设置: "#team" };
 
 function pageFromHash(): Page {
   return PAGES.find((p) => HASH[p] && HASH[p] === location.hash) ?? "会话";
@@ -158,7 +161,7 @@ export default function App() {
   if (auth !== "in" || !me) return <Login setup={auth === "setup"} onDone={signedIn} />;
 
   const admin = me.role === "admin";
-  const current: Page = page === "团队设置" && !admin ? "会话" : page;
+  const current: Page = ADMIN_PAGES.includes(page) && !admin ? "会话" : page;
 
   return (
     <div className="layout">
@@ -189,12 +192,16 @@ export default function App() {
           ))}
         </nav>
         <nav className="nav-bottom">
-          {admin && (
-            <a className={current === "团队设置" ? "active" : ""} title={navExpanded ? undefined : "团队设置"} onClick={() => setPage("团队设置")}>
-              <Icon d={ICONS["团队设置"]} />
-              <span>团队设置</span>
-            </a>
-          )}
+          {admin &&
+            ADMIN_PAGES.map((p) => (
+              <a key={p} href={HASH[p]} className={current === p ? "active" : ""} title={navExpanded ? undefined : p} onClick={(e) => {
+                e.preventDefault();
+                setPage(p);
+              }}>
+                <Icon d={ICONS[p]} />
+                <span>{p}</span>
+              </a>
+            ))}
           <a className="nav-toggle" role="button" title={navExpanded ? "收起导航" : "展开导航"} aria-expanded={navExpanded} tabIndex={0} onClick={toggleNav} onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
@@ -244,6 +251,7 @@ export default function App() {
         {current === "知识库" && <KnowledgePage me={me.name} notify={notify} onCountsChanged={loadCounts} />}
         {current === "采纳统计" && <StatsPage />}
         {current === "评测" && <EvalPage me={me} notify={notify} />}
+        {current === "模型用量" && <UsagePage notify={notify} />}
         {current === "团队设置" && <TeamSettings me={me} notify={notify} />}
       </main>
       {toast && <div className="toast">{toast}</div>}

@@ -708,3 +708,46 @@ export const editCustomerNote = (id: string, content: string) =>
   call<CustomerNote>(`/api/customers/notes/${id}`, { method: "PATCH", body: JSON.stringify({ content }) });
 export const deleteCustomerNote = (id: string) => call<void>(`/api/customers/notes/${id}`, { method: "DELETE" });
 export const syncCustomers = () => post<{ status: string }>("/api/customers/sync");
+
+// ---------- 模型用量（token） ----------
+
+export interface UsageTotals {
+  calls: number;
+  failed: number;
+  estimated: number;
+  input_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+  total_tokens: number;
+  cost: number | null;
+  unpriced_tokens: number;
+}
+
+export interface ModelPrice {
+  model: string;
+  input_price: number;
+  output_price: number;
+  cached_price: number | null;
+  updated_by?: string | null;
+  updated_at?: string | null;
+}
+
+export interface UsageSummary {
+  day: string;
+  today: string;
+  online: UsageTotals;
+  eval: UsageTotals;
+  purposes: { key: string; label: string; online: UsageTotals; eval: UsageTotals }[];
+  models: { model: string; priced: boolean; totals: UsageTotals }[];
+  groups: { group_name: string; totals: UsageTotals }[];
+  days: { date: string; online: UsageTotals; eval: UsageTotals }[];
+  prices: ModelPrice[];
+  tracking_since: string | null;
+}
+
+export const fetchUsage = (day?: string, days = 7) =>
+  call<UsageSummary>(`/api/usage?days=${days}${day ? `&day=${day}` : ""}`);
+export const savePrice = (model: string, p: { input_price: number; output_price: number; cached_price: number | null }) =>
+  call<ModelPrice>(`/api/usage/prices/${encodeURIComponent(model)}`, { method: "PUT", body: JSON.stringify(p) });
+export const clearPrice = (model: string) =>
+  call<void>(`/api/usage/prices/${encodeURIComponent(model)}`, { method: "DELETE" });

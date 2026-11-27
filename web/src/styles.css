@@ -2060,3 +2060,76 @@ nav a { text-decoration: none; }
 .inner-warn b { color: var(--warn); flex: none; }
 .kn-profile { display: flex; gap: 8px; align-items: center; margin: 4px 0 0; color: var(--text-2); min-width: 0; }
 .kn-profile .kn-kind { flex: none; }
+
+/* 模型用量页：线上用主色，评测用同色相浅色 */
+.seg.online { background: var(--accent); }
+.seg.eval { background: #b4b4ee; }
+[data-theme="aurora"] .seg.eval { background: #b3c0fe; }
+.usage .stats-head { gap: 16px; flex-wrap: wrap; }
+.usage-note { font-size: 12px; color: var(--text-3); margin: 0; }
+.usage-card { display: flex; flex-direction: column; gap: 8px; }
+.usage .tile.hero { background: var(--accent-soft); border-color: transparent; }
+.usage .tile.hero .tile-value { color: var(--accent-text); }
+.usage .tile-value small { font-size: 13px; font-weight: 500; color: var(--text-2); margin-left: 2px; }
+.usage-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+@media (max-width: 1100px) { .usage-grid { grid-template-columns: 1fr; } }
+.trend {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 8px;
+  height: 170px;
+  padding: 10px 12px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--sunken);
+}
+.trend-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 4px 0 2px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  cursor: pointer;
+}
+.trend-col:hover { background: var(--hover); }
+.trend-col.on { background: var(--active); }
+.trend-value { font-size: 11.5px; color: var(--text-2); font-variant-numeric: tabular-nums; min-height: 15px; white-space: nowrap; }
+.trend-bar { flex: 1; width: 26px; display: flex; flex-direction: column; justify-content: flex-end; gap: 2px; }
+.trend-bar .seg { display: block; width: 100%; min-height: 2px; border-radius: 4px 4px 0 0; }
+.trend-bar .seg + .seg { border-radius: 0; }
+.trend-bar .seg:only-child { border-radius: 4px 4px 0 0; }
+.trend-day { font-size: 12px; color: var(--text-3); }
+.trend-col.on .trend-day { color: var(--accent-text); font-weight: 600; }
+.hbar { display: inline-flex; gap: 2px; width: calc(100% - 40px); height: 8px; vertical-align: middle; }
+.hbar .seg { display: block; height: 100%; border-radius: 0 4px 4px 0; min-width: 2px; }
+.hbar .seg:first-child:not(:last-child) { border-radius: 0; }
+.stats-table td small { margin-left: 6px; font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.stats-table .mono { font-family: var(--mono); font-size: 12.5px; }
+button.link.inline { margin: 0 0 0 4px; font-size: 12px; }
+.price-input {
+  width: 84px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.price-input:focus { outline: none; border-color: var(--accent); box-shadow: var(--focus-ring); }
+.price-save {
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--primary-bg);
+  color: var(--on-accent);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.price-save + .link { margin: 0 0 0 10px; font-size: 12.5px; }
