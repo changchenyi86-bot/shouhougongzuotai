@@ -231,7 +231,18 @@ def run(attachment_id) -> None:
     try:
         with db.SessionLocal() as session:
             attachment = session.get(Attachment, attachment_id)
-            if attachment is not None:
-                extract(session, attachment)
+            if attachment is None:
+                return
+            extract(session, attachment)
+            session.refresh(attachment)
+            done = attachment.extract_status == 'done'
     except Exception:
         log.exception('后台附件识别失败 attachment=%s', attachment_id)
+        return
+    if done:
+        try:
+            from app.ai import worker
+
+            worker.after_media(attachment_id)
+        except Exception:
+            log.exception('附件识别后重新生成建议失败 attachment=%s', attachment_id)

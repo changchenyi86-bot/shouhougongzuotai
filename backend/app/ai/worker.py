@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from app import db
 from app.config import settings
-from app.models import Message, Suggestion, SuggestionStatus
+from app.models import Attachment, Message, Suggestion, SuggestionStatus
 
 log = logging.getLogger(__name__)
 
@@ -166,6 +166,51 @@ def run(message_id: uuid.UUID) -> None:
                 sug.status, sug.auto_dismissed = SuggestionStatus.DISMISSED, True
                 sug.handled_by, sug.handled_at = None, datetime.now(timezone.utc)
         session.commit()
+        checked = result.media_checked_at if result is not None else None
+        if checked is not None:
+            # 生成期间才识别完的图片、文件没进提示词：整轮再生成一次（识别结果已在库里，不会再等）
+            late = session.scalars(select(Attachment.id).join(Message, Message.attachment_id == Attachment.id).where(
+                Message.id.in_(round_ids), Attachment.extract_status == "done", Attachment.extracted_at > checked,
+                Attachment.extracted_at <= datetime.now(timezone.utc))).first()
+            if late is not None:
+                log.info("附件在生成建议期间识别完，重新生成 message=%s", message_id)
+                enqueue(message_id, wait=0)
+
+
+ACTIVE = (SuggestionStatus.READY, SuggestionStatus.FAILED)
+
+
+def after_media(attachment_id: uuid.UUID) -> None:
+    """图片、文件在后台识别完（生成建议时没等到）：这一轮的建议还没发出去，就带上识别内容重新生成。"""
+    from app.ingest import _is_recent
+
+    if not settings.ai_suggest_enabled:
+        return
+    with db.SessionLocal() as session:
+        attachment = session.get(Attachment, attachment_id)
+        if attachment is None or attachment.extract_status != "done" or attachment.extracted_at is None:
+            return
+        message = session.scalar(select(Message).where(Message.attachment_id == attachment_id))
+        if message is None or not _is_recent(message):
+            return
+        sug = session.scalar(select(Suggestion).where(Suggestion.message_id == message.id))
+        seen = set()
+        while sug is not None and sug.status == SuggestionStatus.MERGED and sug.merged_into and sug.id not in seen:
+            seen.add(sug.id)
+            sug = session.get(Suggestion, sug.merged_into)
+        if sug is None:
+            return
+        # 生成中的由 run 结束时检查；同事已经回复、转人工、手动标无需回复的不动
+        regenerate = sug.status in ACTIVE or (sug.status == SuggestionStatus.DISMISSED and sug.auto_dismissed
+                                               and not sug.handled_by)
+        if not regenerate or sug.updated_at >= attachment.extracted_at:
+            return
+        if sug.status == SuggestionStatus.DISMISSED:
+            sug.auto_dismissed = False
+        target = sug.message_id
+        session.commit()
+    log.info("附件识别完，整轮重新生成建议 attachment=%s message=%s", attachment_id, target)
+    enqueue(target, wait=0)
 
 
 _STRIP = re.compile(r"@\S+|[\W_]+")
