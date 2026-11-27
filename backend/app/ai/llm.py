@@ -41,9 +41,12 @@ class LLMFormatError(LLMError):
     """模型回了，但输出不是要求的格式（没有 JSON、字段不对）。偶发，重问一次通常就好。"""
 
 
+ImageInput = tuple[str, str]  # (说明文字, data URL)，如 ("图片1：客户 11-27 15:17 发的截图", "data:image/jpeg;base64,...")
+
+
 class LLMProvider(Protocol):
-    def draft(self, system: str, prompt: str) -> tuple[SuggestionDraft, str]:
-        """返回 (建议, 实际使用的模型名)。失败抛 LLMError。"""
+    def draft(self, system: str, prompt: str, images: list[ImageInput] | None = None) -> tuple[SuggestionDraft, str]:
+        """返回 (建议, 实际使用的模型名)。images 是附在提示词后面的原图。失败抛 LLMError。"""
 
     def generate(self, system: str, prompt: str, schema: type[T]) -> tuple[T, str]:
         """按 schema 的结构输出，返回 (结果, 实际使用的模型名)。失败抛 LLMError。"""
@@ -62,13 +65,21 @@ class ClaudeProvider:
             self._client = anthropic.Anthropic()  # 从环境变量 ANTHROPIC_API_KEY 读取密钥
         return self._client
 
-    def draft(self, system: str, prompt: str) -> tuple[SuggestionDraft, str]:
-        return self.generate(system, prompt, SuggestionDraft)
+    def draft(self, system: str, prompt: str, images: list[ImageInput] | None = None) -> tuple[SuggestionDraft, str]:
+        return self.generate(system, prompt, SuggestionDraft, images)
 
-    def generate(self, system: str, prompt: str, schema: type[T]) -> tuple[T, str]:
+    def generate(self, system: str, prompt: str, schema: type[T], images: list[ImageInput] | None = None) -> tuple[T, str]:
         import anthropic
 
         purpose, started = usage.purpose_for(schema), time.monotonic()
+        content: str | list = prompt
+        if images:
+            content = [{"type": "text", "text": prompt}]
+            for label, url in images:
+                mime, data = url.removeprefix("data:").split(";base64,", 1)
+                content += [{"type": "text", "text": label},
+                            {"type": "image", "source": {"type": "base64", "media_type": mime, "data": data}}]
+
         try:
             response = self.client.beta.messages.parse(
                 model=self.model,
@@ -77,7 +88,7 @@ class ClaudeProvider:
                 fallbacks="default",  # 主模型因安全策略拒答时，服务端自动换模型重试
                 output_config={"effort": self.effort},
                 system=system,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": content}],
                 output_format=schema,
             )
         except anthropic.APIError as exc:
@@ -164,14 +175,19 @@ class OpenAICompatibleProvider:
         self.api_key, self.model, self.json_mode = api_key, model, json_mode
         self._client = client or httpx.Client(timeout=timeout)
 
-    def draft(self, system: str, prompt: str) -> tuple[SuggestionDraft, str]:
-        return self.generate(system, prompt, SuggestionDraft)
+    def draft(self, system: str, prompt: str, images: list[ImageInput] | None = None) -> tuple[SuggestionDraft, str]:
+        return self.generate(system, prompt, SuggestionDraft, images)
 
-    def generate(self, system: str, prompt: str, schema: type[T]) -> tuple[T, str]:
+    def generate(self, system: str, prompt: str, schema: type[T], images: list[ImageInput] | None = None) -> tuple[T, str]:
+        content: str | list = prompt
+        if images:
+            content = [{"type": "text", "text": prompt}]
+            for label, url in images:
+                content += [{"type": "text", "text": label}, {"type": "image_url", "image_url": {"url": url}}]
         body: dict = {
             "model": self.model,
             "messages": [{"role": "system", "content": system + json_instruction(schema)},
-                         {"role": "user", "content": prompt}],
+                         {"role": "user", "content": content}],
         }
         if self.json_mode:
             body["response_format"] = {"type": "json_object"}
@@ -205,7 +221,9 @@ def record_openai(purpose: str, model: str, data, messages: list, text: str | No
     """记下一次 OpenAI 兼容接口调用的 token；接口没返回 usage 时按字数估。"""
     tokens = usage.openai_tokens(data.get("usage") if isinstance(data, dict) else None)
     if tokens is None and error is None:
-        prompt = "".join(m["content"] if isinstance(m.get("content"), str) else "" for m in messages)
+        prompt = "".join(m["content"] if isinstance(m.get("content"), str)
+                         else "".join(p.get("text", "") for p in m.get("content") or [] if isinstance(p, dict))
+                         for m in messages)  # 附图时只估文字部分
         tokens, estimated = (usage.estimate(prompt), usage.estimate(text or ""), 0), True
     else:
         estimated = False

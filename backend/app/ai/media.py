@@ -25,8 +25,9 @@ log = logging.getLogger(__name__)
 _locks = {}
 _locks_guard = threading.Lock()
 _TEXT_EXT = {'.txt', '.csv', '.log', '.json', '.md', '.sh', '.sql', '.yaml', '.yml', '.xml', '.ini', '.conf'}
-_PROMPT = ("这是客户在售后技术支持群里发的截图。请先逐字抄出图中所有文字：报错原文、网址、菜单和按钮名称、"
-           "表格内容，按区域分行，看不清的字标「?」，不要猜。然后另起一段，以「说明：」开头，用一两句话说清"
+_PROMPT = ("这是客户在售后技术支持群里发的截图。请先逐字抄出弹框、报错、提示信息的原文（最重要，放最前面），"
+           "再抄其余文字：页面上的网址、菜单和按钮名称、表格内容，按区域分行；浏览器书签栏、系统任务栏这类和问题无关的不用抄。"
+           "看不清的字标「?」，不要猜。然后另起一段，以「说明：」开头，用一两句话说清"
            "这是什么系统的什么界面、处于什么状态（如报错、空白、加载中、操作结果）。"
            "只描述图里能看到的，不要推测原因，不要给解决办法。")
 
@@ -51,11 +52,24 @@ def _truncate(value: str, limit: int) -> str:
     return value[:max(0, limit - len(suffix))] + suffix[:max(0, limit)]
 
 
-def prompt_text(attachment: Attachment, limit: int = 600) -> str | None:
+def prompt_text(attachment: Attachment, limit: int | None = None) -> str | None:
     if not attachment or attachment.extract_status != 'done' or not attachment.extracted_text:
         return None
     value = re.sub(r'\s*\n\s*', ' / ', attachment.extracted_text.strip())
-    return _truncate(re.sub(r'\s+', ' ', value), limit)
+    return _truncate(re.sub(r'\s+', ' ', value), settings.media_prompt_max_chars if limit is None else limit)
+
+
+def image_data_url(data: bytes, max_side: int = 2000) -> str:
+    """把图片缩到最长边不超过 max_side，转成发给模型的 data URL（有透明背景用 PNG，否则 JPEG）。"""
+    with Image.open(io.BytesIO(data)) as image:
+        image.seek(0)
+        image.thumbnail((max_side, max_side))
+        transparent = image.mode in ('RGBA', 'LA') or 'transparency' in image.info
+        image = image.convert('RGBA' if transparent else 'RGB')
+        output = io.BytesIO()
+        image.save(output, format='PNG' if transparent else 'JPEG')
+    mime = 'image/png' if transparent else 'image/jpeg'
+    return f'data:{mime};base64,' + base64.b64encode(output.getvalue()).decode('ascii')
 
 
 def _image(data: bytes, timeout: float | None) -> tuple[str, str]:
@@ -65,16 +79,7 @@ def _image(data: bytes, timeout: float | None) -> tuple[str, str]:
     if not base or not key or not model:
         raise SkipMedia('未配置识图接口')
     deadline = time.monotonic() + timeout if timeout is not None else None
-    with Image.open(io.BytesIO(data)) as image:
-        image.seek(0)
-        image.thumbnail((2000, 2000))
-        transparent = image.mode in ('RGBA', 'LA') or 'transparency' in image.info
-        image = image.convert('RGBA' if transparent else 'RGB')
-        output = io.BytesIO()
-        fmt = 'PNG' if transparent else 'JPEG'
-        image.save(output, format=fmt)
-    mime = 'image/png' if transparent else 'image/jpeg'
-    url = f'data:{mime};base64,' + base64.b64encode(output.getvalue()).decode('ascii')
+    url = image_data_url(data)
     errors = []
     for name in [model] + ([settings.vision_fallback_model] if settings.vision_fallback_model else []):
         remaining = deadline - time.monotonic() if deadline is not None else settings.vision_timeout
