@@ -227,3 +227,29 @@ def test_sync_requested_during_running_sync_reruns(client):
 
     syncer._sync = sync_and_receive_more
     assert syncer.sync_once() == 2
+
+
+def test_preload_sdk_only_when_archive_configured(monkeypatch, tmp_path):
+    """会话存档启用时，后端启动先载入 SDK（避免和数据库组件的 C++ 运行库冲突崩溃）；未启用时不载入。"""
+    import ctypes
+
+    import app
+
+    loaded = []
+    monkeypatch.setattr(ctypes, "CDLL", lambda path: loaded.append(path))
+    lib = tmp_path / "libWeWorkFinanceSdk_C.so"
+    lib.write_bytes(b"")
+    monkeypatch.setattr(settings, "wecom_sdk_lib_path", str(lib))
+
+    app._preload_wecom_sdk()  # 未配置企业 ID 等，不载入
+    assert loaded == []
+
+    monkeypatch.setattr(settings, "wecom_corp_id", CORP)
+    monkeypatch.setattr(settings, "wecom_archive_secret", "s")
+    monkeypatch.setattr(settings, "wecom_archive_private_key_files", {"2": "/opt/wecom/archive_v2.pem"})
+    app._preload_wecom_sdk()
+    assert loaded == [str(lib)]
+
+    monkeypatch.setattr(settings, "wecom_sdk_lib_path", str(tmp_path / "missing.so"))
+    app._preload_wecom_sdk()  # 文件不存在时跳过，不影响启动
+    assert loaded == [str(lib)]
