@@ -72,6 +72,38 @@ def test_no_reply_auto_dismissed_and_reopen(client, fake_llm):
     assert client.post(f"/api/suggestions/{s['id']}/reopen").status_code == 409
 
 
+def test_no_reply_with_mention_only_hinted(client, fake_llm):
+    fake_llm.draft_result = SuggestionDraft(needs_reply=False, can_answer=True, confidence="high", reply="收到",
+                                            reason="同步进度", references=[])
+    mid = _msg(client, "@李四 今天迁移了 5T 数据，下周继续")
+    s = _sug(client, mid)
+    assert s["status"] == "ready" and s["needs_reply"] is False and not s["auto_dismissed"]
+
+
+def test_resume_generating_after_restart(client, fake_llm, monkeypatch):
+    import uuid
+    from datetime import timedelta
+
+    from app import db
+    from app.ai import worker
+    from app.models import Message
+
+    pending = []
+    monkeypatch.setattr(worker, "submit", lambda fn, *args: pending.append((fn, args)))
+    fresh, old = _msg(client), _msg(client, "很久以前的问题")
+    assert len(pending) == 2  # 重启前排了队、还没生成，任务随进程丢了
+    with db.SessionLocal() as session:
+        session.get(Message, uuid.UUID(fresh)).sent_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+        session.get(Message, uuid.UUID(old)).sent_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        session.commit()
+    monkeypatch.setattr(settings, "ai_suggest_max_age_minutes", 120)
+    monkeypatch.setattr(worker, "submit", lambda fn, *args: fn(*args))
+    assert worker.resume_pending() == 1
+    assert _sug(client, fresh)["status"] == "ready"
+    s = _sug(client, old)
+    assert s["status"] == "failed" and "重新生成" in s["error"]
+
+
 def test_no_reply_long_question_only_hinted(client, fake_llm):
     fake_llm.draft_result = SuggestionDraft(needs_reply=False, can_answer=False, confidence="low", reply="收到",
                                             reason="像是闲聊", references=[])
