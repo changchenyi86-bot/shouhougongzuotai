@@ -193,9 +193,12 @@ def chat(monkeypatch, request):
     monkeypatch.setattr(ui, "desktop_locked", lambda: False)
     monkeypatch.setattr(ui, "find_main_window", lambda cfg: (types.SimpleNamespace(pid=1, hwnd=1), "ok"))
     monkeypatch.setattr(ui, "type_unicode", fake.type)
+    # 真机上成员列表外面套着画阴影的窗口：打 @ 后多出来两个窗口，合起来的范围是成员列表
+    shadow = (fake.at_box[0] - 10, fake.at_box[3], fake.at_box[2] + 10, fake.at_box[3] + 10)
     monkeypatch.setattr(ui, "list_popups",
-                        lambda pid, main: {99: ("AtListWnd", fake.at_box)} if fake.at_query is not None else {})
-    monkeypatch.setattr(ui, "popup_box", lambda hwnd: fake.at_box if fake.at_query is not None else None)
+                        lambda pid, main: {98: ("PerryShadowWnd", shadow), 99: ("AtListWnd", fake.at_box)}
+                        if fake.at_query is not None else {})
+    monkeypatch.setattr(ui, "popup_box", lambda hwnds: fake.at_box if fake.at_query is not None else None)
     monkeypatch.setattr(ui, "find_search_popup", lambda pid: fake.popup if fake.search else None)
     monkeypatch.setattr(ui, "window_alive", lambda win: True)
     monkeypatch.setattr(ui, "prepare_window", lambda win, cfg: RECT)

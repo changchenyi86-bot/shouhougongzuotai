@@ -300,12 +300,21 @@ def list_popups(pid: int, main_hwnd: int) -> dict[int, tuple[str, tuple[int, int
     return found
 
 
-def popup_box(hwnd: int) -> tuple[int, int, int, int] | None:
-    """这个小窗口现在在屏幕上的位置；已经关掉或看不见了返回 None。"""
-    if not user32.IsWindow(hwnd) or not user32.IsWindowVisible(hwnd):
+def popup_box(hwnds: list[int]) -> tuple[int, int, int, int] | None:
+    """这几个小窗口合起来现在在屏幕上占的范围；都已经关掉或看不见了返回 None。
+
+    企业微信的成员列表外面还套着几个画阴影的窗口（类名 PerryShadowWnd），真机上打 @ 后先认到的是阴影，
+    所以把打 @ 后多出来的窗口合在一起看，范围里一定有成员列表本身。
+    """
+    boxes = []
+    for hwnd in hwnds:
+        if user32.IsWindow(hwnd) and user32.IsWindowVisible(hwnd):
+            x, y, w, h = _window_rect(hwnd)
+            if w > 0 and h > 0:
+                boxes.append((x, y, x + w, y + h))
+    if not boxes:
         return None
-    x, y, w, h = _window_rect(hwnd)
-    return (x, y, x + w, y + h) if w > 0 and h > 0 else None
+    return min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)
 
 
 def type_unicode(text: str) -> None:
@@ -1063,21 +1072,24 @@ class WeComDriver:
         win = self._win
         return list_popups(win.pid, win.hwnd) if win is not None and win.pid else {}
 
-    def _wait_popup(self, before: dict, timeout: float) -> tuple[int, str] | None:
-        """等打 @ 后多出来的成员列表小窗口。返回 (窗口, 类名)。"""
+    def _wait_popup(self, before: dict, timeout: float) -> tuple[list[int], str] | None:
+        """等打 @ 后多出来的成员列表小窗口。返回 (多出来的各个窗口, 类名说明)。
+
+        成员列表和它的阴影是几个窗口，不一定同时出现：看到第一个后再稍等一下，把一起弹出的都算上。
+        """
         deadline = time.monotonic() + timeout
         while True:
             time.sleep(0.05)
             new = {h: v for h, v in self._popups().items() if h not in before or before[h] != v}
             if new:
-                # 一般只多出一个；多出几个时取最大的那个（小的可能是提示气泡）
-                hwnd = max(new, key=lambda h: (new[h][1][2] - new[h][1][0]) * (new[h][1][3] - new[h][1][1]))
-                return hwnd, new[hwnd][0]
+                time.sleep(0.1)
+                new = {h: v for h, v in self._popups().items() if h not in before or before[h] != v} or new
+                return list(new), "、".join(f"{c}{r}" for c, r in new.values())
             if time.monotonic() >= deadline:
                 return None
 
-    def _type_at(self) -> tuple[int, str] | None:
-        """在输入框里打一个 @，等成员列表弹出来。返回 (成员列表窗口, 类名)；没弹出返回 None。
+    def _type_at(self) -> tuple[list[int], str] | None:
+        """在输入框里打一个 @，等成员列表弹出来。返回 (成员列表的各个窗口, 类名说明)；没弹出返回 None。
 
         先用 Unicode 键盘消息打 @（不受输入法影响）；没弹出就删掉它，改按 Shift+2 再打一次。
         哪种能弹出来记住，下次直接用。
@@ -1092,7 +1104,7 @@ class WeComDriver:
             popup = self._wait_popup(before, AT_POPUP_WAIT)
             if popup is not None:
                 if self._at_keys != way:
-                    log.info("打 @ 用 %s 能弹出成员列表（窗口类名 %s）", way, popup[1])
+                    log.info("打 @ 用 %s 能弹出成员列表（多出来的窗口：%s）", way, popup[1])
                 self._at_keys = way
                 return popup
             if way != ways[-1]:
@@ -1101,20 +1113,20 @@ class WeComDriver:
                     self._keys("backspace")
         return None
 
-    def _close_popup(self, hwnd: int) -> None:
-        if popup_box(hwnd) is not None:
+    def _close_popup(self, hwnds: list[int]) -> None:
+        if popup_box(hwnds) is not None:
             self._keys("esc")
             deadline = time.monotonic() + AT_CLOSE_WAIT
-            while popup_box(hwnd) is not None and time.monotonic() < deadline:
+            while popup_box(hwnds) is not None and time.monotonic() < deadline:
                 time.sleep(0.05)
 
-    def _popup_lines(self, rect: Rect, hwnd: int, before) -> list[OcrLine]:
+    def _popup_lines(self, rect: Rect, hwnds: list[int], before) -> list[OcrLine]:
         """输入名字后，等成员列表筛选好（和输入前不一样、并且连续两次截屏一样）再识字。"""
         deadline = time.monotonic() + AT_FILTER_WAIT
         last = None
         while True:
             time.sleep(0.06)
-            box = popup_box(hwnd)
+            box = popup_box(hwnds)
             if box is None:
                 return []
             view = (box, self._grab(box)[0])
@@ -1134,25 +1146,26 @@ class WeComDriver:
             self._debug_shot("mention-nopopup")
             type_unicode(m.name)  # 名字按普通文字补上
             return "企业微信没有弹出成员列表"
-        hwnd, cls = popup
-        box = popup_box(hwnd)
+        hwnds, cls = popup
+        box = popup_box(hwnds)
         before = (box, self._grab(box)[0]) if box else None
         type_unicode(query)
-        lines = self._popup_lines(rect, hwnd, before) if before else []
+        lines = self._popup_lines(rect, hwnds, before) if before else []
         texts = [line.text for line in lines]
         index, why = mentions.pick(texts, m)
-        log.info("@%s：成员列表（%s）里识别到：%s", m.name, cls, "；".join(texts) or "没有识别到文字")
+        log.info("@%s：成员列表（%s，识字范围 %s）里识别到：%s", m.name, cls, popup_box(hwnds) or box,
+                 "；".join(f"{ln.text}@({ln.x0},{ln.y0})" for ln in lines) or "没有识别到文字")
         self._debug_shot("mention-list")
         if index is None:
-            self._close_popup(hwnd)
+            self._close_popup(hwnds)
             type_unicode(m.name[len(query):])
             return why
         self.gui.click(*lines[index].center)
         deadline = time.monotonic() + AT_CLOSE_WAIT
-        while popup_box(hwnd) is not None and time.monotonic() < deadline:
+        while popup_box(hwnds) is not None and time.monotonic() < deadline:
             time.sleep(0.04)
-        if popup_box(hwnd) is not None:
-            self._close_popup(hwnd)
+        if popup_box(hwnds) is not None:
+            self._close_popup(hwnds)
             type_unicode(m.name[len(query):])
             return "点了成员列表里的名字，但列表没有收起"
         return None
