@@ -38,7 +38,6 @@ interface Props {
   groupId: string;
   groupName: string | null;
   canAutoSend: boolean;
-  operator: string;
   /** 当前要处理的客户消息（带 AI 建议）。 */
   focus: InboxItem | null;
   focusIndex: number;
@@ -50,7 +49,7 @@ interface Props {
 
 /** 会话底部：AI 建议 + 输入框（文字、图片、文件），确认后由发送电脑发到群里。 */
 export default function Composer(props: Props) {
-  const { channel, groupId, groupName, canAutoSend, operator, focus, onChanged, notify } = props;
+  const { channel, groupId, groupName, canAutoSend, focus, onChanged, notify } = props;
   const [text, setText] = useState("");
   const [files, setFiles] = useState<Pending[]>([]);
   const [linked, setLinked] = useState<InboxItem | null>(null);
@@ -103,7 +102,7 @@ export default function Composer(props: Props) {
       const key = ++seq.current;
       const name = file.name || "粘贴的图片.png";
       setFiles((prev) => [...prev, { key, name }]);
-      uploadAttachment(file.name ? file : new File([file], name, { type: file.type }), operator)
+      uploadAttachment(file.name ? file : new File([file], name, { type: file.type }))
         .then((att) => setFiles((prev) => prev.map((f) => (f.key === key ? { ...f, att } : f))))
         .catch((e: Error) => setFiles((prev) => prev.map((f) => (f.key === key ? { ...f, error: e.message } : f))));
     }
@@ -137,7 +136,6 @@ export default function Composer(props: Props) {
         content: text.trim(),
         attachment_ids: ready.map((a) => a.id),
         suggestion_id: linked?.suggestion?.id ?? null,
-        operator,
       });
       reset();
       notify("已确认，正在发送到群里");
@@ -147,7 +145,7 @@ export default function Composer(props: Props) {
   const copyOnly = () =>
     run(async () => {
       const content = text.trim();
-      if (linked?.suggestion) await adopt(linked.suggestion.id, content, operator);
+      if (linked?.suggestion) await adopt(linked.suggestion.id, content);
       const ok = await copy(content);
       reset();
       notify(ok ? "已复制，请到企业微信群里粘贴发送" : "复制失败，请手动选择文字复制");
@@ -261,7 +259,7 @@ export default function Composer(props: Props) {
             {s.status !== "escalated" && s.status !== "generating" && (
               <button disabled={busy} onClick={() => setNoteOpen((v) => !v)}>转人工</button>
             )}
-            <button disabled={busy} onClick={() => run(() => dismiss(s.id, operator))}>无需回复</button>
+            <button disabled={busy} onClick={() => run(() => dismiss(s.id))}>无需回复</button>
             {s.status !== "escalated" && s.status !== "generating" && (
               <button disabled={busy} onClick={() => run(() => regenerate(s.id))}>重新生成</button>
             )}
@@ -273,7 +271,7 @@ export default function Composer(props: Props) {
                 disabled={busy}
                 onClick={() =>
                   run(async () => {
-                    await escalate(s.id, note, operator);
+                    await escalate(s.id, note);
                     setNoteOpen(false);
                     setNote("");
                   })

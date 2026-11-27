@@ -1,5 +1,17 @@
 // 演示模式：不连后台，接口全部用内置的假数据应答，只用来看界面效果。
-import type { Attachment, Channel, ConversationEnd, Group, InboxItem, KnowledgeRef, Message, SendTask, Suggestion } from "../api";
+import type {
+  Attachment,
+  Channel,
+  ConversationEnd,
+  Group,
+  InboxItem,
+  KnowledgeRef,
+  Message,
+  SendTask,
+  Staff,
+  Suggestion,
+  Team,
+} from "../api";
 
 const at = (h: number, m: number) => {
   const d = new Date();
@@ -8,6 +20,24 @@ const at = (h: number, m: number) => {
 };
 
 let seq = 0;
+
+// 演示里登录的是管理员李四
+const TEAMS: Team[] = [
+  { id: "team-bi", name: "BI 组" },
+  { id: "team-zt", name: "中台组" },
+];
+const seen = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
+function member(name: string, username: string, role: Staff["role"], team: Team | null, online: boolean, extra: Partial<Staff> = {}): Staff {
+  return { id: `u-${username}`, name, username, role, team, active: true, status: "online", online, last_seen: seen(online ? 0 : 300), ...extra };
+}
+const STAFF: Staff[] = [
+  member("李四", "lisi", "admin", null, true),
+  member("姜瑜", "jiangyu", "support", TEAMS[0], true),
+  member("宋奔", "songben", "support", TEAMS[0], false, { status: "away" }),
+  member("唐已杰", "tangyijie", "support", TEAMS[1], true),
+  member("陆宣任", "luxuanren", "support", TEAMS[1], false),
+];
+const ME = STAFF[0];
 const key = (channel: string, groupId: string) => `${channel}:${groupId}`;
 
 interface Room {
@@ -252,15 +282,41 @@ function deliver(r: Room, task: SendTask) {
   });
 }
 
-const handled = (s: Suggestion, status: Suggestion["status"], operator: unknown) => {
+const handled = (s: Suggestion, status: Suggestion["status"]) => {
   s.status = status;
-  s.handled_by = typeof operator === "string" && operator ? operator : "李四";
+  s.handled_by = ME.name;
   s.handled_at = new Date().toISOString();
   return s;
 };
 
 async function handle(path: string, query: URLSearchParams, method: string, body: unknown): Promise<unknown> {
   const data = (body && typeof body === "object" && !(body instanceof FormData) ? body : {}) as Record<string, unknown>;
+
+  if (path === "auth/state") return { needs_setup: false };
+  if (path === "auth/me" || path === "auth/login" || path === "auth/setup") return ME;
+  if (path === "auth/me/status") {
+    ME.status = data.status as Staff["status"];
+    ME.online = ME.status === "online";
+    return ME;
+  }
+  if (path === "teams") return TEAMS;
+  if (path === "staff" && method === "GET") return STAFF;
+  if (path === "staff" && method === "POST") {
+    const team = TEAMS.find((t) => t.id === data.team_id) ?? null;
+    const s = member(String(data.name), String(data.username), data.role as Staff["role"], team, false, { last_seen: null });
+    STAFF.push(s);
+    return s;
+  }
+  const edit = path.match(/^staff\/([^/]+)$/);
+  if (edit) {
+    const s = STAFF.find((x) => x.id === edit[1])!;
+    if (typeof data.name === "string") s.name = data.name;
+    if (data.role) s.role = data.role as Staff["role"];
+    if (data.clear_team) s.team = null;
+    else if (data.team_id) s.team = TEAMS.find((t) => t.id === data.team_id) ?? null;
+    if (typeof data.active === "boolean") s.active = data.active;
+    return s;
+  }
 
   if (path === "send/status")
     return {
@@ -301,11 +357,11 @@ async function handle(path: string, query: URLSearchParams, method: string, body
   if (path === "conversations/end") {
     const r = rooms.find((x) => key(x.group.channel, x.group.group_id) === key(String(data.channel), String(data.group_id)))!;
     const open = r.items.filter((i) => i.suggestion && OPEN.includes(i.suggestion.status));
-    for (const i of open) handled(i.suggestion!, "closed", data.operator);
+    for (const i of open) handled(i.suggestion!, "closed");
     r.outbox = r.outbox.filter((t) => t.status !== "failed" && t.status !== "cancelled");
     const end: ConversationEnd = {
       id: `end${++seq}`,
-      ended_by: typeof data.operator === "string" && data.operator ? data.operator : "李四",
+      ended_by: ME.name,
       ended_at: new Date().toISOString(),
       closed_count: open.length,
     };
@@ -323,7 +379,7 @@ async function handle(path: string, query: URLSearchParams, method: string, body
   if (path === "conversations/send") {
     const r = rooms.find((x) => x.group.group_id === data.group_id)!;
     const s = typeof data.suggestion_id === "string" ? findSuggestion(data.suggestion_id) : undefined;
-    if (s) handled(s, "adopted", data.operator).final_content = String(data.content ?? "");
+    if (s) handled(s, "adopted").final_content = String(data.content ?? "");
     const task: SendTask = {
       id: `t${++seq}`,
       suggestion_id: s?.id ?? null,
@@ -331,7 +387,7 @@ async function handle(path: string, query: URLSearchParams, method: string, body
       attachments: ((data.attachment_ids as string[]) ?? []).map((id) => uploaded.get(id)!).filter(Boolean),
       status: "queued",
       error: null,
-      created_by: (data.operator as string) || "李四",
+      created_by: ME.name,
       created_at: new Date().toISOString(),
       finished_at: null,
     };
@@ -344,11 +400,11 @@ async function handle(path: string, query: URLSearchParams, method: string, body
   if (hit) {
     const s = findSuggestion(hit[1])!;
     if (hit[2] === "adopt") {
-      handled(s, "adopted", data.operator).final_content = String(data.content ?? "");
+      handled(s, "adopted").final_content = String(data.content ?? "");
       return { suggestion: s, delivery: "copy", detail: "" };
     }
-    if (hit[2] === "escalate") handled(s, "escalated", data.operator).note = (data.note as string) || null;
-    if (hit[2] === "dismiss") handled(s, "dismissed", data.operator);
+    if (hit[2] === "escalate") handled(s, "escalated").note = (data.note as string) || null;
+    if (hit[2] === "dismiss") handled(s, "dismissed");
     if (hit[2] === "regenerate") {
       s.status = "generating";
       setTimeout(() => s.status === "generating" && (s.status = "ready"), 2500);

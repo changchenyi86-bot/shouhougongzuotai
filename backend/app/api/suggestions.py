@@ -10,11 +10,12 @@ from sqlalchemy.orm import Session
 
 from app import send_queue
 from app.ai import worker
+from app.auth import current_staff
 from app.db import get_session
-from app.models import Channel, Message, Suggestion, SuggestionStatus
+from app.models import Channel, Message, Staff, Suggestion, SuggestionStatus
 from app.schemas import AdoptIn, AdoptOut, HandleIn, InboxItem, MessageOut, SuggestionOut
 
-router = APIRouter(prefix="/api")
+router = APIRouter(prefix="/api", dependencies=[Depends(current_staff)])
 
 S = SuggestionStatus
 VIEWS: dict[str, list[SuggestionStatus] | None] = {
@@ -75,12 +76,13 @@ def _ensure_open(sug: Suggestion, allowed: set[SuggestionStatus] = OPEN) -> None
         raise HTTPException(status.HTTP_409_CONFLICT, f"该建议已处理（{sug.status.value}）")
 
 
-def _mark(sug: Suggestion, new_status: SuggestionStatus, operator: str | None) -> None:
-    sug.status, sug.handled_by, sug.handled_at = new_status, operator, datetime.now(timezone.utc)
+def _mark(sug: Suggestion, new_status: SuggestionStatus, staff: Staff) -> None:
+    sug.status, sug.handled_by, sug.handled_at = new_status, staff.name, datetime.now(timezone.utc)
 
 
 @router.post("/suggestions/{suggestion_id}/adopt", response_model=AdoptOut)
-def adopt(suggestion_id: uuid.UUID, body: AdoptIn, session: Session = Depends(get_session)) -> AdoptOut:
+def adopt(suggestion_id: uuid.UUID, body: AdoptIn, staff: Staff = Depends(current_staff),
+          session: Session = Depends(get_session)) -> AdoptOut:
     """采纳建议。传入 content 且与 AI 建议不同时记为「修改后采纳」。
 
     send=true 时交给电脑端发送程序自动发到群里（不满足条件时返回 409 和原因，建议保持未处理）；
@@ -92,13 +94,13 @@ def adopt(suggestion_id: uuid.UUID, body: AdoptIn, session: Session = Depends(ge
     if not content:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "回复内容为空")
     edited = content != (sug.content or "").strip()
-    _mark(sug, S.EDITED if edited else S.ADOPTED, body.operator)
+    _mark(sug, S.EDITED if edited else S.ADOPTED, staff)
     sug.final_content, sug.delivery = content, "manual"
     detail = "请复制后在客户端发送"
     if body.send:
         message = session.get(Message, sug.message_id)
         try:
-            send_queue.enqueue(session, message.channel, message.group_id, content, [], body.operator, sug)
+            send_queue.enqueue(session, message.channel, message.group_id, content, [], staff.name, sug)
         except send_queue.SendRejected as exc:
             session.rollback()
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
@@ -108,22 +110,24 @@ def adopt(suggestion_id: uuid.UUID, body: AdoptIn, session: Session = Depends(ge
 
 
 @router.post("/suggestions/{suggestion_id}/escalate", response_model=SuggestionOut)
-def escalate(suggestion_id: uuid.UUID, body: HandleIn, session: Session = Depends(get_session)) -> Suggestion:
+def escalate(suggestion_id: uuid.UUID, body: HandleIn, staff: Staff = Depends(current_staff),
+             session: Session = Depends(get_session)) -> Suggestion:
     """转人工：AI 答不了，交给技术支持专人处理。"""
     sug = _get(session, suggestion_id)
     _ensure_open(sug)
-    _mark(sug, S.ESCALATED, body.operator)
+    _mark(sug, S.ESCALATED, staff)
     sug.note = body.note
     session.commit()
     return sug
 
 
 @router.post("/suggestions/{suggestion_id}/dismiss", response_model=SuggestionOut)
-def dismiss(suggestion_id: uuid.UUID, body: HandleIn, session: Session = Depends(get_session)) -> Suggestion:
+def dismiss(suggestion_id: uuid.UUID, body: HandleIn, staff: Staff = Depends(current_staff),
+            session: Session = Depends(get_session)) -> Suggestion:
     """忽略：这条消息无需回复（如“好的”“谢谢”）或已在群里回复过。"""
     sug = _get(session, suggestion_id)
     _ensure_open(sug)
-    _mark(sug, S.DISMISSED, body.operator)
+    _mark(sug, S.DISMISSED, staff)
     sug.note = body.note
     session.commit()
     return sug

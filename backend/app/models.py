@@ -206,6 +206,57 @@ class ConversationEnd(Base):
     closed_count: Mapped[int] = mapped_column(default=0, comment="随会话结束的未回复客户消息数")
 
 
+class Role(str, enum.Enum):
+    ADMIN = "admin"  # 管理员：看全部会话，管成员、群负责人和设置
+    SUPPORT = "support"  # 技术支持：处理分给自己的会话
+
+
+class StaffStatus(str, enum.Enum):
+    ONLINE = "online"  # 在线：可以接新会话
+    AWAY = "away"  # 离开：不接新会话
+
+
+class Team(Base):
+    """分组，如 BI 组、中台组（含运维）。负责人不在线时，会话分给同组的人。"""
+
+    __tablename__ = "teams"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(32), unique=True)
+    sort: Mapped[int] = mapped_column(default=0)
+
+
+class Staff(Base):
+    """工作台成员（技术支持、管理员），用账号密码登录。"""
+
+    __tablename__ = "staff"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(32), unique=True, comment="姓名，显示在处理记录里")
+    username: Mapped[str] = mapped_column(String(64), unique=True, comment="登录账号")
+    password_hash: Mapped[str] = mapped_column(String(255))
+    role: Mapped[Role] = mapped_column(Enum(Role, native_enum=False, length=16), default=Role.SUPPORT)
+    team_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("teams.id", ondelete="SET NULL"))
+    active: Mapped[bool] = mapped_column(Boolean, default=True, comment="停用后不能登录")
+    status: Mapped[StaffStatus] = mapped_column(
+        Enum(StaffStatus, native_enum=False, length=16), default=StaffStatus.ONLINE, comment="自己切换的在线状态"
+    )
+    last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), comment="最近一次打开工作台")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    team: Mapped[Team | None] = relationship(lazy="selectin")
+
+
+class LoginToken(Base):
+    """登录凭证：浏览器 Cookie 里放原文，这里只存它的 SHA-256。"""
+
+    __tablename__ = "login_tokens"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    staff_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("staff.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class SyncCursor(Base):
     """渠道拉取进度（如企业微信会话存档的 seq）。"""
 

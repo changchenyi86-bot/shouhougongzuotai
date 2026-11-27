@@ -27,10 +27,11 @@ backend/
     api/conversations.py 会话：群列表、聊天记录、在会话里发文字 / 图片 / 文件
     api/attachments.py  图片、文件上传和下载（客户发来的也会下载保存）
     api/sending.py   自动发送：发送程序心跳 / 领取 / 回报，工作台重发 / 取消 / 改为手动
+    auth.py、api/staff.py  登录（账号密码）、成员、角色（管理员 / 技术支持）、分组（BI 组 / 中台组）
     channels/        各 IM 渠道适配器（wecom 已实现：会话内容存档；dingtalk / feishu 待实现）
   tests/
 windows-agent/       电脑端发送程序：在常开的 Windows 电脑上操作官方企业微信客户端发消息
-web/                 React 工作台（会话：群列表 + 聊天记录 + AI 建议 + 输入框；工单/知识库/积分排名占位）
+web/                 React 工作台（登录；会话：群列表 + 聊天记录 + AI 建议 + 输入框；团队设置：成员；工单/知识库/积分排名占位）
 docker-compose.yml
 ```
 
@@ -55,7 +56,13 @@ docker-compose.yml
 
 ## 接口
 
+除了健康检查、登录、渠道回调和发送程序专用接口，其余接口都要先登录（浏览器 Cookie）。处理人一律记登录的人。
+
 - `GET /api/health`
+- `GET /api/auth/state`：是否还没有任何账号（第一次使用要先设管理员）
+- `POST /api/auth/setup`：第一次使用时设管理员账号；`POST /api/auth/login|logout`、`GET /api/auth/me`
+- `PUT /api/auth/me/status`（在线 / 离开）、`PUT /api/auth/me/password`
+- `GET /api/teams`、`GET /api/staff`：分组、成员；`POST /api/staff`、`PATCH /api/staff/{id}`：添加、修改成员（管理员）
 - `POST /api/messages`：写入一条已归一的消息
 - `GET /api/messages?channel=&group_id=&since=&limit=`：查询消息
 - `POST /webhooks/{channel}`：渠道回调（钉钉、飞书目前返回 501）
@@ -86,7 +93,8 @@ docker compose up -d --build
 三个服务都设置了自动重启：只要 Docker 在运行，电脑重启后工作台会自己起来。
 Mac 上不想装 Docker Desktop 的话，可以用 Homebrew 装 Colima：`brew install colima docker docker-compose`，再用 `brew services start colima` 设为开机自启。
 
-工作台在 http://localhost:5173 ，后端在 http://localhost:8000 。
+工作台在 http://localhost:5173 ，后端在 http://localhost:8000 。第一次打开工作台时先设管理员账号，再在「团队设置」里给大家开账号。
+部署到 https 后在 `backend/.env` 设 `COOKIE_SECURE=true`。
 
 分别开发：
 

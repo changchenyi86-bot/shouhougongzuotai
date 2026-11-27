@@ -9,12 +9,6 @@ import { installMock } from "./mock";
 installMock();
 applyTheme(loadTheme());
 
-try {
-  if (!localStorage.getItem("operator")) localStorage.setItem("operator", "李四");
-} catch {
-  /* 浏览器禁用存储时忽略 */
-}
-
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <App />
