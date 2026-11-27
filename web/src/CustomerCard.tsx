@@ -90,7 +90,7 @@ export default function CustomerCard({ target, card, error, me, onClose, onChang
   };
 
   const pick = async (customer: string | null) => {
-    if (await run(() => setCustomerLink(target.channel, target.group_id, customer), customer ? `已对上「${customer}」` : undefined))
+    if (await run(() => setCustomerLink(target.channel, target.group_id, customer), customer ? `已对上「${customer}」` : "已标为不对应客户"))
       setPicking(false);
   };
 
@@ -116,6 +116,8 @@ export default function CustomerCard({ target, card, error, me, onClose, onChang
 
   const mine = (n: CustomerNote) => me.role === "admin" || n.author_id === me.id;
   const p = card?.profile ?? null;
+  // 管理员或群负责人手动标过「不对应客户」（内部群、测试群），不再列候选、不再催着选
+  const noCustomer = !!card && !card.link.customer && card.link.source === "manual";
   const notes = card?.notes.filter((n) => n.kind === "note") ?? [];
   const errors = card?.notes.filter((n) => n.kind === "error") ?? [];
   const stale = card?.sync.maintenance_updated_on && daysAgo(card.sync.maintenance_updated_on) > 3;
@@ -219,8 +221,18 @@ export default function CustomerCard({ target, card, error, me, onClose, onChang
                 </div>
               ) : (
                 <>
-                  <h4>这个群还没对上客户</h4>
-                  {card.link.candidates.length > 0 && (
+                  <h4>{noCustomer ? "这个群不对应客户" : "这个群还没对上客户"}</h4>
+                  {noCustomer && !picking && (
+                    <p className="cc-src">
+                      {card.link.updated_by ? `${card.link.updated_by} 设的，` : ""}如内部群、测试群
+                      {card.can_link && (
+                        <button className="link" onClick={() => setPicking(true)}>
+                          改
+                        </button>
+                      )}
+                    </p>
+                  )}
+                  {!noCustomer && card.link.candidates.length > 0 && (
                     <div className="cc-cands">
                       <span>售后系统里这个群绑了几家：</span>
                       {card.link.candidates.map((c) =>
@@ -234,11 +246,16 @@ export default function CustomerCard({ target, card, error, me, onClose, onChang
                       )}
                     </div>
                   )}
-                  {!card.can_link && <p className="cc-empty">请群负责人或管理员选一下这个群对应的客户。</p>}
+                  {!card.can_link && !noCustomer && <p className="cc-empty">请群负责人或管理员选一下这个群对应的客户。</p>}
                 </>
               )}
-              {(picking || (card.can_link && !card.link.customer)) && (
-                <CustomerPicker busy={busy} onPick={pick} onCancel={card.link.customer ? () => setPicking(false) : undefined} />
+              {(picking || (card.can_link && !card.link.customer && !noCustomer)) && (
+                <CustomerPicker
+                  busy={busy}
+                  onPick={pick}
+                  onNone={noCustomer ? undefined : () => pick(null)}
+                  onCancel={card.link.customer || noCustomer ? () => setPicking(false) : undefined}
+                />
               )}
               {card.link.customer && !picking && (
                 <p className="cc-src">
@@ -424,7 +441,18 @@ export default function CustomerCard({ target, card, error, me, onClose, onChang
   );
 }
 
-function CustomerPicker({ busy, onPick, onCancel }: { busy: boolean; onPick: (c: string) => void; onCancel?: () => void }) {
+function CustomerPicker({
+  busy,
+  onPick,
+  onNone,
+  onCancel,
+}: {
+  busy: boolean;
+  onPick: (c: string) => void;
+  /** 标成「不对应客户」（内部群、测试群） */
+  onNone?: () => void;
+  onCancel?: () => void;
+}) {
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<{ name: string; companies: string[] }[] | null>(null);
 
@@ -466,11 +494,18 @@ function CustomerPicker({ busy, onPick, onCancel }: { busy: boolean; onPick: (c:
           ))}
         </ul>
       )}
-      {onCancel && (
-        <button className="link" onClick={onCancel}>
-          取消
-        </button>
-      )}
+      <div className="cc-pick-foot">
+        {onNone && (
+          <button className="link" disabled={busy} onClick={onNone} title="内部群、测试群这类不对应任何客户的群">
+            这个群不对应客户
+          </button>
+        )}
+        {onCancel && (
+          <button className="link" onClick={onCancel}>
+            取消
+          </button>
+        )}
+      </div>
     </div>
   );
 }
