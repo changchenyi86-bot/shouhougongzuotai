@@ -90,8 +90,11 @@ def _image(data: bytes, timeout: float | None) -> tuple[str, str]:
                                   timeout=min(settings.vision_timeout, remaining))
             response.raise_for_status()
             body = response.json()
-            content = body['choices'][0]['message']['content']
+            choice = body['choices'][0]
+            content = choice['message'].get('content')
             if not isinstance(content, str) or not content.strip():
+                if choice.get('finish_reason') == 'length':
+                    raise ValueError(f'模型思考用完了 {settings.vision_max_tokens} 个 token 还没写出结果，可调大 VISION_MAX_TOKENS')
                 raise ValueError('识图接口返回空内容')
             return content.strip(), body.get('model') or name
         except Exception as exc:

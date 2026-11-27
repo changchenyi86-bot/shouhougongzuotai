@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     vision_model: str = ""
     vision_fallback_model: str = ""
     vision_timeout: float = 60
-    vision_max_tokens: int = 4000
+    vision_max_tokens: int = 8000  # deepseek-flash 看密集截图有时先思考 4000 多 token，给少了只有思考没有正文
     media_wait_seconds: float = 25
     media_text_max_chars: int = 2000
 
