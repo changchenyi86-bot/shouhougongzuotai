@@ -137,6 +137,9 @@ export default function Composer(props: Props) {
     setPicked((prev) => ({ ...prev, [m.name]: m }));
     onType(next);
     setCaret(pos);
+    // 马上把光标放到「@名字 」后面：选完立刻接着打字时，字要打在空格后面
+    el.value = next;
+    el.setSelectionRange(pos, pos);
     requestAnimationFrame(() => {
       el.focus();
       el.setSelectionRange(pos, pos);
@@ -156,6 +159,8 @@ export default function Composer(props: Props) {
     setDismissedAt(null);
     onType(next);
     setCaret(pos);
+    el.value = next;
+    el.setSelectionRange(pos, pos);
     requestAnimationFrame(() => {
       el.focus();
       el.setSelectionRange(pos, pos);
