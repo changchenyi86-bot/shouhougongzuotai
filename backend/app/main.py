@@ -6,9 +6,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.ai import worker
 from app import auth, db, routing
-from app.api import attachments, conversations, messages, sending, staff, suggestions
+from app.ai import similar, worker
+from app.api import assist, attachments, candidates, conversations, messages, sending, staff, stats, suggestions
 from app.channels.wecom import router as wecom_router
 from app.channels.wecom.archive import get_syncer
 from app.config import settings
@@ -35,6 +35,8 @@ async def lifespan(_: FastAPI):
     with db.SessionLocal() as session:
         auth.seed_teams(session)
         routing.backfill(session)
+    # 接入 embedding 之前、或隧道断开期间发出的回复，补存相似问答向量
+    worker.submit(similar.backfill)
     poller = None
     if settings.wecom_archive_enabled and settings.wecom_archive_poll_interval > 0:
         poller = asyncio.create_task(_poll_wecom_archive())
@@ -61,6 +63,10 @@ app.include_router(sending.router)
 app.include_router(conversations.router)
 app.include_router(attachments.router)
 app.include_router(staff.router)
+app.include_router(assist.router)
+app.include_router(candidates.router)
+app.include_router(candidates.sync_router)
+app.include_router(stats.router)
 app.include_router(sending.agent_router)
 
 

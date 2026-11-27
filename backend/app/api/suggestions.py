@@ -9,7 +9,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app import routing, send_queue
-from app.ai import worker
+from app.ai import reflow, worker
 from app.auth import current_staff
 from app.db import get_session
 from app.models import OPEN_SUGGESTION, Channel, Message, Staff, Suggestion, SuggestionStatus
@@ -101,6 +101,7 @@ def adopt(suggestion_id: uuid.UUID, body: AdoptIn, staff: Staff = Depends(curren
     edited = content != (sug.content or "").strip()
     _mark(sug, S.EDITED if edited else S.ADOPTED, staff)
     sug.final_content, sug.delivery = content, "manual"
+    reflow.record(session, sug, content, body.via_chat)
     detail = "请复制后在客户端发送"
     if body.send:
         message = session.get(Message, sug.message_id)
@@ -111,6 +112,7 @@ def adopt(suggestion_id: uuid.UUID, body: AdoptIn, staff: Staff = Depends(curren
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         detail = "已加入发送队列"
     session.commit()
+    worker.submit(reflow.after_reply, sug.id)
     return AdoptOut(suggestion=SuggestionOut.model_validate(sug), delivery=sug.delivery, detail=detail)
 
 
@@ -147,4 +149,20 @@ def regenerate(suggestion_id: uuid.UUID, staff: Staff = Depends(current_staff),
     session.rollback()  # 释放行锁，enqueue 用独立会话更新状态
     worker.enqueue(sug.message_id)
     session.refresh(sug)
+    return sug
+
+
+@router.post("/suggestions/{suggestion_id}/reopen", response_model=SuggestionOut)
+def reopen(suggestion_id: uuid.UUID, staff: Staff = Depends(current_staff),
+           session: Session = Depends(get_session)) -> Suggestion:
+    """把「无需回复」改回待回复（AI 自动标记错了，或技术支持点错了）。"""
+    sug = _get(session, suggestion_id, staff)
+    if sug.status != S.DISMISSED:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"只有标为无需回复的才能改回（{sug.status.value}）")
+    sug.status = S.READY if sug.content else S.FAILED
+    if not sug.content:
+        sug.error = "AI 没有写回复，可以重新生成"
+    sug.auto_dismissed, sug.reopened_by = False, staff.name
+    sug.handled_by = sug.handled_at = sug.note = None
+    session.commit()
     return sug

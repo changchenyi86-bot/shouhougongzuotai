@@ -1,7 +1,10 @@
 // 演示模式：不连后台，接口全部用内置的假数据应答，只用来看界面效果。
 import type {
+  AdoptionRow,
   Attachment,
+  Candidate,
   Channel,
+  ChatTurn,
   ConversationEnd,
   Group,
   InboxItem,
@@ -143,6 +146,59 @@ const files = new Map<string, string>([
   ["demo-log", `data:text/plain;charset=utf-8,${encodeURIComponent("2026-11-19 10:07:12 ERROR export timeout (504)\n")}`],
 ]);
 
+const candidates: Candidate[] = [];
+
+function demoCandidate(r: Room, m: Message) {
+  const s = r.items.find((i) => i.message.id === m.id)!.suggestion!;
+  const c: Candidate = {
+    id: `c-${m.id}`,
+    suggestion_id: s.id,
+    status: "proposed",
+    title: "测试环境许可证快到期怎么续",
+    question: "测试环境的许可证快到期了，怎么续期？",
+    answer: "在「系统设置 → 许可证」里上传新的许可证文件，替换后重启服务即可生效。新的许可证文件由我们发到您的邮箱。",
+    branch: "通用",
+    kind: "how_to",
+    module: "许可证",
+    reason: "许可证续期的做法，别的客户也会问",
+    customer_question: m.content,
+    customer_reply: s.final_content ?? "",
+    ai_suggestion: s.content,
+    group_name: r.group.group_name,
+    author: s.handled_by,
+    confirmed_by: null,
+    confirmed_at: null,
+    reviewer: null,
+    reviewed_at: null,
+    review_note: null,
+    updated_by: null,
+    card_id: null,
+    synced_version: null,
+    synced_status: null,
+    synced_at: null,
+    created_at: at(8, 41),
+    channel: r.group.channel,
+    group_id: r.group.group_id,
+    message_id: m.id,
+  };
+  candidates.push(c);
+  s.candidate = { id: c.id, status: c.status, question: c.question };
+}
+
+const chats = new Map<string, ChatTurn[]>();
+
+function demoStats(): AdoptionRow[] {
+  const row = (operator: string, v: Partial<AdoptionRow>): AdoptionRow => ({
+    operator, replied: 0, exact: 0, minor: 0, major: 0, unused: 0, via_chat: 0, escalated: 0, dismissed: 0,
+    knowledge_submitted: 0, knowledge_approved: 0, reviews: 0, ...v,
+  });
+  return [
+    row("李四", { replied: 18, exact: 9, minor: 4, major: 3, unused: 2, via_chat: 3, escalated: 1, dismissed: 2, knowledge_submitted: 2, knowledge_approved: 1, reviews: 1 }),
+    row("姜瑜", { replied: 11, exact: 4, minor: 2, major: 2, unused: 3, via_chat: 1, escalated: 2, knowledge_submitted: 1, reviews: 2 }),
+    row("AI", { dismissed: 7 }),
+  ];
+}
+
 function build(): Room[] {
   const bank = room("wecom", "g1", "银行客户-有数项目群", true, 65);
   let m = say(bank, "x9Kq", 9, 58, "下周三我们准备升级到 6.2，有什么需要注意的吗？");
@@ -201,10 +257,10 @@ function build(): Room[] {
   suggest(retail, m, "generating");
   m = say(retail, "h5Bz", 9, 35, "定时邮件今天没收到，是不是任务挂了？");
   suggest(retail, m, "ready", {
-    content: "您好，这个问题我们需要技术同事确认一下，稍后回复您。",
+    content: "您好，定时邮件没收到一般是邮件服务或任务调度的问题，麻烦告诉我们是哪个订阅任务，我们查一下发送记录。",
     can_answer: false,
     confidence: "low",
-    reason: "知识库里没有找到相似问题，建议转人工",
+    reason: "查到的资料讲的是订阅设置，和任务没发出不是一回事",
     knowledge: [
       kn("K1", "faq", "有数", "邮件订阅收不到邮件的排查", false, null),
       kn("K2", "manual", "有数", "订阅与推送", false, null),
@@ -213,8 +269,15 @@ function build(): Room[] {
 
   const broker = room("wecom", "g4", "券商客户-知数实施群", true, 340);
   m = say(broker, "q8Fs", 8, 40, "测试环境的许可证快到期了，能帮忙续一下吗？");
-  suggest(broker, m, "adopted", { handled_by: "王五" });
-  say(broker, "q8Fs", 8, 52, "好的，收到，谢谢");
+  suggest(broker, m, "edited", {
+    handled_by: "李四",
+    content: "您好，许可证续期需要商务确认，我们这边先帮您申请。",
+    final_content: "您好，测试环境许可证可以在「系统设置 → 许可证」里上传新的许可证文件，我们把文件发您邮箱，替换后重启服务即可生效。",
+    adoption: "major",
+  });
+  demoCandidate(broker, m);
+  m = say(broker, "q8Fs", 8, 52, "好的，收到，谢谢");
+  suggest(broker, m, "dismissed", { auto_dismissed: true, needs_reply: false, reason: "客户在致谢，不需要回复", content: "不客气～" });
   broker.outbox.push({
     id: "t-demo-failed",
     suggestion_id: null,
@@ -444,7 +507,86 @@ async function handle(path: string, query: URLSearchParams, method: string, body
     return task;
   }
 
-  let hit = path.match(/^suggestions\/([^/]+)\/(adopt|escalate|dismiss|regenerate)$/);
+  let hit = path.match(/^suggestions\/([^/]+)\/chat$/);
+  if (hit) {
+    const turns = chats.get(hit[1]) ?? [];
+    if (method === "POST") {
+      const now = new Date().toISOString();
+      const said = String(data.content ?? "");
+      await new Promise((r) => setTimeout(r, 1200));
+      turns.push({ id: `ct${++seq}`, role: "staff", content: said, note: null, operator: ME.name, created_at: now });
+      turns.push({
+        id: `ct${++seq}`,
+        role: "ai",
+        content: `您好，${said.replace(/^让(他|她|客户)/, "麻烦您")}。如果还是不行，麻烦把报错截图和操作步骤发我们，我们马上帮您排查。`,
+        note: turns.length > 2 ? null : "按你说的方案写的，没有加别的步骤",
+        operator: ME.name,
+        created_at: now,
+      });
+      chats.set(hit[1], turns);
+    }
+    return turns;
+  }
+
+  hit = path.match(/^suggestions\/([^/]+)\/reopen$/);
+  if (hit) {
+    const s = findSuggestion(hit[1])!;
+    Object.assign(s, { status: "ready", auto_dismissed: false, handled_by: null, reopened_by: ME.name });
+    return s;
+  }
+
+  if (path === "candidates/counts")
+    return {
+      mine: candidates.filter((c) => c.status === "proposed" && c.author === ME.name).length,
+      pending: candidates.filter((c) => c.status === "pending" && c.author !== ME.name && c.confirmed_by !== ME.name).length,
+      by_status: {},
+    };
+
+  if (path === "candidates") {
+    const view = query.get("view") ?? "pending";
+    const statuses: Record<string, string[]> = { proposed: ["proposed"], pending: ["pending"], approved: ["approved"], rejected: ["rejected", "retired"], skipped: ["not_general", "declined"] };
+    return candidates.filter((c) => statuses[view].includes(c.status) && (view !== "proposed" || c.author === query.get("author")));
+  }
+
+  hit = path.match(/^candidates\/([^/]+)\/(confirm|decline|approve|reject|retire)$/);
+  if (hit) {
+    const c = candidates.find((x) => x.id === hit![1])!;
+    for (const k of ["title", "question", "answer", "branch", "kind", "module"] as const)
+      if (typeof data[k] === "string") (c as unknown as Record<string, unknown>)[k] = data[k];
+    const next = { confirm: "pending", decline: "declined", approve: "approved", reject: "rejected", retire: "retired" } as const;
+    c.status = next[hit[2] as keyof typeof next];
+    const now = new Date().toISOString();
+    if (hit[2] === "confirm") Object.assign(c, { confirmed_by: ME.name, confirmed_at: now });
+    if (hit[2] === "approve" || hit[2] === "reject")
+      Object.assign(c, { reviewer: ME.name, reviewed_at: now, card_id: c.branch === "知数" ? null : `bi-verified-wb-${c.id}` });
+    for (const r of rooms)
+      for (const i of r.items)
+        if (i.suggestion?.candidate?.id === c.id) i.suggestion.candidate = { id: c.id, status: c.status, question: c.question };
+    return c;
+  }
+
+  if (path === "stats/adoption") {
+    const weeks = Number(query.get("weeks") ?? 8);
+    const monday = new Date();
+    monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
+    const zero = (): AdoptionRow => ({
+      operator: "全部", replied: 0, exact: 0, minor: 0, major: 0, unused: 0, via_chat: 0, escalated: 0, dismissed: 0,
+      knowledge_submitted: 0, knowledge_approved: 0, reviews: 0,
+    });
+    return {
+      weeks: Array.from({ length: weeks }, (_, i) => {
+        const d = new Date(monday);
+        d.setDate(monday.getDate() - 7 * i);
+        const people = i < 3 ? demoStats().map((p) => (i ? { ...p, exact: Math.max(0, p.exact - 2 * i), unused: p.unused + i } : p)) : [];
+        const total = zero();
+        for (const p of people) for (const k of Object.keys(total) as (keyof AdoptionRow)[]) if (k !== "operator") (total[k] as number) += p[k] as number;
+        const week = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        return { week, total, people };
+      }),
+    };
+  }
+
+  hit = path.match(/^suggestions\/([^/]+)\/(adopt|escalate|dismiss|regenerate)$/);
   if (hit) {
     const s = findSuggestion(hit[1])!;
     if (hit[2] === "adopt") {

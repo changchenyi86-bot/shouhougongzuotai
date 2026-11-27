@@ -1,9 +1,11 @@
 import uuid
 from datetime import datetime
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
-from app.models import Channel, MessageType, Role, SendStatus, StaffStatus, SuggestionStatus
+from app.models import CandidateStatus, Channel, MessageType, Role, SendStatus, StaffStatus, SuggestionStatus
 
 
 class MessageIn(BaseModel):
@@ -61,6 +63,19 @@ class KnowledgeRef(BaseModel):
     card_status: str | None = Field(default=None, description="纠错卡状态，draft 表示技术支持还没确认")
     snippet: str = ""
     cited: bool = Field(description="建议是否实际引用了这条")
+    author: str | None = Field(default=None, description="相似问答：写这条回复或知识的技术支持")
+    group_name: str | None = Field(default=None, description="历史回复：当时在哪个群")
+    score: float | None = Field(default=None, description="相似问答：和这条消息的相似度")
+
+
+class CandidateBrief(BaseModel):
+    """建议对应的候选知识（回复发出后 AI 判断要不要沉淀）。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    status: CandidateStatus
+    question: str
 
 
 class SuggestionOut(BaseModel):
@@ -77,6 +92,15 @@ class SuggestionOut(BaseModel):
     error: str | None
     knowledge: list[KnowledgeRef] = Field(default=[], description="参考知识，建议引用的排在前面")
     knowledge_error: str | None = None
+    knowledge_note: str | None = Field(default=None, description="没查售后数字人的原因（寒暄、没配置）")
+    needs_reply: bool | None = Field(default=None, description="AI 判断是否需要回复")
+    auto_dismissed: bool = Field(default=False, description="AI 判为无需回复、自动标记的")
+    reopened_by: str | None = None
+    adoption: Literal["exact", "minor", "major", "unused"] | None = Field(
+        default=None, description="采纳情况：原样采纳 / 小改 / 大改 / 未用")
+    adoption_score: float | None = None
+    via_chat: bool = Field(default=False, description="回复是和 AI 对话润色出来的")
+    candidate: CandidateBrief | None = None
     final_content: str | None
     delivery: str | None
     send_status: SendStatus | None = None
@@ -102,6 +126,7 @@ class InboxItem(BaseModel):
 class AdoptIn(BaseModel):
     content: str | None = Field(default=None, description="修改后的回复；不传则原样采纳 AI 建议")
     send: bool = Field(default=False, description="true：交给电脑端发送程序自动发到群里；false：复制后人工发送")
+    via_chat: bool = Field(default=False, description="回复是从和 AI 的对话里填入的")
 
 
 class HandleIn(BaseModel):
@@ -267,6 +292,7 @@ class SendIn(BaseModel):
     content: str = ""
     attachment_ids: list[uuid.UUID] = Field(default=[], max_length=9)
     suggestion_id: uuid.UUID | None = Field(default=None, description="回复的是哪条 AI 建议，发送后该建议记为已采纳")
+    via_chat: bool = Field(default=False, description="回复是从和 AI 的对话里填入的")
 
 
 # ---------- 登录、成员 ----------
@@ -366,3 +392,128 @@ class PasswordIn(BaseModel):
     new_password: str = Field(max_length=128)
 
     _pw = field_validator("new_password")(_password_ok)
+
+
+# ---------- 和 AI 对话润色 ----------
+
+
+class ChatIn(BaseModel):
+    content: str = Field(min_length=1, max_length=2000, description="技术支持的方案、要点或修改意见")
+
+    @field_validator("content")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("内容不能为空")
+        return v
+
+
+class ChatTurnOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    role: Literal["staff", "ai"]
+    content: str
+    note: str | None = None
+    operator: str | None = None
+    created_at: datetime
+
+
+# ---------- 候选知识 ----------
+
+Branch = Literal["有数", "知数", "通用"]
+Kind = Literal["how_to", "fact", "troubleshoot", "not_supported"]
+
+
+class CandidateOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    suggestion_id: uuid.UUID
+    status: CandidateStatus
+    title: str
+    question: str
+    answer: str
+    branch: str
+    kind: str
+    module: str
+    reason: str | None
+    customer_question: str
+    customer_reply: str
+    ai_suggestion: str | None
+    group_name: str | None
+    author: str | None
+    confirmed_by: str | None
+    confirmed_at: datetime | None
+    reviewer: str | None
+    reviewed_at: datetime | None
+    review_note: str | None
+    updated_by: str | None
+    card_id: str | None
+    synced_version: str | None
+    synced_status: str | None
+    synced_at: datetime | None
+    created_at: datetime
+    # 回到会话里的那条消息
+    channel: Channel | None = None
+    group_id: str | None = None
+    message_id: uuid.UUID | None = None
+
+
+class CandidateEdit(BaseModel):
+    """确认或审核时可以改的问答内容；不传的字段保持不变。"""
+
+    title: str | None = Field(default=None, max_length=256)
+    question: str | None = Field(default=None, max_length=2000)
+    answer: str | None = Field(default=None, max_length=8000)
+    branch: Branch | None = None
+    kind: Kind | None = None
+    module: str | None = Field(default=None, max_length=64)
+    note: str | None = Field(default=None, max_length=1000, description="审核意见")
+
+
+class CandidateCounts(BaseModel):
+    mine: int = Field(description="AI 建议沉淀、等我（当前登录的人）确认的")
+    pending: int = Field(description="等审核的（不含我自己提交的）")
+    by_status: dict[str, int]
+
+
+class CardsOut(BaseModel):
+    """写入售后数字人的 BI 纠错卡（审核通过的，和通过后又停用的）。"""
+
+    cards: list[dict]
+    unsynced: int = Field(description="还没写入或有变化、待同步的张数")
+
+
+class CardsSyncedIn(BaseModel):
+    version: str = Field(min_length=1, max_length=64, description="写入的卡库文件版本")
+    card_ids: list[str]
+
+
+# ---------- 采纳统计 ----------
+
+
+class AdoptionRow(BaseModel):
+    operator: str = Field(description="处理人；AI 自动标记的为「AI」，早期没登录时没填名字的为「未填写」")
+    replied: int = Field(description="发出的回复（回复了客户消息的）")
+    exact: int
+    minor: int
+    major: int
+    unused: int
+    via_chat: int = Field(description="其中经 AI 对话润色的")
+    escalated: int = Field(description="转人工")
+    dismissed: int = Field(description="标为无需回复")
+    knowledge_submitted: int = Field(description="确认加入候选知识的")
+    knowledge_approved: int = Field(description="自己的回复整理成的知识审核通过的")
+    reviews: int = Field(description="审核过的候选知识")
+
+
+class AdoptionWeek(BaseModel):
+    week: str = Field(description="这周周一，YYYY-MM-DD（北京时间）")
+    total: AdoptionRow
+    people: list[AdoptionRow]
+
+
+class AdoptionStats(BaseModel):
+    weeks: list[AdoptionWeek] = Field(description="从近到远")

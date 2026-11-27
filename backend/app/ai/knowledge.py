@@ -31,6 +31,9 @@ KIND_LABELS = {
     "bug": "缺陷单",
     "sop": "处理规范",
     "wiki": "知识文章",
+    # 工作台自己的相似问答（app/ai/similar.py）
+    "workbench": "工作台知识",
+    "history": "历史回复",
 }
 # 知识库的产品前缀 → 适用分支
 BRANCHES = {"bi": "有数", "zs": "知数"}
@@ -60,6 +63,10 @@ class KnowledgeItem(BaseModel):
     snippet: str = ""
     content: str = ""
     cited: bool = False
+    # 相似问答才有：谁写的、哪个群、相似度
+    author: str | None = None
+    group_name: str | None = None
+    score: float | None = None
 
     @property
     def kind_label(self) -> str:
@@ -67,6 +74,11 @@ class KnowledgeItem(BaseModel):
 
     def to_prompt(self) -> str:
         head = f"[{self.ref}] {self.kind_label}｜{self.branch}"
+        if self.kind == "workbench":
+            return f"{head}｜技术支持已审核\n{self.content}"
+        if self.kind == "history":
+            where = f"在「{self.group_name}」" if self.group_name else ""
+            return f"[{self.ref}] 历史回复｜技术支持{self.author or ''}以前{where}发出，未经审核\n{self.content}"
         if self.kind == "card":
             head += "｜草稿，技术支持还没确认" if self.card_status == "draft" else "｜技术支持已确认"
         return f"{head}\n标题：{self.title}\n{self.content or self.snippet}"
@@ -82,6 +94,15 @@ def search_query(text: str) -> str | None:
     if len(core) < 4 or _SMALL_TALK.match(core):
         return None
     return q[:300]
+
+
+def skip_reason(text: str) -> str | None:
+    """不查售后数字人的原因；要查时返回 None。"""
+    if not settings.knowledge_mcp_url:
+        return "没配置售后数字人知识库"
+    if search_query(text) is None:
+        return "寒暄、确认类消息，没查知识库"
+    return None
 
 
 def _branch(prefix_source: str) -> str:

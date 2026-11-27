@@ -22,8 +22,13 @@ backend/
     api/messages.py  消息写入、查询、渠道回调入口
     ingest.py        消息入库统一入口（去重 + 触发 AI 建议）
     send_queue.py    自动发送队列（确认发送 → 电脑端发送程序领取 → 回报结果）、频率限制
-    ai/              AI 回复建议：llm.py 模型接口（可切换）、suggest.py 提示词、knowledge.py 查售后数字人知识、worker.py 后台生成
-    api/suggestions.py  AI 建议：采纳 / 修改 / 转人工 / 忽略 / 重新生成
+    ai/              AI 回复建议：llm.py 模型接口（可切换）、suggest.py 提示词、knowledge.py 查售后数字人知识、worker.py 后台生成；
+                     similar.py 相似历史问答（向量检索）、refine.py 和 AI 对话润色、reflow.py 采纳情况与回流判断
+    api/suggestions.py  AI 建议：采纳 / 修改 / 转人工 / 忽略 / 重新生成 / 改回待回复
+    api/assist.py    和 AI 对话润色回复
+    api/candidates.py   候选知识：确认 / 审核 / 停用，以及给同步脚本用的纠错卡
+    api/stats.py     AI 建议采纳情况（按人按周）
+    cards.py         审核通过的知识转成售后数字人的 BI 纠错卡
     api/conversations.py 会话：群列表、聊天记录、在会话里发文字 / 图片 / 文件
     api/attachments.py  图片、文件上传和下载（客户发来的也会下载保存）
     api/sending.py   自动发送：发送程序心跳 / 领取 / 回报，工作台重发 / 取消 / 改为手动
@@ -31,8 +36,10 @@ backend/
     routing.py       会话分流（群负责人 → 同组在线、手上会话最少的人 → 都不在线还给负责人）和可见范围
     channels/        各 IM 渠道适配器（wecom 已实现：会话内容存档；dingtalk / feishu 待实现）
   tests/
+scripts/sync_digital_human_cards.py  把审核通过的知识写进售后数字人的 BI 纠错卡库（在能 SSH 到数字人服务器的电脑上运行）
 windows-agent/       电脑端发送程序：在常开的 Windows 电脑上操作官方企业微信客户端发消息
-web/                 React 工作台（登录；会话：群列表 + 聊天记录 + AI 建议 + 输入框；团队设置：成员、群负责人；工单/知识库/积分排名占位）
+web/                 React 工作台（登录；会话：群列表 + 聊天记录 + AI 建议 + 和 AI 对话 + 输入框；知识库：候选知识确认和审核；
+                     采纳统计；团队设置：成员、群负责人；工单/积分排名占位）
 docker-compose.yml
 ```
 
@@ -85,7 +92,12 @@ docker-compose.yml
 - `POST /api/conversations/end`：结束会话（群里没回复的客户消息不再算待处理，没发出去的回复不再发送；客户再发消息时重新回到待处理），记录是谁结束的
 - `POST /api/messages/{id}/fetch-media`：重新下载客户发的图片或文件
 - `GET /api/inbox?view=todo|escalated|done|all&channel=`：按消息列出待处理（旧接口，工作台已不用）
-- `POST /api/suggestions/{id}/adopt|escalate|dismiss|regenerate`：处理 AI 建议
+- `POST /api/suggestions/{id}/adopt|escalate|dismiss|regenerate|reopen`：处理 AI 建议（reopen：把「无需回复」改回待回复）
+- `GET/POST /api/suggestions/{id}/chat`：和 AI 对话润色回复（技术支持说方案或要点，AI 写成发给客户的回复）
+- `GET /api/candidates?view=proposed|pending|approved|rejected|skipped`、`GET /api/candidates/counts`：候选知识
+- `POST /api/candidates/{id}/confirm|decline|approve|reject|retire`：确认加入候选知识 / 不用 / 审核通过 / 不通过 / 停用
+- `GET /api/digital-human/cards`、`POST /api/digital-human/cards/synced`：同步脚本取要写入售后数字人的纠错卡、回报写入结果
+- `GET /api/stats/adoption?weeks=8`：AI 建议采纳情况，按人按周
 - `GET /api/send/status`：自动发送程序是否在线
 - `POST /api/suggestions/{id}/adopt` 传 `send: true`：确认后交给发送程序自动发到群里
 - `POST /api/suggestions/{id}/resend|cancel-send|mark-manual-sent`：自动发送失败后重发、取消排队、标记已手动发送
@@ -171,6 +183,8 @@ npm run demo
 ## AI 回复建议
 
 新的客户消息入库后，后台结合同群最近 20 条聊天记录生成回复建议，给出「可直接回复 / 建议转人工」和把握程度。
+AI 同时判断这条消息需不需要回复：寒暄、致谢、确认收到、测试这类，不超过 `AUTO_DISMISS_MAX_CHARS` 个字且不带问号的，
+自动标成「AI 判断无需回复」，不算待处理，聊天记录里可以一键改回待回复；更长的只在建议上提示「AI 觉得可能不用回复」。
 模型可配置（`LLM_PROVIDER`）：
 
 - `claude`（默认）：Anthropic Claude，密钥放在 `ANTHROPIC_API_KEY`
@@ -184,11 +198,44 @@ npm run demo
 - 查什么：BI 纠错卡（技术支持对常答错问题的更正，覆盖度够才用）；产品手册、FAQ、历史工单按「限定手册、限定 FAQ、不限类型」三路检索，
   合并去重后取前 `KNOWLEDGE_TOP` 篇，前 `KNOWLEDGE_READ_FULL` 篇把全文带给模型，其余只带摘要。和知数里售后数字人技能的查法一致。
 - 每条标出适用分支（有数 / 知数）。`KNOWLEDGE_PRODUCT=bi` 查有数，检索服务会自动带上知数。
-- 模型在建议里列出实际依据的条目，工作台在建议下方显示「依据售后数字人知识 N 条」，可点开原文；纠错卡还是草稿的会标出来。
+- 模型在建议里列出实际依据的条目，工作台在建议下方显示「依据知识 N 条」，可点开原文；纠错卡还是草稿的会标出来。
 - 寒暄、确认类消息（好的、谢谢、收到）不查。检索服务连不上时照常生成建议，只是没有参考资料，并在建议下方提示原因。
+- 建议没有依据任何知识时（没查、没查到、查到的都不相关）在建议下方明确标出，提醒发送前核对。
 - 检索服务没有登录验证、返回内容含客户工单，只经本机隧道访问，不要对外开放。
 
-接入点在 `app/ai/suggest.py` 的 `retrieve_knowledge()`，检索逻辑在 `app/ai/knowledge.py`。以后可以在这里再加一路「相似的历史问答」。
+接入点在 `app/ai/suggest.py` 的 `retrieve_knowledge()`，检索逻辑在 `app/ai/knowledge.py`。
+
+### 相似历史问答
+
+配好 embedding 后，工作台把每条发出的回复（客户问题 + 技术支持实际发出的回复）存成向量（pgvector），
+生成建议时按客户消息查最相似的几条一起交给模型（`SIMILAR_QA_TOP`、相似度下限 `SIMILAR_QA_MIN_SCORE`）：
+
+- 工作台知识：候选知识审核通过的问答，提示词里编号 W1、W2，可信度和纠错卡相当。
+- 历史回复：技术支持以前发出的回复，未经审核，编号 H1、H2，只参考思路和口径，不照搬客户特有信息。
+
+寒暄、确认类消息不存也不查。向量模型连不上时照常生成建议，下次启动时补存这期间的回复。检索在 `app/ai/similar.py`。
+
+### 和 AI 对话润色
+
+AI 建议下方点「和 AI 对话」，技术支持说自己的方案、要点或修改意见，AI 写成可以直接发给客户的回复，可以多轮改；
+满意后点「填入输入框」，走原来的确认发送。对话只有技术支持能看到，记在 `suggestion_chats` 表。
+
+### 采纳情况和回流（知识自迭代）
+
+回复发出时，工作台把实际发出的内容和 AI 原建议比较，记为原样采纳 / 小改 / 大改 / 未用，以及是否经 AI 对话润色，
+「采纳统计」页按人按周看（以后积分排名也用这些数据）。技术支持自己打字回复时，输入框自动关联正在处理的客户消息，发出后记为已回复。
+
+没有原样采纳的回复（改过 AI 建议、经对话润色、自己写的），由 AI 判断是不是通用问题：闲聊、只针对这个客户的个案、
+只改了语气称呼的不沉淀。是通用问题就整理成通用问答（问题、通用答案、适用分支、类型），流程是：
+
+1. 回复的人在会话里（或「知识库 → 待我确认」）确认加入候选知识，可以先改；
+2. 其他技术支持在「知识库 → 待审核」对照客户实际收到的原话审核，不能审核自己回复或提交的；
+3. 审核通过后，工作台生成建议时马上能用上；有数和通用的知识转成售后数字人的 BI 纠错卡（编号 `bi-verified-wb-` 开头，
+   状态 confirmed，审核人即工作台审核人），由 `scripts/sync_digital_human_cards.py` 写进数字人自建实例的卡库。
+   知数的结论卡暂不支持，只在工作台里用。通过后发现答案有误可以停用，同步后数字人那边的卡也停用。
+
+同步脚本读服务器上数字人正在用的卡库，替换其中工作台的卡片、其他卡片原样保留，存成新版本上传，数字人自动重新加载。
+数字人那边以后发布了更高版本的卡库，再运行一次脚本即可把工作台的卡合进去。服务器和目录配在 `backend/.env`（见 `.env.example`）。
 
 ### 知识库向量模型（embedding）
 
@@ -207,6 +254,7 @@ npm run demo
 - [x] 企业微信自动发送原型（电脑端发送程序操作客户端；发文字、图片、文件已在一台真机上测通，和工作台的整条流程待联调）
 - [ ] 转技术支持协助
 - [x] 回复建议参考售后数字人的知识（纠错卡、手册、FAQ、工单），并标出引用
-- [ ] 知识库沉淀与自迭代（技术支持的答案经 BI 纠错卡回写到售后数字人）
+- [x] 知识库沉淀与自迭代：AI 判断通用问题 → 回复的人确认 → 工作台审核 → 工作台马上用上，经 BI 纠错卡写入售后数字人
+- [x] 和 AI 对话润色回复、AI 判断无需回复、相似历史问答、采纳情况统计
 - [ ] 内部工单
 - [ ] 技术支持积分排名

@@ -6,7 +6,9 @@ from datetime import datetime, timezone
 
 from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Index, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.types import TypeDecorator
 
+from app.config import settings
 from app.db import Base
 
 
@@ -126,6 +128,14 @@ class Suggestion(Base):
         JSON, comment="生成时从售后数字人查到的参考知识（不含全文），cited 标出建议实际引用的"
     )
     knowledge_error: Mapped[str | None] = mapped_column(Text, comment="知识库没查成的原因")
+    knowledge_note: Mapped[str | None] = mapped_column(Text, comment="没查知识库的原因（寒暄、没配置、没查到）")
+    needs_reply: Mapped[bool | None] = mapped_column(Boolean, comment="AI 判断这条消息是否需要回复")
+    auto_dismissed: Mapped[bool] = mapped_column(Boolean, default=False, comment="AI 判为无需回复、自动标记的")
+    reopened_by: Mapped[str | None] = mapped_column(String(64), comment="把 AI 自动标记的无需回复改回待回复的人")
+    # 采纳情况：实际发出的回复和 AI 原建议比，exact 原样采纳 / minor 小改 / major 大改 / unused 未用
+    adoption: Mapped[str | None] = mapped_column(String(16), index=True)
+    adoption_score: Mapped[float | None] = mapped_column(comment="实际回复和 AI 原建议的相似度，0～1")
+    via_chat: Mapped[bool] = mapped_column(Boolean, default=False, comment="回复是和 AI 对话润色出来的")
 
     final_content: Mapped[str | None] = mapped_column(Text, comment="实际发出的回复")
     delivery: Mapped[str | None] = mapped_column(String(16), comment="manual：复制后人工发送；agent：由电脑端发送程序自动发送")
@@ -139,6 +149,8 @@ class Suggestion(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+    candidate: Mapped["KnowledgeCandidate | None"] = relationship(lazy="selectin", viewonly=True, uselist=False)
 
 
 class SendTask(Base):
@@ -295,3 +307,120 @@ class SyncCursor(Base):
     value: Mapped[str] = mapped_column(String(128))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
+
+
+# ---------- 和 AI 对话、回流、相似问答 ----------
+
+
+class SuggestionChat(Base):
+    """技术支持和 AI 的对话：客服说自己的方案或要点，AI 写成可以发给客户的回复。只给技术支持看。"""
+
+    __tablename__ = "suggestion_chats"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    suggestion_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("suggestions.id", ondelete="CASCADE"), index=True)
+    role: Mapped[str] = mapped_column(String(8), comment="staff：技术支持；ai：AI 写的回复")
+    content: Mapped[str] = mapped_column(Text)
+    note: Mapped[str | None] = mapped_column(Text, comment="AI 给技术支持的一句说明（不发给客户）")
+    operator: Mapped[str | None] = mapped_column(String(64))
+    model: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class CandidateStatus(str, enum.Enum):
+    PROPOSED = "proposed"  # AI 判断是通用问题，等回复的人确认
+    PENDING = "pending"  # 已确认加入候选知识，等审核
+    APPROVED = "approved"  # 审核通过：工作台生成建议时会用，并写入售后数字人
+    REJECTED = "rejected"  # 审核不通过
+    RETIRED = "retired"  # 通过后又停用
+    DECLINED = "declined"  # 回复的人觉得不用沉淀
+    NOT_GENERAL = "not_general"  # AI 判断不是通用问题（闲聊、个案），可以改为收录
+
+
+class KnowledgeCandidate(Base):
+    """候选知识：技术支持改过 AI 建议后发出的问答，AI 整理成通用的问答对，审核通过才写入。"""
+
+    __tablename__ = "knowledge_candidates"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    suggestion_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("suggestions.id", ondelete="CASCADE"), unique=True)
+    status: Mapped[CandidateStatus] = mapped_column(
+        Enum(CandidateStatus, native_enum=False, length=16), default=CandidateStatus.PROPOSED, index=True
+    )
+    # AI 整理后的通用问答，确认和审核时可以改
+    title: Mapped[str] = mapped_column(String(256), default="")
+    question: Mapped[str] = mapped_column(Text, default="")
+    answer: Mapped[str] = mapped_column(Text, default="")
+    branch: Mapped[str] = mapped_column(String(8), default="通用", comment="适用分支：有数 / 知数 / 通用")
+    kind: Mapped[str] = mapped_column(String(16), default="how_to", comment="how_to / fact / troubleshoot / not_supported")
+    module: Mapped[str] = mapped_column(String(64), default="")
+    reason: Mapped[str | None] = mapped_column(Text, comment="AI 判断是否通用的依据")
+    # 原始材料（审核时对照看）
+    customer_question: Mapped[str] = mapped_column(Text, default="", comment="客户原话")
+    customer_reply: Mapped[str] = mapped_column(Text, default="", comment="客户实际收到的回复")
+    ai_suggestion: Mapped[str | None] = mapped_column(Text, comment="AI 原建议")
+    group_name: Mapped[str | None] = mapped_column(String(256))
+    # 经手的人
+    author: Mapped[str | None] = mapped_column(String(64), comment="回复客户的人")
+    confirmed_by: Mapped[str | None] = mapped_column(String(64), comment="确认加入候选知识的人")
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reviewer: Mapped[str | None] = mapped_column(String(64))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    review_note: Mapped[str | None] = mapped_column(Text)
+    updated_by: Mapped[str | None] = mapped_column(String(64), comment="最后改问答内容的人")
+    # 写入售后数字人（BI 纠错卡）；知数暂不支持写入，只在工作台用
+    card_id: Mapped[str | None] = mapped_column(String(128))
+    synced_version: Mapped[str | None] = mapped_column(String(64), comment="已写入的卡库版本")
+    synced_status: Mapped[str | None] = mapped_column(String(16), comment="写入时卡片的状态：confirmed / retired")
+    synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class Embedding(TypeDecorator):
+    """向量：PostgreSQL 用 pgvector，其他数据库（测试用的 SQLite）存成 JSON 列表。"""
+
+    impl = JSON
+    cache_ok = True
+
+    def __init__(self, dim: int):
+        super().__init__()
+        self.dim = dim
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "postgresql":
+            from pgvector.sqlalchemy import Vector
+
+            return dialect.type_descriptor(Vector(self.dim))
+        return dialect.type_descriptor(JSON())
+
+    def process_bind_param(self, value, dialect):
+        return None if value is None else [float(x) for x in value]
+
+    def process_result_value(self, value, dialect):
+        return None if value is None else [float(x) for x in value]
+
+
+class QaEntry(Base):
+    """相似问答检索用的一条问答：技术支持发出过的回复（reply），或审核通过的工作台知识（knowledge）。"""
+
+    __tablename__ = "qa_entries"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    source: Mapped[str] = mapped_column(String(16), index=True, comment="reply / knowledge")
+    suggestion_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("suggestions.id", ondelete="CASCADE"), unique=True, comment="reply：哪条建议的回复"
+    )
+    message_id: Mapped[uuid.UUID | None] = mapped_column(comment="reply：回复的客户消息")
+    candidate_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("knowledge_candidates.id", ondelete="CASCADE"), unique=True, comment="knowledge：哪条工作台知识"
+    )
+    question: Mapped[str] = mapped_column(Text)
+    answer: Mapped[str] = mapped_column(Text)
+    branch: Mapped[str | None] = mapped_column(String(8))
+    group_name: Mapped[str | None] = mapped_column(String(256))
+    author: Mapped[str | None] = mapped_column(String(64))
+    embedding: Mapped[list | None] = mapped_column(Embedding(settings.embedding_dim))
+    model: Mapped[str | None] = mapped_column(String(64), comment="生成向量的模型，换模型后要重建")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

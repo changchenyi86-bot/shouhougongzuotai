@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AUTH_REQUIRED, fetchAuthState, fetchMe, fetchSendState, type SendState, type Staff } from "./api";
+import { AUTH_REQUIRED, fetchAuthState, fetchCandidateCounts, fetchMe, fetchSendState, type SendState, type Staff } from "./api";
 import Conversations from "./Conversations";
+import KnowledgePage from "./KnowledgePage";
 import Login, { Logo } from "./Login";
+import StatsPage from "./StatsPage";
 import TeamSettings from "./TeamSettings";
 import { applyTheme, loadTheme, saveTheme, THEMES, type Theme } from "./theme";
 import UserMenu from "./UserMenu";
@@ -11,13 +13,20 @@ const ICONS: Record<string, string> = {
   会话: "M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.5 4v-4h0A1.5 1.5 0 0 1 4 14.5z",
   工单: "M7 3h10a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM9 8h6M9 12h6M9 16h3",
   知识库: "M4 5a2 2 0 0 1 2-2h5v18H6a2 2 0 0 1-2-2zM13 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5z",
+  采纳统计: "M4 19h16M7 16v-4M12 16V8M17 16v-6",
   积分排名: "M5 20V11M12 20V5M19 20v-6",
   团队设置:
     "M16 19v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 17.5V19M10 10.5a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM20 19v-1.5a3.5 3.5 0 0 0-2.5-3.35M15.5 4.6a3 3 0 0 1 0 5.8",
 };
 
-type Page = "会话" | "团队设置";
-const SOON = ["工单", "知识库", "积分排名"];
+type Page = "会话" | "知识库" | "采纳统计" | "团队设置";
+const PAGES: Page[] = ["会话", "知识库", "采纳统计", "团队设置"];
+const SOON = ["工单", "积分排名"];
+const HASH: Record<Page, string> = { 会话: "", 知识库: "#knowledge", 采纳统计: "#stats", 团队设置: "#team" };
+
+function pageFromHash(): Page {
+  return PAGES.find((p) => HASH[p] && HASH[p] === location.hash) ?? "会话";
+}
 
 function Icon({ d }: { d: string }) {
   return (
@@ -30,7 +39,8 @@ function Icon({ d }: { d: string }) {
 export default function App() {
   const [auth, setAuth] = useState<"loading" | "login" | "setup" | "in">("loading");
   const [me, setMe] = useState<Staff | null>(null);
-  const [page, setPage] = useState<Page>("会话");
+  const [page, setPageState] = useState<Page>(pageFromHash);
+  const [knowledgeBadge, setKnowledgeBadge] = useState(0);
   const [theme, setTheme] = useState<Theme>(loadTheme);
   const [toast, setToast] = useState<string | null>(null);
   const [sendState, setSendState] = useState<SendState | null>(null);
@@ -40,6 +50,12 @@ export default function App() {
     setToast(text);
     clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(null), 3000);
+  }, []);
+
+  // 刷新页面时停在原来的页面
+  const setPage = useCallback((p: Page) => {
+    setPageState(p);
+    history.replaceState(null, "", HASH[p] || location.pathname + location.search);
   }, []);
 
   const signedIn = (m: Staff) => {
@@ -76,6 +92,20 @@ export default function App() {
     return () => clearInterval(t);
   }, [auth]);
 
+  // 知识库角标：AI 建议沉淀、等我确认的 + 等我审核的
+  const loadCounts = useCallback(() => {
+    fetchCandidateCounts()
+      .then((c) => setKnowledgeBadge(c.mine + c.pending))
+      .catch(() => setKnowledgeBadge(0));
+  }, []);
+
+  useEffect(() => {
+    if (auth !== "in") return;
+    loadCounts();
+    const timer = setInterval(loadCounts, 30_000);
+    return () => clearInterval(timer);
+  }, [auth, loadCounts]);
+
   const loadSendState = useCallback(() => {
     fetchSendState()
       .then(setSendState)
@@ -108,10 +138,18 @@ export default function App() {
           <span className="brand">售后工作台</span>
         </h1>
         <nav>
-          <a className={current === "会话" ? "active" : ""} onClick={() => setPage("会话")}>
-            <Icon d={ICONS["会话"]} />
-            <span>会话</span>
-          </a>
+          {(["会话", "知识库", "采纳统计"] as Page[]).map((p) => (
+            <a key={p} href={HASH[p] || "#"} className={current === p ? "active" : ""} onClick={(e) => {
+              e.preventDefault();
+              setPage(p);
+            }}>
+              <Icon d={ICONS[p]} />
+              <span>{p}</span>
+              {p === "知识库" && knowledgeBadge > 0 && (
+                <small className="nav-badge" title="等你确认或审核的候选知识">{knowledgeBadge}</small>
+              )}
+            </a>
+          ))}
           {SOON.map((label) => (
             <a key={label} className="disabled" title="即将上线">
               <Icon d={ICONS[label]} />
@@ -154,11 +192,19 @@ export default function App() {
             />
           </div>
         </header>
-        {current === "会话" ? (
-          <Conversations me={me} canAutoSend={(c) => c === "wecom" && !!sendState?.ready} notify={notify} />
-        ) : (
-          <TeamSettings me={me} notify={notify} />
-        )}
+        {/* 会话页切走时保留（选中的群、正在写的回复都还在） */}
+        <div className={`page ${current === "会话" ? "" : "hidden"}`}>
+          <Conversations
+            me={me}
+            canAutoSend={(c) => c === "wecom" && !!sendState?.ready}
+            notify={notify}
+            onOpenKnowledge={() => setPage("知识库")}
+            onKnowledgeChanged={loadCounts}
+          />
+        </div>
+        {current === "知识库" && <KnowledgePage me={me.name} notify={notify} onCountsChanged={loadCounts} />}
+        {current === "采纳统计" && <StatsPage />}
+        {current === "团队设置" && <TeamSettings me={me} notify={notify} />}
       </main>
       {toast && <div className="toast">{toast}</div>}
     </div>

@@ -40,6 +40,19 @@ class Settings(BaseSettings):
     embedding_api_key: str = ""  # 接口不需要鉴权时留空
     embedding_model: str = ""
     embedding_dim: int = 1024  # 向量维度，pgvector 列按这个长度建；换模型后维度变了要重建向量
+    embedding_timeout: float = 10
+
+    # ---- 相似历史问答（工作台自己的向量检索：技术支持发出过的回复、审核通过的工作台知识） ----
+    similar_qa_top: int = 3  # 两类各最多带几条给模型
+    # 相似度下限（余弦）。bge-m3 实测同义问法 0.67～0.92、无关句 0.42～0.46；上线后用真实问答再校准
+    similar_qa_min_score: float = 0.72
+
+    # ---- 回复发出后的回流：AI 判断是否通用问题，客服确认后进候选知识，审核通过才写入 ----
+    reflow_enabled: bool = True
+    # 同步脚本（scripts/sync_digital_human_cards.py）取纠错卡用的口令，留空表示不能同步
+    cards_sync_token: str = ""
+    # 自动判为「无需回复」的消息最长多少字（去掉标点、@ 后），更长的只提示、不自动标记，避免漏回客户
+    auto_dismiss_max_chars: int = 40
 
     # ---- 企业微信 会话内容存档 ----
     wecom_corp_id: str = ""

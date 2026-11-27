@@ -1,8 +1,10 @@
 """后台生成回复建议：入库后立即返回，建议在线程池里生成。"""
 
 import logging
+import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 from app import db
 from app.config import settings
@@ -64,15 +66,30 @@ def run(message_id: uuid.UUID) -> None:
             return
         if result is None:
             sug.status, sug.error = SuggestionStatus.FAILED, error
-            sug.knowledge = sug.knowledge_error = None
+            sug.knowledge = sug.knowledge_error = sug.knowledge_note = None
         else:
             draft = result.draft
             sug.status = SuggestionStatus.READY
             sug.content, sug.can_answer = draft.reply, draft.can_answer
             sug.confidence, sug.reason, sug.model = draft.confidence, draft.reason, result.model
             sug.knowledge = [k.to_record() for k in result.knowledge]
-            sug.knowledge_error = result.knowledge_error
+            sug.knowledge_error, sug.knowledge_note = result.knowledge_error, result.knowledge_note
+            sug.needs_reply = draft.needs_reply
+            if not draft.needs_reply and auto_dismissable(message.content) and not sug.reopened_by:
+                # AI 判断无需回复（寒暄、致谢、测试）：直接标记，不算待处理；工作台上可以改回待回复
+                sug.status, sug.auto_dismissed = SuggestionStatus.DISMISSED, True
+                sug.handled_by, sug.handled_at = None, datetime.now(timezone.utc)
         session.commit()
+
+
+_STRIP = re.compile(r"@\S+|[\W_]+")
+
+
+def auto_dismissable(text: str) -> bool:
+    """AI 判为无需回复时，只有短、不带问号的消息才自动标记；其余只提示，避免漏回客户的问题。"""
+    if "?" in text or "？" in text:
+        return False
+    return len(_STRIP.sub("", text or "")) <= settings.auto_dismiss_max_chars
 
 
 def shutdown() -> None:
