@@ -398,9 +398,7 @@ export default function Composer(props: Props) {
                     className={sendKey === k.key ? "on" : ""}
                     onClick={() => pickSendKey(k.key)}
                   >
-                    <span className="check" aria-hidden="true">{sendKey === k.key ? "✓" : ""}</span>
-                    <span>{k.label}</span>
-                    <small>{k.hint}</small>
+                    {k.label}
                   </button>
                 ))}
               </div>

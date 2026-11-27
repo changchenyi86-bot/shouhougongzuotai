@@ -822,7 +822,7 @@ button.chip-status { cursor: pointer; font: inherit; font-size: 12px; }
   position: absolute;
   right: 0;
   bottom: calc(100% + 6px);
-  min-width: 260px;
+  min-width: 180px;
   padding: 4px;
   background: var(--panel);
   border: 1px solid var(--border);
@@ -831,22 +831,21 @@ button.chip-status { cursor: pointer; font: inherit; font-size: 12px; }
   z-index: 10;
 }
 .composer-bar .send-menu button {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
+  display: block;
   width: 100%;
   height: auto;
-  padding: 7px 10px 7px 6px;
+  padding: 7px 12px;
   border: 0;
   border-radius: 5px;
   background: none;
   text-align: left;
+  font-size: 13.5px;
   font-weight: 400;
 }
+.composer-bar .send-menu button + button { margin-top: 2px; }
 .composer-bar .send-menu button:hover:not(:disabled) { background: var(--hover); }
-.composer-bar .send-menu button.on { color: var(--accent-text); font-weight: 500; }
-.send-menu .check { width: 16px; flex: none; text-align: center; color: var(--accent-text); font-weight: 600; }
-.send-menu small { margin-left: auto; padding-left: 12px; color: var(--text-3); font-size: 12px; font-weight: 400; }
+.composer-bar .send-menu button.on,
+.composer-bar .send-menu button.on:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent-text); }
 
 /* 旧版收件箱卡片（保留样式，以防别处仍在使用） */
 .sug { margin-top: 12px; padding: 12px; border-radius: var(--radius); background: var(--accent-soft); border: 1px solid var(--ai-border); }

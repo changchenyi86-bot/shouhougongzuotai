@@ -6,9 +6,9 @@ const IS_MAC = /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.user
 /** Mac 上是 Command，Windows 上是 Ctrl。 */
 export const MOD = IS_MAC ? "Command" : "Ctrl";
 
-export const SEND_KEYS: { key: SendKey; label: string; hint: string }[] = [
-  { key: "enter", label: "按 Enter 发送", hint: "Shift+Enter 换行" },
-  { key: "mod-enter", label: `按 ${MOD}+Enter 发送`, hint: "Enter 换行" },
+export const SEND_KEYS: { key: SendKey; label: string }[] = [
+  { key: "enter", label: "Enter 键发送" },
+  { key: "mod-enter", label: `${MOD}+Enter 键发送` },
 ];
 
 const KEY = "sendKey";
