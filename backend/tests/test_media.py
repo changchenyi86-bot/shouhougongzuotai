@@ -304,3 +304,23 @@ def test_download_and_suggestion_survive_extract_errors(client, monkeypatch, mod
             assert snapshot(mid).status.value == 'ready'
     finally:
         set_syncer(None)
+
+
+def test_wait_running_out_keeps_pending_and_retries_in_background(monkeypatch):
+    """生成建议等不及（等待时间用完）不能把图片永久标成失败，要交给后台不限时再识别。"""
+    from app.ai import worker
+
+    submitted = []
+    monkeypatch.setattr(worker, 'submit', lambda fn, *args: submitted.append((fn, args)))
+    mock_vision(monkeypatch, success)
+    with db.SessionLocal() as session:
+        att = save(session, image_bytes())
+        att.extract_status = 'pending'
+        session.commit()
+        media.extract(session, att, timeout=0)
+        assert att.extract_status == 'pending' and att.extract_error is None
+        assert submitted == [(media.run, (att.id,))]
+        fn, args = submitted[0]
+        fn(*args)
+        session.refresh(att)
+        assert att.extract_status == 'done' and att.extracted_text

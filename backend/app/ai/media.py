@@ -180,6 +180,7 @@ def extract(session, attachment: Attachment, timeout: float | None = None, force
     """识别并提交，已完成的附件不会重复处理；任何异常都不向调用方传播。"""
     try:
         deadline = time.monotonic() + timeout if timeout is not None else None
+        retry = False
         attachment_id = attachment.id
         lock = _lock(attachment_id)
         acquired = lock.acquire() if timeout is None else lock.acquire(timeout=max(0, timeout))
@@ -201,13 +202,23 @@ def extract(session, attachment: Attachment, timeout: float | None = None, force
                 attachment.extract_status, attachment.extract_error = 'skipped', str(exc)[:500]
                 attachment.extracted_text, attachment.extract_model = None, None
             except Exception as exc:
-                log.warning('附件识别失败 attachment=%s: %s', attachment_id, exc)
-                attachment.extract_status, attachment.extract_error = 'failed', f'{type(exc).__name__}: {str(exc)[:500]}'
-                attachment.extracted_text, attachment.extract_model = None, None
-            attachment.extracted_at = datetime.now(timezone.utc)
+                if deadline is not None and time.monotonic() >= deadline:
+                    # 只是调用方（生成建议）等不及了，不算识别失败：保持待识别，交给后台不限时再识别一次
+                    log.info('附件识别未在等待时间内完成，转后台继续 attachment=%s: %s', attachment_id, exc)
+                    retry = True
+                else:
+                    log.warning('附件识别失败 attachment=%s: %s', attachment_id, exc)
+                    attachment.extract_status, attachment.extract_error = 'failed', f'{type(exc).__name__}: {str(exc)[:500]}'
+                    attachment.extracted_text, attachment.extract_model = None, None
+            if not retry:
+                attachment.extracted_at = datetime.now(timezone.utc)
             session.commit()
         finally:
             lock.release()
+        if retry:
+            from app.ai import worker
+
+            worker.submit(run, attachment_id)
     except Exception:
         log.exception('保存附件识别结果失败')
         try:
