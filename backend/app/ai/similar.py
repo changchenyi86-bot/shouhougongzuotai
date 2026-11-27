@@ -106,8 +106,12 @@ def _nearest(session: Session, vector: list[float], source: str, exclude: set[uu
     return out
 
 
-def search(session: Session, question: str, exclude_messages: set[uuid.UUID] | None = None) -> list[KnowledgeItem]:
-    """按客户消息查相似的工作台知识和历史回复。没配置 embedding 或不需要查时返回空，失败抛 EmbeddingError。"""
+def search(session: Session, question: str, exclude_messages: set[uuid.UUID] | None = None,
+           exclude_same_question: bool = False) -> list[KnowledgeItem]:
+    """按客户消息查相似的工作台知识和历史回复。没配置 embedding 或不需要查时返回空，失败抛 EmbeddingError。
+
+    exclude_same_question：评测时用，题目取自真实群消息，问题原文一字不差的那条回复就是答案，不能给模型看。
+    """
     if search_query(question) is None:
         return []
     vectors = _embed([question])
@@ -120,6 +124,10 @@ def search(session: Session, question: str, exclude_messages: set[uuid.UUID] | N
     distilled = set(session.scalars(select(KnowledgeCandidate.suggestion_id).where(
         KnowledgeCandidate.id.in_([e.candidate_id for e, _ in knowledge]))))
     replies = _nearest(session, vectors[0], "reply", exclude, top, floor, distilled)
+    if exclude_same_question:
+        same = question.strip()
+        knowledge = [(e, x) for e, x in knowledge if e.question.strip() != same]
+        replies = [(e, x) for e, x in replies if e.question.strip() != same]
     items: list[KnowledgeItem] = []
     for found, kind, prefix in ((knowledge, "workbench", "W"), (replies, "history", "H")):
         for i, (e, score) in enumerate(found, 1):

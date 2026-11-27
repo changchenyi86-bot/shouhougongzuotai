@@ -7,8 +7,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import auth, db, routing
-from app.ai import similar, worker
-from app.api import assist, attachments, candidates, conversations, messages, sending, staff, stats, suggestions
+from app.ai import evaluate, similar, worker
+from app.api import (assist, attachments, candidates, conversations, evaluation, messages, sending, staff, stats,
+                     suggestions)
 from app.channels.wecom import router as wecom_router
 from app.channels.wecom.archive import get_syncer
 from app.config import settings
@@ -43,6 +44,7 @@ async def lifespan(_: FastAPI):
     # 重启前没生成完的建议重新生成；接入 embedding 之前、或隧道断开期间发出的回复，补存相似问答向量
     worker.resume_pending()
     worker.submit(similar.backfill)
+    evaluate.resume()  # 重启前没跑完的评测接着跑
     poller = None
     if settings.wecom_archive_enabled and settings.wecom_archive_poll_interval > 0:
         poller = asyncio.create_task(_poll_wecom_archive())
@@ -52,6 +54,7 @@ async def lifespan(_: FastAPI):
         with contextlib.suppress(asyncio.CancelledError):
             await poller
     worker.shutdown()
+    evaluate.shutdown()
 
 
 app = FastAPI(title="售后技术支持工作台", version="0.1.0", lifespan=lifespan)
@@ -73,6 +76,7 @@ app.include_router(assist.router)
 app.include_router(candidates.router)
 app.include_router(candidates.sync_router)
 app.include_router(stats.router)
+app.include_router(evaluation.router)
 app.include_router(sending.agent_router)
 
 

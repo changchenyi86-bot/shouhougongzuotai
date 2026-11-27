@@ -424,3 +424,73 @@ class QaEntry(Base):
     embedding: Mapped[list | None] = mapped_column(Embedding(settings.embedding_dim))
     model: Mapped[str | None] = mapped_column(String(64), comment="生成向量的模型，换模型后要重建")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+# ---- 回复建议评测：一批固定的题，后台直接跑生成建议的流程再打分，不发到任何群 ----
+
+
+class EvalCase(Base):
+    """评测题。题库从评测集文件导入（不进代码仓库：内容来自客户问题，虽已脱敏），按题库名（如 v1）分开。"""
+
+    __tablename__ = "eval_cases"
+    __table_args__ = (UniqueConstraint("set_name", "code"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    set_name: Mapped[str] = mapped_column(String(32), index=True, comment="题库名，如 v1")
+    code: Mapped[str] = mapped_column(String(32), comment="题目编号，如 EV-001")
+    kind: Mapped[str] = mapped_column(String(16), comment="题型：确认答对 / 多人问过 / 确认答错 / 被追问纠正 / 数字人自认没覆盖 / 工作台真实群 / 是否需要回复")
+    area: Mapped[str] = mapped_column(String(16), comment="分块：BI+知数 / 数据中台 / 通用，分数按块分开算")
+    branch: Mapped[str] = mapped_column(String(8), default="", comment="有数 / 知数 / 数据中台 / 通用")
+    question: Mapped[str] = mapped_column(Text)
+    context: Mapped[str] = mapped_column(Text, default="", comment="提问前的几条群聊记录，每行「客户：…」或「技术支持：…」")
+    expected: Mapped[str] = mapped_column(Text, default="", comment="期望答案要点")
+    must_not: Mapped[str] = mapped_column(Text, default="", comment="不应出现的说法")
+    reference: Mapped[str] = mapped_column(Text, default="", comment="数字人当时的回答节选，期望要点为空时作参照")
+    expected_keys: Mapped[list | None] = mapped_column(JSON, comment="依据文档或纠错卡的编号，检索查到其一即算查到")
+    expect_reply: Mapped[bool | None] = mapped_column(Boolean, comment="是否需要回复题：期望的判断")
+    data: Mapped[dict | None] = mapped_column(JSON, comment="导入时的整条记录（来源、依据链接等），页面上展示用")
+    sort: Mapped[int] = mapped_column(default=0)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, comment="重新导入时文件里没有了的题停用")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class EvalRun(Base):
+    """一轮评测。后台重启时没跑完的会接着跑。"""
+
+    __tablename__ = "eval_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    set_name: Mapped[str] = mapped_column(String(32))
+    areas: Mapped[list | None] = mapped_column(JSON, comment="只跑哪几块，空表示全部")
+    status: Mapped[str] = mapped_column(String(16), default="running", comment="running / stopping / stopped / done")
+    total: Mapped[int] = mapped_column(default=0)
+    started_by: Mapped[str | None] = mapped_column(String(64))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    model: Mapped[str | None] = mapped_column(String(64), comment="生成建议用的模型")
+    note: Mapped[str | None] = mapped_column(Text, comment="这一轮改了什么，方便以后对比")
+
+
+class EvalResult(Base):
+    """一道题在一轮评测里的结果。"""
+
+    __tablename__ = "eval_results"
+    __table_args__ = (UniqueConstraint("run_id", "case_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("eval_runs.id", ondelete="CASCADE"), index=True)
+    case_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("eval_cases.id", ondelete="CASCADE"))
+    error: Mapped[str | None] = mapped_column(Text, comment="建议没生成出来的原因")
+    reply: Mapped[str | None] = mapped_column(Text)
+    can_answer: Mapped[bool | None] = mapped_column(Boolean)
+    confidence: Mapped[str | None] = mapped_column(String(16))
+    needs_reply: Mapped[bool | None] = mapped_column(Boolean)
+    reason: Mapped[str | None] = mapped_column(Text)
+    knowledge: Mapped[list | None] = mapped_column(JSON, comment="查到的参考知识（同建议上的记录格式）")
+    knowledge_error: Mapped[str | None] = mapped_column(Text)
+    retrieval_rank: Mapped[int | None] = mapped_column(comment="依据文档排在查到的第几条；没查到为空")
+    verdict: Mapped[str | None] = mapped_column(String(16), comment="对 / 部分对 / 错 / 没答上；是否需要回复题为 判断对 / 判断错")
+    verdict_reason: Mapped[str | None] = mapped_column(Text)
+    passed: Mapped[bool | None] = mapped_column(Boolean)
+    seconds: Mapped[float | None] = mapped_column()
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

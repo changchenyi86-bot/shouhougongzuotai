@@ -457,3 +457,102 @@ export interface AdoptionWeek {
   people: AdoptionRow[];
 }
 export const fetchAdoptionStats = (weeks = 8) => call<{ weeks: AdoptionWeek[] }>(`/api/stats/adoption?weeks=${weeks}`);
+
+// ---------- 回复建议评测 ----------
+
+/** 分块：分数按块分开算，数据中台的知识还没接进售后数字人时单独看 */
+export type EvalArea = "BI+知数" | "数据中台" | "通用";
+export const EVAL_AREAS: EvalArea[] = ["BI+知数", "数据中台", "通用"];
+
+export interface EvalSet {
+  name: string;
+  total: number;
+  areas: Partial<Record<EvalArea, number>>;
+  kinds: Record<string, number>;
+  updated_at: string | null;
+}
+
+export interface EvalBucket {
+  area: EvalArea;
+  kind: string | null;
+  total: number;
+  done: number;
+  passed: number;
+  errors: number;
+  /** 打分没成功的 */
+  unjudged: number;
+  /** 带依据文档的题数、检索查到依据的题数 */
+  retrieval_total: number;
+  retrieval_hit: number;
+  /** 对 / 部分对 / 错 / 没答上；是否需要回复题为 判断对 / 判断错 */
+  verdicts: Record<string, number>;
+}
+
+export type EvalStatus = "running" | "stopping" | "stopped" | "done";
+
+export interface EvalRun {
+  id: string;
+  set_name: string;
+  areas: EvalArea[] | null;
+  status: EvalStatus;
+  total: number;
+  done: number;
+  started_by: string | null;
+  started_at: string;
+  finished_at: string | null;
+  model: string | null;
+  note: string | null;
+  summary: EvalBucket[];
+}
+
+export interface EvalRunDetail extends EvalRun {
+  kinds: EvalBucket[];
+  previous: { run_id: string; started_at: string; summary: EvalBucket[]; better: number; worse: number } | null;
+}
+
+export interface EvalResult {
+  case_id: string;
+  code: string;
+  kind: string;
+  area: EvalArea;
+  branch: string;
+  question: string;
+  context: string;
+  expected: string;
+  must_not: string;
+  reference: string;
+  expect_reply: boolean | null;
+  data: { source?: string; signal?: string; basis?: string[]; alt_questions?: string[]; audience?: string; card?: string } | null;
+  done: boolean;
+  error: string | null;
+  reply: string | null;
+  can_answer: boolean | null;
+  confidence: string | null;
+  needs_reply: boolean | null;
+  reason: string | null;
+  knowledge: KnowledgeRef[] | null;
+  knowledge_error: string | null;
+  retrieval_rank: number | null;
+  has_expected_docs: boolean;
+  verdict: string | null;
+  verdict_reason: string | null;
+  passed: boolean | null;
+  previous_passed: boolean | null;
+  seconds: number | null;
+}
+
+export const fetchEvalSets = () => call<EvalSet[]>("/api/eval/sets");
+export const fetchEvalRuns = () => call<EvalRun[]>("/api/eval/runs");
+export const fetchEvalRun = (id: string) => call<EvalRunDetail>(`/api/eval/runs/${id}`);
+export const fetchEvalResults = (id: string) => call<EvalResult[]>(`/api/eval/runs/${id}/results`);
+export const startEval = (set_name: string, areas: EvalArea[] | null, note: string) =>
+  post<EvalRun>("/api/eval/runs", { set_name, areas, note: note || null });
+export const stopEval = (id: string) => post<EvalRun>(`/api/eval/runs/${id}/stop`);
+
+export async function importEvalSet(name: string, file: File) {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`/api/eval/sets/${encodeURIComponent(name)}/import`, { method: "POST", body: form });
+  if (!res.ok) throw await failure(res);
+  return (await res.json()) as { name: string; added: number; updated: number; retired: number };
+}

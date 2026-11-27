@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     # 自动判为「无需回复」的消息最长多少字（去掉标点、@ 后），更长的只提示、不自动标记，避免漏回客户
     auto_dismiss_max_chars: int = 40
 
+    # ---- 回复建议评测（评测页一键跑题库，不发到群里）：一轮里同时跑几道题，每道题调两次模型（起草 + 打分） ----
+    eval_workers: int = 2
+
     # ---- 企业微信 会话内容存档 ----
     wecom_corp_id: str = ""
     wecom_archive_secret: str = ""  # 「会话内容存档」应用的 Secret

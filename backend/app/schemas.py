@@ -526,3 +526,101 @@ class AdoptionWeek(BaseModel):
 
 class AdoptionStats(BaseModel):
     weeks: list[AdoptionWeek] = Field(description="从近到远")
+
+
+# ---------- 回复建议评测 ----------
+
+
+class EvalSetOut(BaseModel):
+    name: str
+    total: int
+    areas: dict[str, int]
+    kinds: dict[str, int]
+    updated_at: datetime | None
+
+
+class EvalImportResult(BaseModel):
+    name: str
+    added: int
+    updated: int
+    retired: int
+
+
+class EvalStartIn(BaseModel):
+    set_name: str = Field(min_length=1, max_length=32)
+    areas: list[str] | None = None  # 只跑哪几块；不传跑全部
+    note: str | None = Field(default=None, max_length=500)
+
+
+class EvalBucket(BaseModel):
+    area: str
+    kind: str | None = None
+    total: int
+    done: int
+    passed: int
+    errors: int
+    unjudged: int
+    retrieval_total: int
+    retrieval_hit: int
+    verdicts: dict[str, int]
+
+
+class EvalRunOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    set_name: str
+    areas: list[str] | None
+    status: str
+    total: int
+    done: int = 0
+    started_by: str | None
+    started_at: datetime
+    finished_at: datetime | None
+    model: str | None
+    note: str | None
+    summary: list[EvalBucket] = []  # 按块
+
+
+class EvalCompare(BaseModel):
+    run_id: uuid.UUID
+    started_at: datetime
+    summary: list[EvalBucket]
+    better: int  # 上一轮没通过、这一轮通过的
+    worse: int  # 上一轮通过、这一轮没通过的
+
+
+class EvalRunDetail(EvalRunOut):
+    kinds: list[EvalBucket] = []  # 按块 × 题型
+    previous: EvalCompare | None = None
+
+
+class EvalResultOut(BaseModel):
+    case_id: uuid.UUID
+    code: str
+    kind: str
+    area: str
+    branch: str
+    question: str
+    context: str
+    expected: str
+    must_not: str
+    reference: str
+    expect_reply: bool | None
+    data: dict | None
+    done: bool
+    error: str | None = None
+    reply: str | None = None
+    can_answer: bool | None = None
+    confidence: str | None = None
+    needs_reply: bool | None = None
+    reason: str | None = None
+    knowledge: list[dict] | None = None
+    knowledge_error: str | None = None
+    retrieval_rank: int | None = None
+    has_expected_docs: bool
+    verdict: str | None = None
+    verdict_reason: str | None = None
+    passed: bool | None = None
+    previous_passed: bool | None = None  # 上一轮这道题过没过；上一轮没跑这道题为空
+    seconds: float | None = None
