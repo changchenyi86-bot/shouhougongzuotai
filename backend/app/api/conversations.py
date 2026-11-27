@@ -12,13 +12,14 @@ from datetime import datetime, timedelta, timezone
 from app import send_queue
 from app.api.sending import task_out
 from app.api.suggestions import OPEN, REPLYABLE
+from app.auth import current_staff
 from app.db import get_session
-from app.models import (Attachment, Channel, ConversationEnd, GroupName, Message, SendStatus, SendTask, Suggestion,
-                        SuggestionStatus)
+from app.models import (Attachment, Channel, ConversationEnd, GroupName, Message, SendStatus, SendTask, Staff,
+                        Suggestion, SuggestionStatus)
 from app.schemas import (ConversationEndOut, ConversationOut, EndIn, GroupNameIn, GroupNameOut, GroupOut, InboxItem,
                          MessageOut, SendIn, SendTaskOut, SuggestionOut)
 
-router = APIRouter(prefix="/api")
+router = APIRouter(prefix="/api", dependencies=[Depends(current_staff)])
 
 S = SuggestionStatus
 TODO = [S.GENERATING, S.READY, S.FAILED]
@@ -97,7 +98,8 @@ def list_groups(
 
 
 @router.put("/groups/name", response_model=GroupNameOut)
-def set_group_name(body: GroupNameIn, session: Session = Depends(get_session)) -> GroupNameOut:
+def set_group_name(body: GroupNameIn, staff: Staff = Depends(current_staff),
+                   session: Session = Depends(get_session)) -> GroupNameOut:
     """手动填写群名（渠道接口查不到群名时用）。已入库的消息一并改成这个名字，之后进来的消息查不到群名时也用它。"""
     exists = session.scalar(
         select(Message.id).where(Message.channel == body.channel, Message.group_id == body.group_id).limit(1)
@@ -108,7 +110,7 @@ def set_group_name(body: GroupNameIn, session: Session = Depends(get_session)) -
     if row is None:
         row = GroupName(channel=body.channel, group_id=body.group_id, name=body.name)
         session.add(row)
-    row.name, row.updated_by = body.name, body.operator
+    row.name, row.updated_by = body.name, staff.name
     session.execute(
         update(Message).where(Message.channel == body.channel, Message.group_id == body.group_id)
         .values(group_name=body.name)
@@ -217,7 +219,7 @@ def _outbox(session: Session, channel: Channel, group_id: str) -> list[SendTaskO
 
 
 @router.post("/conversations/send", response_model=SendTaskOut, status_code=status.HTTP_201_CREATED)
-def send(body: SendIn, session: Session = Depends(get_session)) -> SendTaskOut:
+def send(body: SendIn, staff: Staff = Depends(current_staff), session: Session = Depends(get_session)) -> SendTaskOut:
     """在会话里发消息（文字、图片、文件），由电脑端发送程序自动发到群里。
 
     带 suggestion_id 时表示回复那条客户消息：该建议记为已采纳（内容和 AI 建议不同时记为修改后采纳）。
@@ -238,11 +240,11 @@ def send(body: SendIn, session: Session = Depends(get_session)) -> SendTaskOut:
             raise HTTPException(status.HTTP_409_CONFLICT, f"这条消息已经处理过了（{sug.status.value}）")
         edited = content != (sug.content or "").strip()
         sug.status = S.EDITED if edited else S.ADOPTED
-        sug.handled_by, sug.handled_at = body.operator, datetime.now(timezone.utc)
+        sug.handled_by, sug.handled_at = staff.name, datetime.now(timezone.utc)
         sug.final_content = content
     try:
         task = send_queue.enqueue(session, body.channel, body.group_id, content, body.attachment_ids,
-                                  body.operator, sug)
+                                  staff.name, sug)
     except send_queue.SendRejected as exc:
         session.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
@@ -251,7 +253,8 @@ def send(body: SendIn, session: Session = Depends(get_session)) -> SendTaskOut:
 
 
 @router.post("/conversations/end", response_model=ConversationEndOut, status_code=status.HTTP_201_CREATED)
-def end_conversation(body: EndIn, session: Session = Depends(get_session)) -> ConversationEnd:
+def end_conversation(body: EndIn, staff: Staff = Depends(current_staff),
+                     session: Session = Depends(get_session)) -> ConversationEnd:
     """结束会话。
 
     群里还没回复的客户消息（AI 建议待处理、生成中、生成失败、已转人工）随会话结束，不再算待处理；
@@ -275,10 +278,10 @@ def end_conversation(body: EndIn, session: Session = Depends(get_session)) -> Co
     if not open_sugs and not unsent:
         raise HTTPException(status.HTTP_409_CONFLICT, "这个会话没有待处理的消息，不需要结束")
     for sug in open_sugs:
-        sug.status, sug.handled_by, sug.handled_at = S.CLOSED, body.operator, now
+        sug.status, sug.handled_by, sug.handled_at = S.CLOSED, staff.name, now
     for task in unsent:
         send_queue.dismiss_task(session, task)
-    end = ConversationEnd(channel=body.channel, group_id=body.group_id, ended_by=body.operator, ended_at=now,
+    end = ConversationEnd(channel=body.channel, group_id=body.group_id, ended_by=staff.name, ended_at=now,
                           closed_count=len(open_sugs))
     session.add(end)
     session.commit()

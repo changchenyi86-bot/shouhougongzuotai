@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     # 自建应用的企业可信 IP 不收第三方服务商的 IP，本机出口 IP 加不进去时用；留空表示直连
     wecom_contact_proxy: str = ""
 
+    # ---- 登录 ----
+    login_days: int = 30  # 登录一次保持多少天
+    cookie_secure: bool = False  # 部署到 https 后设为 true，Cookie 只走加密连接
+    staff_online_seconds: int = 120  # 超过这个时间没打开工作台，视为不在线
+
     # ---- 附件（图片、文件） ----
     attachment_dir: str = "./data/attachments"
     attachment_max_mb: int = 20  # 上传和下载的单个文件上限

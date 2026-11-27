@@ -107,39 +107,42 @@ export interface InboxItem {
   suggestion: Suggestion | null;
 }
 
+/** 登录过期或没登录：页面收到这个事件后回到登录页 */
+export const AUTH_REQUIRED = "auth-required";
+
+async function failure(res: Response): Promise<Error> {
+  let detail = `${res.status}`;
+  try {
+    const d = (await res.json()).detail;
+    // FastAPI 校验错误的 detail 是数组，去掉开头的 "Value error, "
+    detail = Array.isArray(d)
+      ? d.map((x: { msg?: string }) => (x.msg ?? "").replace(/^Value error, /, "")).join("；")
+      : d ?? detail;
+  } catch {
+    /* 非 JSON 错误 */
+  }
+  if (res.status === 401 && !res.url.includes("/api/auth/")) window.dispatchEvent(new Event(AUTH_REQUIRED));
+  return new Error(String(detail));
+}
+
 async function call<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     ...init,
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
   });
-  if (!res.ok) {
-    let detail = `${res.status}`;
-    try {
-      const d = (await res.json()).detail;
-      // FastAPI 校验错误的 detail 是数组
-      detail = Array.isArray(d) ? d.map((x: { msg?: string }) => x.msg ?? "").join("；") : d ?? detail;
-    } catch {
-      /* 非 JSON 错误 */
-    }
-    throw new Error(String(detail));
-  }
-  return res.json();
+  if (!res.ok) throw await failure(res);
+  return res.status === 204 ? (undefined as T) : res.json();
 }
 
 const post = <T>(url: string, body: unknown = {}) =>
   call<T>(url, { method: "POST", body: JSON.stringify(body) });
 
-export const adopt = (id: string, content: string, operator: string, send = false) =>
-  post<{ suggestion: Suggestion; delivery: string; detail: string }>(`/api/suggestions/${id}/adopt`, {
-    content,
-    operator: operator || null,
-    send,
-  });
+export const adopt = (id: string, content: string, send = false) =>
+  post<{ suggestion: Suggestion; delivery: string; detail: string }>(`/api/suggestions/${id}/adopt`, { content, send });
 export const fetchSendState = () => call<SendState>("/api/send/status");
-export const escalate = (id: string, note: string, operator: string) =>
-  post<Suggestion>(`/api/suggestions/${id}/escalate`, { note: note || null, operator: operator || null });
-export const dismiss = (id: string, operator: string) =>
-  post<Suggestion>(`/api/suggestions/${id}/dismiss`, { operator: operator || null });
+export const escalate = (id: string, note: string) =>
+  post<Suggestion>(`/api/suggestions/${id}/escalate`, { note: note || null });
+export const dismiss = (id: string) => post<Suggestion>(`/api/suggestions/${id}/dismiss`);
 export const regenerate = (id: string) => post<Suggestion>(`/api/suggestions/${id}/regenerate`);
 
 export interface Group {
@@ -198,26 +201,14 @@ export interface GroupNameResult {
 }
 
 /** 手动填写群名（企业微信查不到外部群群名时用），要和企业微信里显示的群名一致 */
-export const setGroupName = (channel: Channel, group_id: string, name: string, operator: string) =>
-  call<GroupNameResult>("/api/groups/name", {
-    method: "PUT",
-    body: JSON.stringify({ channel, group_id, name, operator: operator || null }),
-  });
+export const setGroupName = (channel: Channel, group_id: string, name: string) =>
+  call<GroupNameResult>("/api/groups/name", { method: "PUT", body: JSON.stringify({ channel, group_id, name }) });
 
-export async function uploadAttachment(file: File, operator: string): Promise<Attachment> {
+export async function uploadAttachment(file: File): Promise<Attachment> {
   const form = new FormData();
   form.append("file", file);
-  if (operator) form.append("operator", operator);
   const res = await fetch("/api/attachments", { method: "POST", body: form });
-  if (!res.ok) {
-    let detail = `${res.status}`;
-    try {
-      detail = (await res.json()).detail ?? detail;
-    } catch {
-      /* 非 JSON 错误 */
-    }
-    throw new Error(String(detail));
-  }
+  if (!res.ok) throw await failure(res);
   return res.json();
 }
 
@@ -227,15 +218,13 @@ export const sendToGroup = (body: {
   content: string;
   attachment_ids: string[];
   suggestion_id: string | null;
-  operator: string;
-}) => post<SendTask>("/api/conversations/send", { ...body, operator: body.operator || null });
+}) => post<SendTask>("/api/conversations/send", body);
 
 /** 结束会话：没回复的客户消息不再算待处理，客户再发消息时重新回到待处理 */
-export const endConversation = (channel: Channel, group_id: string, operator: string) =>
-  post<ConversationEnd>("/api/conversations/end", { channel, group_id, operator: operator || null });
+export const endConversation = (channel: Channel, group_id: string) =>
+  post<ConversationEnd>("/api/conversations/end", { channel, group_id });
 
-export const resendTask = (id: string, operator: string) =>
-  post<SendTask>(`/api/send-tasks/${id}/resend`, { operator: operator || null });
+export const resendTask = (id: string) => post<SendTask>(`/api/send-tasks/${id}/resend`);
 export const cancelTask = (id: string) => post<SendTask>(`/api/send-tasks/${id}/cancel`);
 export const dismissTask = (id: string) => post<SendTask>(`/api/send-tasks/${id}/mark-manual-sent`);
 export const fetchMedia = (messageId: string) => post<Message>(`/api/messages/${messageId}/fetch-media`);
@@ -249,3 +238,49 @@ export function fetchConversation(
   for (const k of ["before", "after", "anchor"] as const) if (opts[k]) qs.set(k, opts[k]!);
   return call(`/api/conversation?${qs}`);
 }
+
+// ---------- 登录、成员 ----------
+
+export type Role = "admin" | "support";
+export type StaffStatus = "online" | "away";
+
+export const ROLE_LABEL: Record<Role, string> = { admin: "管理员", support: "技术支持" };
+
+export interface Team {
+  id: string;
+  name: string;
+}
+
+export interface Staff {
+  id: string;
+  name: string;
+  username: string;
+  role: Role;
+  team: Team | null;
+  active: boolean;
+  status: StaffStatus;
+  /** 设成在线，并且最近打开着工作台 */
+  online: boolean;
+  last_seen: string | null;
+}
+
+const put = <T>(url: string, body: unknown) => call<T>(url, { method: "PUT", body: JSON.stringify(body) });
+
+export const fetchAuthState = () => call<{ needs_setup: boolean }>("/api/auth/state");
+export const fetchMe = () => call<Staff>("/api/auth/me");
+export const login = (username: string, password: string) => post<Staff>("/api/auth/login", { username, password });
+export const setupAdmin = (body: { name: string; username: string; password: string }) =>
+  post<Staff>("/api/auth/setup", body);
+export const logout = () => post<void>("/api/auth/logout");
+export const setMyStatus = (status: StaffStatus) => put<Staff>("/api/auth/me/status", { status });
+export const changePassword = (old_password: string, new_password: string) =>
+  put<void>("/api/auth/me/password", { old_password, new_password });
+
+export const fetchTeams = () => call<Team[]>("/api/teams");
+export const fetchStaff = () => call<Staff[]>("/api/staff");
+export const addStaff = (body: { name: string; username: string; password: string; role: Role; team_id: string | null }) =>
+  post<Staff>("/api/staff", body);
+export const editStaff = (
+  id: string,
+  body: Partial<{ name: string; role: Role; team_id: string; clear_team: boolean; active: boolean; password: string }>,
+) => call<Staff>(`/api/staff/${id}`, { method: "PATCH", body: JSON.stringify(body) });

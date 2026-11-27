@@ -11,9 +11,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import send_queue
+from app.auth import current_staff
 from app.config import settings
 from app.db import get_session
-from app.models import Attachment, SendTask, Suggestion
+from app.models import Attachment, SendTask, Staff, Suggestion
 from app.schemas import (
     AgentClaimIn,
     AgentClaimOut,
@@ -22,13 +23,12 @@ from app.schemas import (
     AgentResultIn,
     AgentTask,
     AttachmentOut,
-    OperatorIn,
     SendStatusOut,
     SendTaskOut,
     SuggestionOut,
 )
 
-router = APIRouter(prefix="/api")
+router = APIRouter(prefix="/api", dependencies=[Depends(current_staff)])
 
 
 # ---------- 工作台 ----------
@@ -52,11 +52,12 @@ def _suggestion(session: Session, suggestion_id: uuid.UUID) -> Suggestion:
 
 
 @router.post("/suggestions/{suggestion_id}/resend", response_model=SuggestionOut)
-def resend(suggestion_id: uuid.UUID, body: OperatorIn, session: Session = Depends(get_session)) -> Suggestion:
+def resend(suggestion_id: uuid.UUID, staff: Staff = Depends(current_staff),
+           session: Session = Depends(get_session)) -> Suggestion:
     """自动发送失败或取消后，确认再发一次。"""
     sug = _suggestion(session, suggestion_id)
     try:
-        send_queue.resend(session, sug, body.operator)
+        send_queue.resend(session, sug, staff.name)
     except (send_queue.SendRejected, send_queue.ReportConflict) as exc:
         session.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
@@ -111,10 +112,11 @@ def _task(session: Session, task_id: uuid.UUID) -> SendTask:
 
 
 @router.post("/send-tasks/{task_id}/resend", response_model=SendTaskOut)
-def resend_task(task_id: uuid.UUID, body: OperatorIn, session: Session = Depends(get_session)) -> SendTaskOut:
+def resend_task(task_id: uuid.UUID, staff: Staff = Depends(current_staff),
+                session: Session = Depends(get_session)) -> SendTaskOut:
     """发送失败或取消后，确认再发一次。"""
     try:
-        new = send_queue.resend_task(session, _task(session, task_id), body.operator)
+        new = send_queue.resend_task(session, _task(session, task_id), staff.name)
     except (send_queue.SendRejected, send_queue.ReportConflict) as exc:
         session.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc

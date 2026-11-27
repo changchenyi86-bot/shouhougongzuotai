@@ -51,4 +51,7 @@ def client(monkeypatch, fake_llm):
     # 测试数据的时间是固定的，不受“只为近期消息生成建议”的限制
     monkeypatch.setattr(settings, "ai_suggest_max_age_minutes", 10**8)
     with TestClient(app) as c:
+        # 工作台接口都要登录：先设一个管理员并登录，Cookie 留在 c 里
+        r = c.post("/api/auth/setup", json={"name": "李四", "username": "lisi", "password": "password123"})
+        assert r.status_code == 201, r.text
         yield c

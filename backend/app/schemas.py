@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
-from app.models import Channel, MessageType, SendStatus, SuggestionStatus
+from app.models import Channel, MessageType, Role, SendStatus, StaffStatus, SuggestionStatus
 
 
 class MessageIn(BaseModel):
@@ -101,13 +101,11 @@ class InboxItem(BaseModel):
 
 class AdoptIn(BaseModel):
     content: str | None = Field(default=None, description="修改后的回复；不传则原样采纳 AI 建议")
-    operator: str | None = Field(default=None, max_length=64)
     send: bool = Field(default=False, description="true：交给电脑端发送程序自动发到群里；false：复制后人工发送")
 
 
 class HandleIn(BaseModel):
     note: str | None = None
-    operator: str | None = Field(default=None, max_length=64)
 
 
 class AdoptOut(BaseModel):
@@ -117,10 +115,6 @@ class AdoptOut(BaseModel):
 
 
 # ---------- 自动发送 ----------
-
-
-class OperatorIn(BaseModel):
-    operator: str | None = Field(default=None, max_length=64)
 
 
 class AgentOut(BaseModel):
@@ -219,14 +213,12 @@ class ConversationOut(BaseModel):
 class EndIn(BaseModel):
     channel: Channel
     group_id: str = Field(min_length=1, max_length=128)
-    operator: str | None = Field(default=None, max_length=64)
 
 
 class GroupNameIn(BaseModel):
     channel: Channel
     group_id: str = Field(min_length=1, max_length=128)
     name: str = Field(max_length=256, description="和群在企业微信客户端里显示的名字一致")
-    operator: str | None = Field(default=None, max_length=64)
 
     @field_validator("name")
     @classmethod
@@ -250,4 +242,101 @@ class SendIn(BaseModel):
     content: str = ""
     attachment_ids: list[uuid.UUID] = Field(default=[], max_length=9)
     suggestion_id: uuid.UUID | None = Field(default=None, description="回复的是哪条 AI 建议，发送后该建议记为已采纳")
-    operator: str | None = Field(default=None, max_length=64)
+
+
+# ---------- 登录、成员 ----------
+
+
+class AuthState(BaseModel):
+    needs_setup: bool = Field(description="还没有任何账号，要先设管理员")
+
+
+class LoginIn(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=128)
+
+
+def _password_ok(v: str) -> str:
+    if len(v) < 8:
+        raise ValueError("密码至少 8 位")
+    return v
+
+
+def _strip_required(v: str) -> str:
+    v = v.strip()
+    if not v:
+        raise ValueError("不能为空")
+    return v
+
+
+class SetupIn(BaseModel):
+    """第一次使用：设管理员账号。"""
+
+    name: str = Field(max_length=32)
+    username: str = Field(max_length=64)
+    password: str = Field(max_length=128)
+
+    _name = field_validator("name", "username")(_strip_required)
+    _pw = field_validator("password")(_password_ok)
+
+
+class TeamOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+
+
+class StaffOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    username: str
+    role: Role
+    team: TeamOut | None
+    active: bool
+    status: StaffStatus
+    online: bool = Field(description="设成在线，并且最近打开着工作台")
+    last_seen: datetime | None
+
+
+class StaffIn(BaseModel):
+    name: str = Field(max_length=32)
+    username: str = Field(max_length=64)
+    password: str = Field(max_length=128)
+    role: Role = Role.SUPPORT
+    team_id: uuid.UUID | None = None
+
+    _name = field_validator("name", "username")(_strip_required)
+    _pw = field_validator("password")(_password_ok)
+
+
+class StaffPatch(BaseModel):
+    """管理员改成员：只传要改的字段。"""
+
+    name: str | None = Field(default=None, max_length=32)
+    role: Role | None = None
+    team_id: uuid.UUID | None = None
+    clear_team: bool = Field(default=False, description="设为不分组")
+    active: bool | None = None
+    password: str | None = Field(default=None, max_length=128, description="重设密码")
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v: str | None) -> str | None:
+        return None if v is None else _strip_required(v)
+
+    @field_validator("password")
+    @classmethod
+    def _pw(cls, v: str | None) -> str | None:
+        return None if v is None else _password_ok(v)
+
+
+class StatusIn(BaseModel):
+    status: StaffStatus
+
+
+class PasswordIn(BaseModel):
+    old_password: str = Field(max_length=128)
+    new_password: str = Field(max_length=128)
+
+    _pw = field_validator("new_password")(_password_ok)

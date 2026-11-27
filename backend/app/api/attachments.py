@@ -3,14 +3,15 @@
 import uuid
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app import attachments
 from app.api.sending import require_agent
+from app.auth import current_staff
 from app.db import get_session
-from app.models import Attachment
+from app.models import Attachment, Staff
 from app.schemas import AttachmentOut
 
 router = APIRouter(prefix="/api")
@@ -19,7 +20,7 @@ router = APIRouter(prefix="/api")
 @router.post("/attachments", response_model=AttachmentOut, status_code=status.HTTP_201_CREATED)
 async def upload(
     file: UploadFile = File(...),
-    operator: str | None = Form(None, max_length=64),
+    staff: Staff = Depends(current_staff),
     session: Session = Depends(get_session),
 ) -> Attachment:
     """上传要发到群里的图片或文件。"""
@@ -27,7 +28,7 @@ async def upload(
     if not data:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "文件是空的")
     try:
-        att = attachments.save(session, data, file.filename or "", "upload", operator)
+        att = attachments.save(session, data, file.filename or "", "upload", staff.name)
     except attachments.AttachmentTooLarge as exc:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, str(exc)) from exc
     session.commit()
@@ -46,7 +47,7 @@ def _file(session: Session, att_id: uuid.UUID, download: bool) -> FileResponse:
     })
 
 
-@router.get("/attachments/{att_id}")
+@router.get("/attachments/{att_id}", dependencies=[Depends(current_staff)])
 def download(att_id: uuid.UUID, download: bool = False, session: Session = Depends(get_session)) -> FileResponse:
     """图片在浏览器里直接显示，其他文件下载。"""
     return _file(session, att_id, download)

@@ -25,7 +25,6 @@ export interface ChatTarget {
 }
 
 interface Props {
-  operator: string;
   canAutoSend: (channel: Channel) => boolean;
   notify: (text: string) => void;
 }
@@ -134,7 +133,7 @@ function OutboxBubble({ task, busy, onAction }: { task: SendTask; busy: boolean;
   );
 }
 
-export default function Conversations({ operator, canAutoSend, notify }: Props) {
+export default function Conversations({ canAutoSend, notify }: Props) {
   const [view, setView] = useState<GroupView>("todo");
   const [groups, setGroups] = useState<Group[]>([]);
   const [search, setSearch] = useState("");
@@ -275,7 +274,7 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
     if (!target || nameDraft === null || !nameDraft.trim()) return;
     setBusy(true);
     try {
-      const r = await setGroupName(target.channel, target.group_id, nameDraft, operator);
+      const r = await setGroupName(target.channel, target.group_id, nameDraft);
       notify(r.duplicate ? `群名已保存。还有别的群也叫「${r.name}」，为防发错群，这些群不能自动发送` : "群名已保存");
       setNameDraft(null);
       changed();
@@ -290,7 +289,7 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
   const endGroup = async (g: ChatTarget) => {
     setBusy(true);
     try {
-      const r = await endConversation(g.channel, g.group_id, operator);
+      const r = await endConversation(g.channel, g.group_id);
       notify(r.closed_count ? `会话已结束，${r.closed_count} 条没回复的消息不再提醒` : "会话已结束");
       setEndAsk(null);
       setHeadAsk(false);
@@ -317,7 +316,7 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
   const taskAction = async (task: SendTask, kind: "resend" | "cancel" | "dismiss") => {
     setBusy(true);
     try {
-      if (kind === "resend") await resendTask(task.id, operator);
+      if (kind === "resend") await resendTask(task.id);
       else if (kind === "cancel") await cancelTask(task.id);
       else await dismissTask(task.id);
       changed();
@@ -548,7 +547,6 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
               groupId={target.group_id}
               groupName={groupName}
               canAutoSend={canAutoSend(target.channel)}
-              operator={operator}
               focus={focus}
               focusIndex={shownIndex}
               openTotal={open.length}
