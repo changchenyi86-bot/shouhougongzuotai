@@ -4,7 +4,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, or_, select
@@ -17,7 +17,7 @@ from app.ai.knowledge import KnowledgeError, KnowledgeItem
 from app.ai.llm import LLMError, SuggestionDraft, get_provider
 from app.cards import CARD_PREFIX
 from app.config import settings
-from app.models import Message, Suggestion, SuggestionStatus
+from app.models import Message, MessageType, Suggestion, SuggestionStatus
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +99,7 @@ class Generated:
     profile: dict | None = None  # 带给 AI 的客户档案摘要 {customer, summary}，建议卡上显示
     round_ids: list[uuid.UUID] = field(default_factory=list)
     question: str = ""
+    media_checked_at: datetime | None = None  # 读取附件识别结果的时间，之后才识别完的要重新生成
 
 
 class SuggestionFailed(Exception):
@@ -170,6 +171,20 @@ def round_messages(session: Session, message: Message) -> list[Message]:
     active_ids = {s.id for s in suggestions if s.status in ROUND_STATUSES}
     return [m for m in eligible if ADAPTERS[m.channel].is_customer(m) and (s := states.get(m.id))
             and (s.status in ROUND_STATUSES or (s.status == SuggestionStatus.MERGED and s.merged_into in active_ids))]
+
+
+def joins_round(session: Session, message: Message) -> bool:
+    """客户发的图片、文件：同群里还有没处理完的一轮（之后我方没发过言）时并进去，整轮重新生成。
+
+    单独发的图片、文件不生成建议，接着发的文字会把它当聊天记录一起看。
+    """
+    from app.channels import ADAPTERS
+
+    if settings.ai_round_window_minutes <= 0 or message.msg_type not in (MessageType.IMAGE, MessageType.FILE):
+        return False
+    if not ADAPTERS[message.channel].is_customer(message):
+        return False
+    return any(m.id != message.id for m in round_messages(session, message))
 
 
 def round_history(session: Session, message: Message, round: list[Message]) -> list[Message]:
@@ -291,8 +306,10 @@ def generate(session: Session, message: Message, history: list[Message] | None =
         history = round_history(session, message, round)
     if statuses is None:
         statuses = _status_labels(session, history)
+    media_checked_at = None
     if not evaluating:
         _wait_media(session, message, round, history)
+        media_checked_at = datetime.now(timezone.utc)
     original = "\n".join(m.content for m in round)
     question = original
     has_question = True
@@ -345,4 +362,4 @@ def generate(session: Session, message: Message, history: list[Message] | None =
         k.cited = k.ref in cited
     draft.references = [k.ref for k in refs if k.cited]  # 去掉模型编造的、不存在的编号
     return Generated(draft, model, refs, "；".join(errors) or None, note, profile=context[1] if context else None,
-                     round_ids=[m.id for m in round], question=question)
+                     round_ids=[m.id for m in round], question=question, media_checked_at=media_checked_at)
