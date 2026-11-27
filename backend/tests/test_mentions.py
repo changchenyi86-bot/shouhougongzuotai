@@ -127,3 +127,17 @@ def test_resend_keeps_mentions(sending):
 def test_without_mentions():
     assert mentions.without_mentions("@张三 @张三丰 您好", ["张三", "张三丰"]) == "您好"
     assert mentions.without_mentions("好的 @李四 看下", ["李四"]) == "好的 看下"
+
+
+def test_members_leave_out_the_sending_account(sending, monkeypatch):
+    """发送电脑上的客服账号 @ 不了自己：工作台发出的回复在存档里是它说的，就不列进名单。"""
+    _msg(sending, 1)
+    monkeypatch.setattr(mentions, "_directory_members", lambda channel, group_id: {CUST: "张三", "kefu": "客服小易"})
+    assert _send(sending, "好的，我看一下", []).status_code == 201
+    task = _claim(sending)
+    sending.post(f"/api/agent/tasks/{task['id']}/result", headers=AUTH, json={"agent_id": "pc1", "ok": True})
+    names = lambda: [m["name"] for m in sending.get(  # noqa: E731
+        "/api/conversation/members", params={"channel": "wecom", "group_id": "wrABC"}).json()]
+    assert names() == ["张三", "客服小易"]
+    _msg(sending, 2, sender="kefu", name="客服小易", content="好的，我看一下")  # 存档拉回来了：是客服账号发的
+    assert names() == ["张三"]

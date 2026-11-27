@@ -6,11 +6,12 @@
 
 import re
 from collections import Counter
+from datetime import timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
-from app.models import Channel, Message
+from app.models import Channel, Message, SendStatus, SendTask
 from app.schemas import MemberOut, MentionIn
 
 MAX_MENTIONS = 20
@@ -39,12 +40,28 @@ def _directory_members(channel: Channel, group_id: str) -> dict[str, str]:
     return syncer.directory.members(group_id)
 
 
+def agent_accounts(session: Session, channel: Channel) -> set[str]:
+    """发送电脑上登录的客服账号：工作台自动发出的回复，在会话存档里是谁说的。
+
+    它在企业微信里 @ 不了自己，不列进成员名单。按「发出后 10 分钟内、同一个群里、内容一字不差」对上。
+    """
+    rows = session.execute(
+        select(Message.sender_id, Message.sent_at, SendTask.created_at).join(SendTask, and_(
+            SendTask.channel == Message.channel, SendTask.group_id == Message.group_id,
+            SendTask.content == Message.content, Message.sent_at >= SendTask.created_at))
+        .where(Message.channel == channel, SendTask.status == SendStatus.SENT, SendTask.content != "")
+        .order_by(SendTask.created_at.desc()).limit(200)
+    )
+    return {sender for sender, sent, created in rows if sent - created <= timedelta(minutes=10)}
+
+
 def group_members(session: Session, channel: Channel, group_id: str,
                   directory: dict[str, str] | None = None) -> list[MemberOut]:
     """群里能 @ 的人：企业微信外部群用群成员接口的名单（群昵称优先，和企业微信 @ 列表里显示的一致）；
     名单拿不到时（内部群接口不给名字、没配客户联系 Secret）用在群里说过话、知道名字的人。
 
-    最近说过话的排在前面，其次客户在员工前面。没有名字的人没法在企业微信里选中，不列出来。
+    最近说过话的排在前面，其次客户在员工前面。没有名字的人没法在企业微信里选中，不列出来；
+    发送电脑上的客服账号自己也不列出来。
     """
     names = _directory_members(channel, group_id) if directory is None else directory
     spoke = session.execute(
@@ -55,6 +72,8 @@ def group_members(session: Session, channel: Channel, group_id: str,
     last = {sender: at for sender, _, at in spoke}
     if not names:
         names = {sender: name for sender, name, _ in spoke if name}
+    me = agent_accounts(session, channel)
+    names = {user_id: name for user_id, name in names.items() if user_id not in me}
     counts = Counter(name for name in names.values())
     members = []
     for user_id, name in names.items():
