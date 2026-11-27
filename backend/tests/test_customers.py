@@ -317,3 +317,14 @@ def test_read_only_session_setup_error_is_reported(monkeypatch, tmp_path):
     with pytest.raises(customers.SourceError, match="1193"):
         customers._connect()
     assert closed == [True]
+
+
+def test_mark_group_as_no_customer(client, synced):
+    # 售后系统里绑了两家的群（如自己的测试群）：标成不对应客户，候选不再显示，同步也不覆盖
+    assert _card(client, "wrJiaBI")["link"]["customer"] == "甲方股份"
+    r = client.put("/api/customers/link", json={"channel": "wecom", "group_id": "wrJiaBI", "customer": None})
+    assert r.status_code == 200 and r.json() == {"customer": None, "source": "manual", "candidates": [], "updated_by": "李四"}
+    customers.sync_once()
+    card = _card(client, "wrJiaBI")
+    assert card["link"] == {"customer": None, "source": "manual", "candidates": [], "updated_by": "李四"}
+    assert card["profile"] is None and card["alerts"] == []

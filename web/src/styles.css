@@ -1993,6 +1993,8 @@ nav a { text-decoration: none; }
 .cust-card .mini.primary { background: var(--primary-bg); color: var(--on-accent); border-color: transparent; }
 .cust-card .mini:disabled { opacity: .5; cursor: default; }
 .cust-card .cc-pick { margin-top: 6px; }
+.cust-card .cc-pick-foot { display: flex; gap: 4px; margin-top: 4px; }
+.cust-card .cc-pick-foot button.link:first-child { margin-left: 0; }
 .cust-card .cc-pick ul { list-style: none; margin: 6px 0; padding: 0; max-height: 220px; overflow-y: auto; }
 .cust-card .cc-pick li button { width: 100%; text-align: left; border: 0; background: none; padding: 6px 8px; border-radius: 6px; color: var(--text); cursor: pointer; display: flex; flex-direction: column; gap: 1px; font-size: 12.5px; }
 .cust-card .cc-pick li button:hover:not(:disabled) { background: var(--active); }
