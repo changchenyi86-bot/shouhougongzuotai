@@ -6,6 +6,9 @@ export const CHANNEL_LABEL: Record<Channel, string> = {
   feishu: "飞书",
 };
 
+/** 发送人来自哪里：本企业员工 / 微信用户 / 其他企业的企业微信用户 / 渠道分不出细类的外部人员 */
+export type SenderKind = "internal" | "wechat" | "wecom" | "external";
+
 export interface Message {
   id: string;
   channel: Channel;
@@ -20,6 +23,7 @@ export interface Message {
   sent_at: string;
   received_at: string;
   from_customer: boolean;
+  sender_kind: SenderKind;
   attachment: Attachment | null;
   media_error: string | null;
 }

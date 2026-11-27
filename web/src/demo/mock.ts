@@ -10,6 +10,7 @@ import type {
   InboxItem,
   KnowledgeRef,
   Message,
+  SenderKind,
   SendTask,
   Staff,
   Suggestion,
@@ -76,8 +77,20 @@ function room(channel: Channel, id: string, name: string | null, external: boole
   };
 }
 
+/** 演示里的客户：群里的昵称和来源。没列出的客户模拟查不到昵称的情况。 */
+const PEOPLE: Record<string, [name: string, kind: SenderKind]> = {
+  x9Kq: ["银行-王磊", "wecom"],
+  p3Lm: ["sln", "wechat"],
+  t7Wd: ["赵敏", "external"],
+  k2Rn: ["孙经理", "external"],
+  h5Bz: ["周婷", "external"],
+  q8Fs: ["券商_陈伟", "wechat"],
+};
+const ID_PREFIX: Record<SenderKind, string> = { wechat: "wm", wecom: "wo", external: "ou_", internal: "" };
+
 function say(r: Room, customer: string | null, h: number, m: number, content: string, extra: Partial<Message> = {}): Message {
   const id = `m${++seq}`;
+  const [name, kind]: [string | null, SenderKind] = customer ? PEOPLE[customer] ?? [null, "wechat"] : ["李四", "internal"];
   const message: Message = {
     id,
     channel: r.group.channel,
@@ -85,13 +98,14 @@ function say(r: Room, customer: string | null, h: number, m: number, content: st
     group_id: r.group.group_id,
     group_name: r.group.group_name,
     is_external_group: r.group.is_external_group,
-    sender_id: customer ? `wmDEMO${customer}` : "lisi",
-    sender_name: customer ? null : "李四",
+    sender_id: customer ? `${ID_PREFIX[kind]}DEMO${customer}0000000000000000000000` : "lisi",
+    sender_name: name,
     msg_type: "text",
     content,
     sent_at: at(h, m),
     received_at: at(h, m),
     from_customer: !!customer,
+    sender_kind: kind,
     attachment: null,
     media_error: null,
     ...extra,
@@ -144,6 +158,7 @@ const SCREENSHOT = `<svg xmlns="http://www.w3.org/2000/svg" width="560" height="
 const files = new Map<string, string>([
   ["demo-img", `data:image/svg+xml;charset=utf-8,${encodeURIComponent(SCREENSHOT)}`],
   ["demo-log", `data:text/plain;charset=utf-8,${encodeURIComponent("2026-11-19 10:07:12 ERROR export timeout (504)\n")}`],
+  ...["demo-xlsx", "demo-docx", "demo-zip"].map((id): [string, string] => [id, `data:text/plain;charset=utf-8,${encodeURIComponent("演示文件")}`]),
 ]);
 
 const candidates: Candidate[] = [];
@@ -212,9 +227,25 @@ function build(): Room[] {
     attachment: { id: "demo-img", filename: "截图.png", mime: "image/png", size: 182000 },
   });
   say(bank, null, 10, 6, "收到，我看一下。方便把导出报错的日志也发一下吗？");
-  say(bank, "p3Lm", 10, 8, "[文件]", {
+  say(bank, "p3Lm", 10, 8, "[文件] 导出报错日志.txt", {
     msg_type: "file",
     attachment: { id: "demo-log", filename: "导出报错日志.txt", mime: "text/plain", size: 2100 },
+  });
+  say(bank, "x9Kq", 10, 8, "[文件] 浙江分行经营日报-BI报表.xlsx", {
+    msg_type: "file",
+    attachment: { id: "demo-xlsx", filename: "浙江分行经营日报-BI报表.xlsx", mime: "application/vnd.ms-excel", size: 99_300 },
+  });
+  say(bank, "x9Kq", 10, 8, "[文件] 6.2 升级方案.docx", {
+    msg_type: "file",
+    attachment: { id: "demo-docx", filename: "6.2 升级方案.docx", mime: "application/msword", size: 204_800 },
+  });
+  say(bank, "p3Lm", 10, 9, "[文件] 6231416b-e7b9-424f-a3c3-47c21ba522c3.zip", {
+    msg_type: "file",
+    attachment: { id: "demo-zip", filename: "6231416b-e7b9-424f-a3c3-47c21ba522c3.zip", mime: "application/zip", size: 19_503_000 },
+  });
+  say(bank, "p3Lm", 10, 9, "[文件] 元数据库全量备份.tar.gz", {
+    msg_type: "file",
+    media_error: "文件超过 20MB，未下载，请到企业微信里查看",
   });
   m = say(bank, "p3Lm", 10, 9, "你好，报表导出一直转圈怎么办？日志发上面了");
   suggest(bank, m, "ready", {

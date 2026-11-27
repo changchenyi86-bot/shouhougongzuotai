@@ -101,8 +101,8 @@ def rec(msgid, frm, content="", room="wrROOM1", action="send", msgtype="text", t
 
 
 class FakeDirectory:
-    def lookup(self, room_id):
-        return GroupInfo("某客户-有数项目群", True)
+    def lookup(self, room_id, member=None):
+        return GroupInfo("某客户-有数项目群", True, {CUST: "王工", "zhangsan": "张三"})
 
 
 def test_archive_sync(client, fake_llm):
@@ -122,6 +122,7 @@ def test_archive_sync(client, fake_llm):
         assert set(msgs) == {"m1", "m2", "m5"}
         m1 = msgs["m1"]
         assert m1.group_name == "某客户-有数项目群" and m1.is_external_group and m1.content == "报表导出一直转圈怎么办？"
+        assert m1.sender_name == "王工" and msgs["m2"].sender_name == "张三"  # 群成员名单里的名字
         assert msgs["m5"].content == "[图片]"
         # 只有客户的文本消息生成建议
         sugs = s.query(Suggestion).all()
@@ -129,7 +130,7 @@ def test_archive_sync(client, fake_llm):
         assert s.get(SyncCursor, "wecom_archive_seq").value == "5"
 
     # 员工发言作为上下文出现在提示里
-    assert f"客户 {CUST}：报表导出一直转圈怎么办？" in fake_llm.calls[0][1]
+    assert "客户 王工：报表导出一直转圈怎么办？" in fake_llm.calls[0][1]
 
     # 再次拉取从 seq=5 开始，没有新消息
     archive.calls.clear()
@@ -194,8 +195,18 @@ def test_to_message_in_types():
 def test_wecom_customer_detection():
     adapter = channels.ADAPTERS[channels.Channel.WECOM]
     assert adapter.is_customer(Message(sender_id=CUST)) and adapter.is_customer(Message(sender_id="wo" + CUST[2:]))
+    assert adapter.is_customer(Message(sender_id="lo" + CUST[2:]))  # 也是其他企业的企业微信用户
     assert not adapter.is_customer(Message(sender_id="zhangsan"))
     assert not adapter.is_customer(Message(sender_id="wmeng"))  # 员工 userid 恰好以 wm 开头
+
+
+def test_wecom_sender_kind():
+    """微信用户、其他企业的企业微信用户、本企业员工，聊天记录里分别标注。"""
+    adapter = channels.ADAPTERS[channels.Channel.WECOM]
+    kinds = {uid: adapter.sender_kind(Message(sender_id=uid))
+             for uid in (CUST, "wo" + CUST[2:], "lo" + CUST[2:], "zhangsan", "wmeng")}
+    assert kinds == {CUST: "wechat", "wo" + CUST[2:]: "wecom", "lo" + CUST[2:]: "wecom",
+                     "zhangsan": "internal", "wmeng": "internal"}
 
 
 def test_archive_bad_item_skipped(client):
@@ -298,7 +309,7 @@ def test_backfill_group_names(client):
         def __init__(self):
             self.names = {}
 
-        def lookup(self, room_id):
+        def lookup(self, room_id, member=None):
             return GroupInfo(self.names.get(room_id), True if room_id in self.names else None)
 
     directory = Directory()
@@ -314,6 +325,84 @@ def test_backfill_group_names(client):
     with db.SessionLocal() as s:
         names = {m.group_id: m.group_name for m in s.query(Message).all()}
     assert names == {"wrA": "某客户-有数项目群", "wrB": None}
+
+
+def test_backfill_sender_names(client):
+    """早期入库、没有名字的消息，查到群成员名单后补上名字；查不到的人（如已退群）保持空。"""
+    class Directory:
+        def __init__(self):
+            self.members = {}
+            self.calls = 0
+
+        def lookup(self, room_id, member=None):
+            self.calls += 1
+            return GroupInfo("某客户-有数项目群", True, self.members)
+
+    directory = Directory()
+    gone = "wm" + "Z" * 30
+    archive = FakeArchive([_item(1, rec("m1", CUST, "你好")), _item(2, rec("m2", "zhangsan", "在的")),
+                           _item(3, rec("m3", gone, "我先退群了"))])
+    syncer = ArchiveSyncer(lambda: archive, {"1": KEY}, directory, batch_size=10)
+    assert syncer.sync_once() == 3
+
+    directory.members = {CUST: "王工", "zhangsan": "张三"}
+    syncer._names_checked_at = float("-inf")
+    syncer.sync_once()
+    with db.SessionLocal() as s:
+        names = {m.sender_id: m.sender_name for m in s.query(Message).all()}
+    assert names == {CUST: "王工", "zhangsan": "张三", gone: None}
+
+    calls = directory.calls
+    syncer.sync_once()  # 10 分钟内不再补
+    assert directory.calls == calls
+
+
+def _member_directory(member_lists):
+    """模拟企业微信群成员接口：每次查询依次返回 member_lists 里的一份名单，记录请求体。"""
+    import httpx
+
+    from app.channels.wecom.directory import GroupDirectory
+
+    bodies = []
+
+    def handler(request: httpx.Request):
+        if request.url.path.endswith("/gettoken"):
+            return httpx.Response(200, json={"errcode": 0, "access_token": "tk", "expires_in": 7200})
+        bodies.append(json.loads(request.content))
+        members = member_lists[min(len(bodies), len(member_lists)) - 1]
+        return httpx.Response(200, json={"errcode": 0, "group_chat": {"name": "国投证券-网易-BD-支持",
+                                                                       "member_list": members}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    return GroupDirectory(CORP, "", "contact-secret", client=client, contact_client=client), bodies
+
+
+def test_group_directory_member_names():
+    """群成员名字：群昵称优先，没有群昵称用微信名或企业微信名；员工也在名单里。"""
+    d, bodies = _member_directory([[
+        {"userid": "wmA", "type": 2, "name": "贰零伍柒", "group_nickname": "国投证券_朱燕军"},
+        {"userid": "loB", "type": 2, "name": "朱燕军", "group_nickname": ""},
+        {"userid": "zhangsan", "type": 1, "name": "平台-小帆"},
+        {"userid": "wmC", "type": 2, "name": "", "group_nickname": ""},
+    ]])
+    info = d.lookup("wrEXT")
+    assert bodies == [{"chat_id": "wrEXT", "need_name": 1}]
+    assert info.members == {"wmA": "国投证券_朱燕军", "loB": "朱燕军", "zhangsan": "平台-小帆"}
+
+
+def test_group_directory_rechecks_new_member(monkeypatch):
+    """有人刚进群就发言：缓存的名单里没有他时重查，同一个群最多每 10 分钟一次。"""
+    from app.channels.wecom import directory as directory_mod
+
+    now = [1000.0]
+    monkeypatch.setattr(directory_mod.time, "time", lambda: now[0])
+    d, bodies = _member_directory([[{"userid": "wmA", "name": "老客户"}],
+                                   [{"userid": "wmA", "name": "老客户"}, {"userid": "wmNEW", "name": "新同事"}]])
+    assert d.lookup("wrEXT", "wmA").members == {"wmA": "老客户"}
+    assert d.lookup("wrEXT", "wmNEW").members == {"wmA": "老客户"} and len(bodies) == 1  # 刚查过，不重查
+    now[0] += directory_mod.MEMBER_RECHECK
+    assert d.lookup("wrEXT", "wmNEW").members["wmNEW"] == "新同事" and len(bodies) == 2
+    assert d.lookup("wrEXT", "wmGONE").members and len(bodies) == 2  # 刚重查过，查不到的人不再反复查
 
 
 def test_archive_poll_backs_off_after_error(monkeypatch):

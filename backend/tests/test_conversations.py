@@ -35,6 +35,7 @@ def test_full_history_with_staff_and_files(client):
     assert page["items"][0]["suggestion"]["status"] == "ready"  # 客户消息带 AI 建议
     assert page["items"][1]["suggestion"] is None
     assert [i["message"]["from_customer"] for i in page["items"]] == [True, False, True]
+    assert [i["message"]["sender_kind"] for i in page["items"]] == ["wechat", "internal", "wechat"]  # 来源标注
     assert not page["has_more_before"]
 
 
