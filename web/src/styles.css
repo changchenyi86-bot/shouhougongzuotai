@@ -248,6 +248,25 @@ nav.nav-bottom { margin-top: auto; }
   color: var(--text-3);
 }
 
+/* 收起时只留图标窄条，鼠标停在图标上显示名称 */
+aside { transition: width .15s ease, padding .15s ease; overflow: hidden; white-space: nowrap; }
+aside.collapsed { width: 60px; padding: 16px 10px; }
+aside.collapsed h1 { margin: 2px 0 22px; justify-content: center; }
+aside.collapsed .brand,
+aside.collapsed nav a > span,
+aside.collapsed .soon { display: none; }
+aside.collapsed nav a { justify-content: center; padding: 0; position: relative; }
+aside.collapsed .nav-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 15px;
+}
+
 main {
   flex: 1;
   min-width: 0;

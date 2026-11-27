@@ -17,6 +17,8 @@ const ICONS: Record<string, string> = {
   采纳统计: "M4 19h16M7 16v-4M12 16V8M17 16v-6",
   评测: "M9 4h6M10 4v5.5L5.2 17.4A1.7 1.7 0 0 0 6.7 20h10.6a1.7 1.7 0 0 0 1.5-2.6L14 9.5V4M7.5 14h9",
   积分排名: "M5 20V11M12 20V5M19 20v-6",
+  收起: "M15 6l-6 6 6 6",
+  展开: "M9 6l6 6-6 6",
   团队设置:
     "M16 19v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 17.5V19M10 10.5a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM20 19v-1.5a3.5 3.5 0 0 0-2.5-3.35M15.5 4.6a3 3 0 0 1 0 5.8",
 };
@@ -28,6 +30,25 @@ const HASH: Record<Page, string> = { 会话: "", 知识库: "#knowledge", 采纳
 
 function pageFromHash(): Page {
   return PAGES.find((p) => HASH[p] && HASH[p] === location.hash) ?? "会话";
+}
+
+// 左侧导航默认收起成只有图标的窄条，展开/收起记在浏览器里
+const NAV_KEY = "nav-expanded";
+
+function loadNavExpanded(): boolean {
+  try {
+    return localStorage.getItem(NAV_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function saveNavExpanded(expanded: boolean) {
+  try {
+    localStorage.setItem(NAV_KEY, expanded ? "1" : "0");
+  } catch {
+    /* 浏览器禁用存储时忽略 */
+  }
 }
 
 function Icon({ d }: { d: string }) {
@@ -44,6 +65,7 @@ export default function App() {
   const [page, setPageState] = useState<Page>(pageFromHash);
   const [knowledgeBadge, setKnowledgeBadge] = useState(0);
   const [theme, setTheme] = useState<Theme>(loadTheme);
+  const [navExpanded, setNavExpanded] = useState(loadNavExpanded);
   const [toast, setToast] = useState<string | null>(null);
   const [sendState, setSendState] = useState<SendState | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout>>();
@@ -126,6 +148,12 @@ export default function App() {
     saveTheme(theme);
   }, [theme]);
 
+  const toggleNav = () => {
+    const next = !navExpanded;
+    setNavExpanded(next);
+    saveNavExpanded(next);
+  };
+
   if (auth === "loading") return <div className="auth-page" />;
   if (auth !== "in" || !me) return <Login setup={auth === "setup"} onDone={signedIn} />;
 
@@ -134,14 +162,14 @@ export default function App() {
 
   return (
     <div className="layout">
-      <aside>
-        <h1>
+      <aside className={navExpanded ? "" : "collapsed"}>
+        <h1 title={navExpanded ? undefined : "售后工作台"}>
           <Logo />
           <span className="brand">售后工作台</span>
         </h1>
         <nav>
           {(["会话", "知识库", "采纳统计", "评测"] as Page[]).map((p) => (
-            <a key={p} href={HASH[p] || "#"} className={current === p ? "active" : ""} onClick={(e) => {
+            <a key={p} href={HASH[p] || "#"} className={current === p ? "active" : ""} title={navExpanded ? undefined : p} onClick={(e) => {
               e.preventDefault();
               setPage(p);
             }}>
@@ -153,21 +181,30 @@ export default function App() {
             </a>
           ))}
           {SOON.map((label) => (
-            <a key={label} className="disabled" title="即将上线">
+            <a key={label} className="disabled" title={navExpanded ? "即将上线" : `${label}（即将上线）`}>
               <Icon d={ICONS[label]} />
               <span>{label}</span>
               <small className="soon">即将上线</small>
             </a>
           ))}
         </nav>
-        {admin && (
-          <nav className="nav-bottom">
-            <a className={current === "团队设置" ? "active" : ""} onClick={() => setPage("团队设置")}>
+        <nav className="nav-bottom">
+          {admin && (
+            <a className={current === "团队设置" ? "active" : ""} title={navExpanded ? undefined : "团队设置"} onClick={() => setPage("团队设置")}>
               <Icon d={ICONS["团队设置"]} />
               <span>团队设置</span>
             </a>
-          </nav>
-        )}
+          )}
+          <a className="nav-toggle" role="button" title={navExpanded ? "收起导航" : "展开导航"} aria-expanded={navExpanded} tabIndex={0} onClick={toggleNav} onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              toggleNav();
+            }
+          }}>
+            <Icon d={ICONS[navExpanded ? "收起" : "展开"]} />
+            <span>收起导航</span>
+          </a>
+        </nav>
       </aside>
       <main>
         <header>
