@@ -119,3 +119,21 @@ def test_set_group_name_validation(client):
     _msg(client, 1, group="wrX", name=None)
     assert client.put("/api/groups/name", json={"channel": "wecom", "group_id": "wrX", "name": "   "}).status_code == 422
     assert client.put("/api/groups/name", json={"channel": "wecom", "group_id": "nope", "name": "x"}).status_code == 404
+
+
+def test_updates_version_changes_on_new_message_and_suggestion(client):
+    v0 = client.get("/api/updates")
+    assert v0.status_code == 200
+    _msg(client, 1)
+    v1 = client.get("/api/updates").json()["version"]
+    assert v1 != v0.json()["version"]
+    assert client.get("/api/updates").json()["version"] == v1  # 没有变化时版本号不变
+
+    sug = _conv(client)["items"][0]["suggestion"]
+    assert client.post(f"/api/suggestions/{sug['id']}/dismiss", json={}).status_code == 200
+    assert client.get("/api/updates").json()["version"] != v1
+
+
+def test_updates_requires_login(client):
+    client.cookies.clear()
+    assert client.get("/api/updates").status_code == 401

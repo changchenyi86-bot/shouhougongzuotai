@@ -401,6 +401,8 @@ async function handle(path: string, query: URLSearchParams, method: string, body
     return s;
   }
 
+  if (path === "updates") return { version: "demo" };
+
   if (path === "send/status")
     return {
       enabled: true,

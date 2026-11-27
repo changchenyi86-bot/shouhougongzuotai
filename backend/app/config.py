@@ -67,7 +67,8 @@ class Settings(BaseSettings):
     wecom_archive_proxy: str = ""
     wecom_archive_proxy_password: str = ""
     wecom_archive_batch_size: int = 100
-    wecom_archive_poll_interval: int = 30  # 秒，0 表示只靠回调通知触发拉取
+    # 秒，0 表示只靠回调通知触发拉取。企业微信限制拉取接口每分钟 4000 次，3 秒一次（每分钟 20 次）远低于上限
+    wecom_archive_poll_interval: float = 3
     # 存档应用「接收事件服务器」配置，收到 msgaudit_notify 时立即拉取
     wecom_callback_token: str = ""
     wecom_callback_aes_key: str = ""

@@ -41,6 +41,19 @@ def _brief(staff: Staff | None) -> StaffBrief | None:
     return StaffBrief.model_validate(staff) if staff else None
 
 
+@router.get("/updates")
+def updates(session: Session = Depends(get_session)) -> dict:
+    """工作台有没有新变化：新消息、AI 建议生成完或被处理、会话开始结束或转人。
+
+    页面每两秒问一次，版本号变了才去刷新群列表和聊天记录，新消息入库后几秒内就能看到。
+    只比较几个最大时间戳，查询很轻。
+    """
+    columns = [Message.received_at, Suggestion.updated_at,
+               Conversation.opened_at, Conversation.assigned_at, Conversation.ended_at]
+    stamps = session.execute(select(*(select(func.max(c)).scalar_subquery() for c in columns))).one()
+    return {"version": "|".join(str(t or "") for t in stamps)}
+
+
 @router.get("/groups", response_model=list[GroupOut])
 def list_groups(
     view: Literal["todo", "escalated", "unassigned", "all"] = "all",
