@@ -318,3 +318,20 @@ def test_merged_coverage_respects_time_window_and_support(client, monkeypatch):
     run_pending(pending)
     assert snapshot(fourth).covers == [str(fourth)]
     assert snapshot(first).status == S.MERGED
+
+
+def test_no_question_round_skips_lookup(client, fake_llm, monkeypatch):
+    """这一轮只是致谢、确认或客户之间商量：不改写成技术问题，也不查知识和相似问答。"""
+    seen = []
+    monkeypatch.setattr(knowledge, "skip_reason", lambda text: None)
+    monkeypatch.setattr(knowledge, "retrieve", lambda text, group_name=None: seen.append(("knowledge", text)) or [])
+    monkeypatch.setattr(similar, "search", lambda session, query, exclude, **kw: seen.append(("similar", query)) or [])
+    fake_llm.results[suggest.RoundQuery] = suggest.RoundQuery(has_question=False, question="客户在商量明天谁来升级")
+    post(client, 1, "导出报错？")
+    seen.clear()
+    latest = post(client, 2, "明天你来升级吧，我请假", 1)
+    assert seen == []
+    sug = snapshot(latest)
+    assert sug.status == S.READY
+    assert sug.question == "导出报错？\n明天你来升级吧，我请假"
+    assert sug.knowledge_note == suggest.NO_QUESTION_NOTE
