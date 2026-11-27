@@ -360,11 +360,35 @@ export interface Staff {
   open_count: number;
   /** 设过密码；批量导入的成员要管理员设了密码才能登录 */
   has_password: boolean;
+  /** 绑定的公司账号（邮箱前缀），绑定后能用网易账号登录 */
+  sso_subject: string | null;
+}
+
+export interface AuthState {
+  needs_setup: boolean;
+  /** 配好了公司单点登录，登录页显示「用网易账号登录」 */
+  sso_enabled: boolean;
+  /** 「用网易账号登录」按钮的地址（和登记的回调地址同一个网址，浏览器直接跳过去） */
+  sso_login_url: string | null;
+  /** 退出工作台后要跳去退出公司登录的地址（站点设了跳过二步确认时才有） */
+  sso_logout_url: string | null;
+}
+
+/** 用公司账号登录过、或管理员绑定过的账号 */
+export interface SsoAccount {
+  subject: string;
+  fullname: string | null;
+  email: string | null;
+  staff_id: string | null;
+  staff_name: string | null;
+  /** 没绑定时，姓名一样、还没绑定公司账号的成员 */
+  suggested_staff_id: string | null;
+  last_login_at: string | null;
 }
 
 const put = <T>(url: string, body: unknown) => call<T>(url, { method: "PUT", body: JSON.stringify(body) });
 
-export const fetchAuthState = () => call<{ needs_setup: boolean }>("/api/auth/state");
+export const fetchAuthState = () => call<AuthState>("/api/auth/state");
 export const fetchMe = () => call<Staff>("/api/auth/me");
 export const login = (username: string, password: string) => post<Staff>("/api/auth/login", { username, password });
 export const setupAdmin = (body: { name: string; username: string; password: string }) =>
@@ -373,6 +397,13 @@ export const logout = () => post<void>("/api/auth/logout");
 export const setMyStatus = (status: StaffStatus) => put<Staff>("/api/auth/me/status", { status });
 export const changePassword = (old_password: string, new_password: string) =>
   put<void>("/api/auth/me/password", { old_password, new_password });
+
+export const fetchSsoAccounts = () => call<SsoAccount[]>("/api/sso/accounts");
+/** 把公司账号绑定到成员；staffId 为 null 表示解除绑定 */
+export const bindSsoAccount = (subject: string, staffId: string | null) =>
+  put<SsoAccount>(`/api/sso/accounts/${encodeURIComponent(subject)}`, { staff_id: staffId });
+export const dismissSsoAccount = (subject: string) =>
+  call<void>(`/api/sso/accounts/${encodeURIComponent(subject)}`, { method: "DELETE" });
 
 export const fetchTeams = () => call<Team[]>("/api/teams");
 export const fetchStaff = () => call<Staff[]>("/api/staff");

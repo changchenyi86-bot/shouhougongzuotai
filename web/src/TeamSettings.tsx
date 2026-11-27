@@ -1,5 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
-import { addStaff, editStaff, fetchStaff, fetchTeams, ROLE_LABEL, type Role, type Staff, type Team } from "./api";
+import {
+  addStaff,
+  bindSsoAccount,
+  dismissSsoAccount,
+  editStaff,
+  fetchAuthState,
+  fetchSsoAccounts,
+  fetchStaff,
+  fetchTeams,
+  ROLE_LABEL,
+  type Role,
+  type SsoAccount,
+  type Staff,
+  type Team,
+} from "./api";
 import GroupOwners from "./GroupOwners";
 
 interface Props {
@@ -7,8 +21,8 @@ interface Props {
   notify: (text: string) => void;
 }
 
-type Draft = { name: string; username: string; password: string; role: Role; team_id: string };
-const EMPTY: Draft = { name: "", username: "", password: "", role: "support", team_id: "" };
+type Draft = { name: string; username: string; password: string; role: Role; team_id: string; sso: string };
+const EMPTY: Draft = { name: "", username: "", password: "", role: "support", team_id: "", sso: "" };
 
 function lastSeen(iso: string | null) {
   if (!iso) return "还没登录过";
@@ -21,7 +35,7 @@ function lastSeen(iso: string | null) {
 
 function StatusCell({ s }: { s: Staff }) {
   if (!s.active) return <span className="st muted">已停用</span>;
-  if (!s.has_password) return <span className="st warn-text">还没设密码，登录不了</span>;
+  if (!s.has_password && !s.sso_subject) return <span className="st warn-text">还没设密码，登录不了</span>;
   if (s.online) return <span className="st"><i className="st-dot online" />在线</span>;
   if (s.status === "away") return <span className="st"><i className="st-dot away" />离开</span>;
   return <span className="st muted"><i className="st-dot off" />不在线 · {lastSeen(s.last_seen)}</span>;
@@ -49,14 +63,18 @@ function Members({ me, notify }: Props) {
   const [staff, setStaff] = useState<Staff[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
   const [adding, setAdding] = useState<Draft | null>(null);
-  const [editing, setEditing] = useState<{ id: string; draft: Draft; active: boolean } | null>(null);
+  const [editing, setEditing] = useState<{ id: string; draft: Draft; active: boolean; sso: string } | null>(null);
+  const [accounts, setAccounts] = useState<SsoAccount[]>([]);
+  const [ssoOn, setSsoOn] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(() => {
-    Promise.all([fetchStaff(), fetchTeams()])
-      .then(([s, t]) => {
+    Promise.all([fetchStaff(), fetchTeams(), fetchSsoAccounts(), fetchAuthState()])
+      .then(([s, t, a, auth]) => {
         setStaff(s);
         setTeams(t);
+        setAccounts(a);
+        setSsoOn(auth.sso_enabled);
       })
       .catch((e: Error) => notify(`加载失败：${e.message}`));
   }, [notify]);
@@ -84,22 +102,31 @@ function Members({ me, notify }: Props) {
 
   const saveNew = async () => {
     if (!adding) return;
-    const ok = await run(() => addStaff({ ...adding, team_id: adding.team_id || null }), `已添加${adding.name}，把账号和初始密码发给对方就能登录`);
+    const { sso, ...body } = adding;
+    const ok = await run(async () => {
+      const s = await addStaff({ ...body, team_id: body.team_id || null });
+      if (sso.trim()) await bindSsoAccount(sso.trim(), s.id);
+    }, `已添加${adding.name}，把账号和初始密码发给对方就能登录${adding.sso.trim() ? "，也能用网易账号登录" : ""}`);
     if (ok) setAdding(null);
   };
 
   const saveEdit = async () => {
     if (!editing) return;
-    const { id, draft, active } = editing;
+    const { id, draft, active, sso } = editing;
+    const nextSso = draft.sso.trim().toLowerCase();
     const ok = await run(
-      () =>
-        editStaff(id, {
+      async () => {
+        await editStaff(id, {
           name: draft.name,
           role: draft.role,
           ...(draft.team_id ? { team_id: draft.team_id } : { clear_team: true }),
           active,
           ...(draft.password ? { password: draft.password } : {}),
-        }),
+        });
+        // 公司账号：换了就绑新的（旧的自动解除），清空就解除
+        if (nextSso && nextSso !== sso) await bindSsoAccount(nextSso, id);
+        else if (!nextSso && sso) await bindSsoAccount(sso, null);
+      },
       draft.password ? "已保存，密码已重设" : "已保存",
     );
     if (ok) setEditing(null);
@@ -117,6 +144,9 @@ function Members({ me, notify }: Props) {
         ))}
       </select>
     ),
+    sso: (
+      <input value={d.sso} maxLength={64} placeholder="邮箱前缀，可不填" onChange={(e) => set({ ...d, sso: e.target.value })} />
+    ),
     team: (
       <select value={d.team_id} onChange={(e) => set({ ...d, team_id: e.target.value })}>
         <option value="">不分组</option>
@@ -128,9 +158,16 @@ function Members({ me, notify }: Props) {
   });
 
   const activeCount = staff.filter((s) => s.active).length;
+  // 配好单点登录、或者已经有人绑了公司账号时，显示「公司账号」一列
+  const showSso = ssoOn || staff.some((s) => s.sso_subject);
+  const pending = accounts.filter((a) => !a.staff_id);
+  const freeStaff = staff.filter((s) => s.active && !s.sso_subject);
 
   return (
     <>
+      {pending.length > 0 && (
+        <PendingAccounts accounts={pending} freeStaff={freeStaff} busy={busy} run={run} />
+      )}
       <div className="card">
         <div className="card-head">
           <div>
@@ -147,6 +184,7 @@ function Members({ me, notify }: Props) {
               <tr>
                 <th>成员</th>
                 <th>账号</th>
+                {showSso && <th>公司账号</th>}
                 <th>角色</th>
                 <th>分组</th>
                 <th>{adding || editing ? "状态 / 密码" : "状态"}</th>
@@ -160,6 +198,7 @@ function Members({ me, notify }: Props) {
                   <tr className="editing">
                     <td>{f.name}</td>
                     <td>{f.username}</td>
+                    {showSso && <td>{f.sso}</td>}
                     <td>{f.role}</td>
                     <td>{f.team}</td>
                     <td>
@@ -179,6 +218,7 @@ function Members({ me, notify }: Props) {
                     <tr key={s.id} className="editing">
                       <td>{f.name}</td>
                       <td className="muted">{s.username}</td>
+                      {showSso && <td>{f.sso}</td>}
                       <td>{f.role}</td>
                       <td>{f.team}</td>
                       <td>
@@ -207,6 +247,7 @@ function Members({ me, notify }: Props) {
                       </span>
                     </td>
                     <td className="muted">{s.username}</td>
+                    {showSso && <td>{s.sso_subject ?? <span className="muted">未绑定</span>}</td>}
                     <td><span className={`role ${s.role}`}>{ROLE_LABEL[s.role]}</span></td>
                     <td>{s.team?.name ?? <span className="muted">不分组</span>}</td>
                     <td><StatusCell s={s} /></td>
@@ -218,7 +259,8 @@ function Members({ me, notify }: Props) {
                           setEditing({
                             id: s.id,
                             active: s.active,
-                            draft: { name: s.name, username: s.username, password: "", role: s.role, team_id: s.team?.id ?? "" },
+                            sso: s.sso_subject ?? "",
+                            draft: { name: s.name, username: s.username, password: "", role: s.role, team_id: s.team?.id ?? "", sso: s.sso_subject ?? "" },
                           });
                         }}
                       >
@@ -233,5 +275,78 @@ function Members({ me, notify }: Props) {
         </div>
       </div>
     </>
+  );
+}
+
+function when(iso: string | null) {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+/** 用网易账号登录过、但还没对上工作台成员的公司账号，管理员选成员绑定。 */
+function PendingAccounts({ accounts, freeStaff, busy, run }: {
+  accounts: SsoAccount[];
+  freeStaff: Staff[];
+  busy: boolean;
+  run: (fn: () => Promise<unknown>, done: string) => Promise<boolean>;
+}) {
+  const [pick, setPick] = useState<Record<string, string>>({});
+  const chosen = (a: SsoAccount) => pick[a.subject] ?? a.suggested_staff_id ?? "";
+  return (
+    <div className="card sso-pending">
+      <div className="card-head">
+        <div>
+          <h3>等待绑定的公司账号 {accounts.length} 个</h3>
+          <p className="sub">这些人用网易账号登录过，但没对上工作台成员。选好是哪位成员点「绑定」，对方再点一次「用网易账号登录」就能进来。</p>
+        </div>
+      </div>
+      <div className="table-wrap">
+        <table className="t">
+          <thead>
+            <tr>
+              <th>公司账号</th>
+              <th>公司登记的姓名</th>
+              <th>最近登录</th>
+              <th>是哪位成员</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {accounts.map((a) => {
+              const staffId = chosen(a);
+              const name = freeStaff.find((s) => s.id === staffId)?.name;
+              return (
+                <tr key={a.subject}>
+                  <td>
+                    <b>{a.subject}</b>
+                    {a.email && <small className="muted sso-email">{a.email}</small>}
+                  </td>
+                  <td>{a.fullname ?? <span className="muted">没取到</span>}</td>
+                  <td className="muted">{when(a.last_login_at)}</td>
+                  <td>
+                    <select value={staffId} onChange={(e) => setPick({ ...pick, [a.subject]: e.target.value })}>
+                      <option value="">选择成员…</option>
+                      {freeStaff.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}（{s.username}）{s.id === a.suggested_staff_id ? " · 姓名一样" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="row-actions">
+                    <button className="primary" disabled={busy || !staffId} onClick={() => run(() => bindSsoAccount(a.subject, staffId), `已把 ${a.subject} 绑定给${name ?? "这位成员"}`)}>
+                      绑定
+                    </button>
+                    <button className="link" disabled={busy} onClick={() => run(() => dismissSsoAccount(a.subject), `已忽略 ${a.subject}`)}>
+                      忽略
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }

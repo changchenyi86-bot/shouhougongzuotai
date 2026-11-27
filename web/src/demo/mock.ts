@@ -13,6 +13,7 @@ import type {
   Message,
   SenderKind,
   SendTask,
+  SsoAccount,
   Staff,
   Suggestion,
   Team,
@@ -35,16 +36,21 @@ const TEAMS: Team[] = [
 ];
 const seen = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
 function member(name: string, username: string, role: Staff["role"], team: Team | null, online: boolean, extra: Partial<Staff> = {}): Staff {
-  return { id: `u-${username}`, name, username, role, team, active: true, status: "online", online, last_seen: seen(online ? 0 : 300), open_count: 0, has_password: true, ...extra };
+  return { id: `u-${username}`, name, username, role, team, active: true, status: "online", online, last_seen: seen(online ? 0 : 300), open_count: 0, has_password: true, sso_subject: null, ...extra };
 }
 const STAFF: Staff[] = [
   member("李四", "lisi", "admin", null, true),
-  member("姜瑜", "jiangyu", "support", TEAMS[0], true),
+  member("姜瑜", "jiangyu", "support", TEAMS[0], true, { sso_subject: "jiangyu" }),
   member("宋奔", "songben", "support", TEAMS[0], false, { status: "away" }),
   member("唐已杰", "tangyijie", "support", TEAMS[1], true),
   member("陆宣任", "luxuanren", "support", TEAMS[1], false),
 ];
 const ME = STAFF[0];
+// 用网易账号登录过的公司账号：宋奔的公司账号和工作台账号不一样，等管理员绑定
+const SSO_ACCOUNTS: SsoAccount[] = [
+  { subject: "jiangyu", fullname: "姜瑜", email: "jiangyu@corp.netease.com", staff_id: "u-jiangyu", staff_name: "姜瑜", suggested_staff_id: null, last_login_at: seen(30) },
+  { subject: "songben01", fullname: "宋奔", email: "songben01@corp.netease.com", staff_id: null, staff_name: null, suggested_staff_id: "u-songben", last_login_at: seen(8) },
+];
 const brief = (name: string) => {
   const s = STAFF.find((x) => x.name === name)!;
   return { id: s.id, name: s.name };
@@ -444,7 +450,36 @@ const handled = (s: Suggestion, status: Suggestion["status"]) => {
 async function handle(path: string, query: URLSearchParams, method: string, body: unknown): Promise<unknown> {
   const data = (body && typeof body === "object" && !(body instanceof FormData) ? body : {}) as Record<string, unknown>;
 
-  if (path === "auth/state") return { needs_setup: false };
+  if (path === "auth/state") return { needs_setup: false, sso_enabled: true, sso_login_url: "/api/auth/sso/login", sso_logout_url: null };
+  if (path === "sso/accounts") return SSO_ACCOUNTS;
+  const ssoHit = path.match(/^sso\/accounts\/([^/]+)$/);
+  if (ssoHit) {
+    const subject = decodeURIComponent(ssoHit[1]).toLowerCase();
+    let a = SSO_ACCOUNTS.find((x) => x.subject === subject);
+    const unbind = (x: SsoAccount) => {
+      const s = STAFF.find((m) => m.id === x.staff_id);
+      if (s) s.sso_subject = null;
+      x.staff_id = x.staff_name = null;
+    };
+    if (method === "DELETE") {
+      if (a) SSO_ACCOUNTS.splice(SSO_ACCOUNTS.indexOf(a), 1);
+      return null;
+    }
+    if (!a) {
+      a = { subject, fullname: null, email: null, staff_id: null, staff_name: null, suggested_staff_id: null, last_login_at: null };
+      SSO_ACCOUNTS.push(a);
+    }
+    if (a.staff_id) unbind(a);
+    const s = STAFF.find((m) => m.id === data.staff_id);
+    if (s) {
+      const old = SSO_ACCOUNTS.find((x) => x.staff_id === s.id);
+      if (old) unbind(old);
+      a.staff_id = s.id;
+      a.staff_name = s.name;
+      s.sso_subject = subject;
+    }
+    return a;
+  }
   if (path === "auth/me" || path === "auth/login" || path === "auth/setup") return ME;
   if (path === "auth/me/status") {
     ME.status = data.status as Staff["status"];

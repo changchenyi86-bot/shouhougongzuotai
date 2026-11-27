@@ -94,6 +94,19 @@ class Settings(BaseSettings):
     cookie_secure: bool = False  # 部署到 https 后设为 true，Cookie 只走加密连接
     staff_online_seconds: int = 120  # 超过这个时间没打开工作台，视为不在线
 
+    # ---- 公司单点登录（网易 OpenID Connect）----
+    # 在 https://login.netease.com/sitemgnt/ 登记站点、开通 OpenID Connect 后得到。三项都填了，登录页才显示「用网易账号登录」；
+    # 账号密码登录照样能用
+    sso_client_id: str = ""
+    sso_client_secret: str = ""
+    # 登记时填的回调地址，必须一字不差，如 http://localhost:5173/api/auth/sso/callback。换了访问地址（搬到服务器）要重新登记
+    sso_redirect_uri: str = ""
+    sso_issuer: str = "https://login.netease.com/connect"
+    sso_scope: str = "openid nickname fullname email"  # 工号、部门等要二级部门总监审批，不申请
+    # 站点设了「跳过二步确认」时设为 true：退出工作台时一起退出公司登录，不然再点登录会直接进来
+    sso_upstream_logout: bool = False
+    sso_timeout: float = 10
+
     # ---- 附件（图片、文件） ----
     attachment_dir: str = "./data/attachments"
     attachment_max_mb: int = 20  # 上传和下载的单个文件上限
@@ -111,6 +124,10 @@ class Settings(BaseSettings):
     def _versions_as_str(cls, v):
         # 允许写成 [1] 或 ["1"]
         return [str(x) for x in v] if isinstance(v, (list, tuple, set)) else v
+
+    @property
+    def sso_enabled(self) -> bool:
+        return bool(self.sso_client_id and self.sso_client_secret and self.sso_redirect_uri)
 
     @property
     def wecom_archive_enabled(self) -> bool:

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AUTH_REQUIRED, fetchAuthState, fetchCandidateCounts, fetchMe, fetchSendState, type SendState, type Staff } from "./api";
+import { AUTH_REQUIRED, type AuthState, fetchAuthState, fetchCandidateCounts, fetchMe, fetchSendState, type SendState, type Staff } from "./api";
 import Conversations from "./Conversations";
 import EvalPage from "./EvalPage";
 import KnowledgePage from "./KnowledgePage";
@@ -61,6 +61,7 @@ function Icon({ d }: { d: string }) {
 
 export default function App() {
   const [auth, setAuth] = useState<"loading" | "login" | "setup" | "in">("loading");
+  const [authInfo, setAuthInfo] = useState<AuthState | null>(null);
   const [me, setMe] = useState<Staff | null>(null);
   const [page, setPageState] = useState<Page>(pageFromHash);
   const [knowledgeBadge, setKnowledgeBadge] = useState(0);
@@ -87,12 +88,17 @@ export default function App() {
     setAuth("in");
   };
 
-  // 打开时看有没有登录；没有的话，还没设过管理员就先设管理员
+  // 打开时看有没有登录；没有的话，还没设过管理员就先设管理员。顺便看开没开公司单点登录
   useEffect(() => {
+    const state = fetchAuthState().then((s) => {
+      setAuthInfo(s);
+      return s;
+    });
+    state.catch(() => {}); // 已登录时不用它，取不到也不报错
     fetchMe()
       .then(signedIn)
       .catch(() =>
-        fetchAuthState()
+        state
           .then((s) => setAuth(s.needs_setup ? "setup" : "login"))
           .catch(() => setAuth("login")),
       );
@@ -155,7 +161,7 @@ export default function App() {
   };
 
   if (auth === "loading") return <div className="auth-page" />;
-  if (auth !== "in" || !me) return <Login setup={auth === "setup"} onDone={signedIn} />;
+  if (auth !== "in" || !me) return <Login setup={auth === "setup"} ssoUrl={authInfo?.sso_login_url ?? null} onDone={signedIn} />;
 
   const admin = me.role === "admin";
   const current: Page = page === "团队设置" && !admin ? "会话" : page;
@@ -223,6 +229,11 @@ export default function App() {
               me={me}
               onChange={setMe}
               onLogout={() => {
+                // 公司登录站点设了跳过二步确认时，一起退出公司登录，不然再点「用网易账号登录」会直接进来
+                if (authInfo?.sso_logout_url) {
+                  location.href = authInfo.sso_logout_url;
+                  return;
+                }
                 setMe(null);
                 setPage("会话");
                 setAuth("login");

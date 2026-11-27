@@ -7,7 +7,8 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app import auth, routing
+from app import auth, routing, sso
+from app.config import settings
 from app.db import get_session
 from app.models import Role, Staff, Team
 from app.schemas import (AuthState, LoginIn, PasswordIn, SetupIn, StaffIn, StaffOut, StaffPatch, StatusIn,
@@ -20,7 +21,7 @@ def staff_out(s: Staff, open_count: int = 0) -> StaffOut:
     return StaffOut(id=s.id, name=s.name, username=s.username, role=s.role,
                     team=TeamOut.model_validate(s.team) if s.team else None, active=s.active, status=s.status,
                     online=auth.is_online(s), last_seen=s.last_seen, open_count=open_count,
-                    has_password=bool(s.password_hash))
+                    has_password=bool(s.password_hash), sso_subject=s.sso_account.subject if s.sso_account else None)
 
 
 # ---------- 登录 ----------
@@ -28,7 +29,9 @@ def staff_out(s: Staff, open_count: int = 0) -> StaffOut:
 
 @router.get("/auth/state", response_model=AuthState)
 def auth_state(session: Session = Depends(get_session)) -> AuthState:
-    return AuthState(needs_setup=auth.needs_setup(session))
+    on = settings.sso_enabled
+    return AuthState(needs_setup=auth.needs_setup(session), sso_enabled=on,
+                     sso_login_url=sso.login_url() if on else None, sso_logout_url=sso.logout_url() if on else None)
 
 
 @router.post("/auth/setup", response_model=StaffOut, status_code=status.HTTP_201_CREATED)

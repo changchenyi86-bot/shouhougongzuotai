@@ -31,7 +31,7 @@ def _add(client, name, username, role="support", team=None, password="secret-123
 
 def test_setup_once_and_login(client):
     # client 已经设过管理员（李四）
-    assert client.get("/api/auth/state").json() == {"needs_setup": False}
+    assert client.get("/api/auth/state").json()["needs_setup"] is False
     r = client.post("/api/auth/setup", json={"name": "王五", "username": "ww", "password": "password123"})
     assert r.status_code == 409
     me = client.get("/api/auth/me").json()

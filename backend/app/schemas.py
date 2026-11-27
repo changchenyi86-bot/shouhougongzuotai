@@ -337,6 +337,9 @@ class SendIn(BaseModel):
 
 class AuthState(BaseModel):
     needs_setup: bool = Field(description="还没有任何账号，要先设管理员")
+    sso_enabled: bool = Field(default=False, description="配好了公司单点登录，登录页显示「用网易账号登录」")
+    sso_login_url: str | None = Field(default=None, description="「用网易账号登录」按钮的地址（和登记的回调地址同一个网址）")
+    sso_logout_url: str | None = Field(default=None, description="退出工作台后要跳去退出公司登录的地址")
 
 
 class LoginIn(BaseModel):
@@ -387,6 +390,7 @@ class StaffOut(BaseModel):
     last_seen: datetime | None
     open_count: int = Field(default=0, description="手上进行中的会话数")
     has_password: bool = Field(default=True, description="设过密码；批量导入的成员要管理员设了密码才能登录")
+    sso_subject: str | None = Field(default=None, description="绑定的公司账号（邮箱前缀），绑定后能用网易账号登录")
 
 
 class StaffIn(BaseModel):
@@ -788,3 +792,20 @@ class CustomerNoteEdit(BaseModel):
     @classmethod
     def _strip(cls, v: str) -> str:
         return _strip_text(v)
+
+
+# ---------- 公司单点登录 ----------
+
+
+class SsoAccountOut(BaseModel):
+    subject: str = Field(description="公司账号（邮箱前缀）")
+    fullname: str | None
+    email: str | None
+    staff_id: uuid.UUID | None = Field(description="绑定的成员；为空表示登录过、还没绑定")
+    staff_name: str | None
+    suggested_staff_id: uuid.UUID | None = Field(default=None, description="没绑定时，姓名一样、还没绑定公司账号的成员")
+    last_login_at: datetime | None
+
+
+class SsoBindIn(BaseModel):
+    staff_id: uuid.UUID | None = Field(description="绑定到哪个成员；null 表示解除绑定")

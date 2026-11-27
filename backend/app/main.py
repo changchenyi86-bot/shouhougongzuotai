@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import auth, customers, db, routing
 from app.ai import evaluate, similar, worker
 from app.api import (assist, attachments, candidates, conversations, customers as customers_api, evaluation, messages,
-                     sending, staff, stats, suggestions)
+                     sending, sso, staff, stats, suggestions)
 from app.channels.wecom import router as wecom_router
 from app.channels.wecom.archive import get_syncer
 from app.config import settings
@@ -84,6 +84,7 @@ app.include_router(sending.router)
 app.include_router(conversations.router)
 app.include_router(attachments.router)
 app.include_router(staff.router)
+app.include_router(sso.router)
 app.include_router(assist.router)
 app.include_router(candidates.router)
 app.include_router(candidates.sync_router)

@@ -247,6 +247,34 @@ class Staff(Base):
     last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), comment="最近一次打开工作台")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     team: Mapped[Team | None] = relationship(lazy="selectin")
+    sso_account: Mapped["SsoAccount | None"] = relationship(lazy="selectin", viewonly=True)
+
+
+class SsoAccount(Base):
+    """公司单点登录账号（网易 OpenID 的 sub，即邮箱前缀）和工作台成员的对应。
+
+    staff_id 为空：这个公司账号登录过，但还没绑定成员，等管理员在团队设置里绑定。
+    """
+
+    __tablename__ = "sso_accounts"
+
+    subject: Mapped[str] = mapped_column(String(255), primary_key=True, comment="公司账号，统一小写")
+    staff_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("staff.id", ondelete="SET NULL"), unique=True)
+    fullname: Mapped[str | None] = mapped_column(String(64), comment="公司登记的姓名")
+    email: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), comment="最近一次用公司账号登录（含没绑定被挡回去的）")
+
+
+class SsoState(Base):
+    """单点登录发起时的一次性 state（浏览器 Cookie 里放原文，这里只存它的 SHA-256），回调时核对后删掉。"""
+
+    __tablename__ = "sso_states"
+
+    state_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    nonce: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class LoginToken(Base):
