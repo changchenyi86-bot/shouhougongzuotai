@@ -10,6 +10,7 @@ export function formatSize(bytes: number): string {
 }
 
 export const isImage = (a: Attachment) => a.mime.startsWith("image/");
+export const isVideo = (a: Attachment) => a.mime.startsWith("video/");
 
 type FileKind = "excel" | "word" | "ppt" | "pdf" | "zip" | "image" | "video" | "audio" | "text" | "other";
 
@@ -156,6 +157,15 @@ export function AttachmentView({ att }: { att: Attachment }) {
         <img src={attachmentUrl(att.id)} alt={att.filename} loading="lazy" />
       </button>
     );
+  if (isVideo(att))
+    return (
+      <div className="att-video">
+        <video src={attachmentUrl(att.id)} controls preload="metadata" playsInline />
+        <a className="att-video-dl" href={attachmentUrl(att.id, true)} title="下载视频">
+          下载 · {formatSize(att.size)}
+        </a>
+      </div>
+    );
   return <FileCard name={att.filename} size={att.size} href={attachmentUrl(att.id, true)} />;
 }
 
@@ -178,7 +188,7 @@ function ExtractNote({ att }: { att: Attachment }) {
   if (status === "failed")
     return (
       <div className="extract-line" title={att.extract_error ?? undefined}>
-        没识别出来，AI 建议看不到这{isImage(att) ? "张图" : "个文件"}的内容
+        没识别出来，AI 建议看不到这{isImage(att) ? "张图" : isVideo(att) ? "段视频" : "个文件"}的内容
       </div>
     );
   if (status === "skipped") {
@@ -225,7 +235,7 @@ export default function MessageBody({ message: m, onChanged }: { message: Messag
   const [error, setError] = useState<string | null>(null);
 
   if (m.attachment) {
-    const tip = m.from_customer && !isImage(m.attachment) && isRisky(m.attachment.filename);
+    const tip = m.from_customer && !isImage(m.attachment) && !isVideo(m.attachment) && isRisky(m.attachment.filename);
     return (
       <>
         <AttachmentView att={m.attachment} />
@@ -269,6 +279,20 @@ export default function MessageBody({ message: m, onChanged }: { message: Messag
         name={fileName}
         foot={err ? <span className="file-error">{err}{retryButton}</span> : <small>正在下载…</small>}
       />
+    );
+
+  // 视频还没下载下来（刚收到正在后台下载，或以前的旧消息）：可以点「下载视频」
+  if (m.msg_type === "video")
+    return (
+      <div className="bubble media">
+        {m.content}
+        <div className={err ? "media-error" : "media-pending"}>
+          {err ? <>下载失败：{err}</> : "视频还没下载到工作台"}
+          <button className="link" disabled={retrying} onClick={retry}>
+            {retrying ? "下载中…" : err ? "重新下载" : "下载视频"}
+          </button>
+        </div>
+      </div>
     );
 
   return (

@@ -69,6 +69,8 @@ def _content_of(record: dict) -> tuple[MessageType, str]:
         return MessageType.TEXT, body.get("info", {}).get("content", "") or body.get("content", "")
     if t == "image":
         return MessageType.IMAGE, "[图片]"
+    if t == "video":
+        return MessageType.VIDEO, "[视频]"
     if t == "file":
         return MessageType.FILE, f"[文件] {body.get('filename', '')}".strip()
     if t == "link":

@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     media_direct_images: bool = True
     media_direct_max_images: int = 3
     media_direct_max_side: int = 1600
+    video_frames: int = 6  # 视频抽几帧拼成一张图交给识图
 
     # ---- 售后数字人知识检索（自建实例的检索服务，MCP 接口） ----
     # 如 http://host.docker.internal:<本机端口>/messages，留空表示生成建议时不查知识库
@@ -115,6 +116,7 @@ class Settings(BaseSettings):
     # ---- 附件（图片、文件） ----
     attachment_dir: str = "./data/attachments"
     attachment_max_mb: int = 20  # 上传和下载的单个文件上限
+    video_max_mb: int = 100  # 客户群里发的视频下载上限（企业微信视频通常比图片、文件大）
 
     # ---- 自动发送（电脑端发送程序操作企业微信客户端） ----
     send_agent_token: str = ""  # 发送程序的访问口令，留空表示不启用自动发送

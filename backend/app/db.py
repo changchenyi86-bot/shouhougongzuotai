@@ -55,6 +55,9 @@ def _add_missing_columns() -> None:
         for table, columns in _DROP_NOT_NULL.items():
             for name in columns:
                 conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN {name} DROP NOT NULL"))
+        # 早期版本把企业微信视频存成「其他」消息，改成视频，工作台里才能下载、播放（枚举按名字存）
+        conn.execute(text("UPDATE messages SET msg_type = 'VIDEO' "
+                          "WHERE msg_type = 'OTHER' AND content = '[视频]' AND attachment_id IS NULL"))
 
 
 def get_session() -> Iterator[Session]:

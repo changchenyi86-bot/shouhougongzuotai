@@ -72,14 +72,74 @@ def image_data_url(data: bytes, max_side: int = 2000) -> str:
     return f'data:{mime};base64,' + base64.b64encode(output.getvalue()).decode('ascii')
 
 
-def _image(data: bytes, timeout: float | None) -> tuple[str, str]:
+_VIDEO_PROMPT = ("这是客户在售后技术支持群里发的一段录屏或视频，按时间顺序均匀抽了几帧，从左到右、从上到下拼成一张图，"
+                 "每格左上角标了帧序号和时间。请按帧顺序说明画面里客户在做什么操作、界面怎么变化，"
+                 "逐字抄出出现的弹框、报错、提示信息原文，以及关键的菜单、按钮名称和网址；看不清的字标「?」，不要猜。"
+                 "最后另起一段，以「说明：」开头，用一两句话概括这段视频演示了什么问题。只描述画面里能看到的，不要推测原因。")
+
+
+def frames_path(attachment_id) -> Path:
+    """视频抽帧拼图存在附件文件旁边，写建议时直接给模型看。"""
+    return Path(str(attachments.path_of(attachment_id)) + '.frames.jpg')
+
+
+def video_frames(data: bytes, count: int) -> tuple[bytes, float, int]:
+    """从视频里按时间均匀抽 count 帧，拼成一张 JPEG。返回 (图片, 时长秒, 实际帧数)。"""
+    import av
+    from PIL import ImageDraw, ImageFont
+
+    with av.open(io.BytesIO(data)) as container:
+        stream = container.streams.video[0]
+        duration = float(stream.duration * stream.time_base) if stream.duration else (
+            container.duration / 1_000_000 if container.duration else 0.0)
+        frames = []
+        if duration > 0:
+            # 避开第一帧（录屏开头常是黑屏）和最后一帧，均匀取点后各解出最近的一帧
+            for i in range(count):
+                at = duration * (i + 0.5) / count
+                container.seek(int(at / stream.time_base), stream=stream, any_frame=False, backward=True)
+                for frame in container.decode(stream):
+                    if frame.time is None or frame.time >= at - 0.05:
+                        frames.append((frame.time if frame.time is not None else at, frame.to_image()))
+                        break
+        if not frames:  # 时长未知：顺序解码，按间隔取
+            all_frames = [(f.time or 0.0, f.to_image()) for f in container.decode(stream)]
+            step = max(1, len(all_frames) // count)
+            frames = all_frames[step // 2::step][:count]
+    if not frames:
+        raise ValueError('视频里没有解出画面')
+    cols = 3 if len(frames) > 4 else 2 if len(frames) > 1 else 1
+    rows = (len(frames) + cols - 1) // cols
+    cell = 640
+    tiles = []
+    for _, image in frames:
+        image = image.convert('RGB')
+        image.thumbnail((cell, cell))
+        tiles.append(image)
+    height = max(t.height for t in tiles)
+    sheet = Image.new('RGB', (cols * cell, rows * height), 'white')
+    draw = ImageDraw.Draw(sheet)
+    font = ImageFont.load_default(size=22)
+    for i, ((at, _), tile) in enumerate(zip(frames, tiles)):
+        x, y = (i % cols) * cell, (i // cols) * height
+        sheet.paste(tile, (x + (cell - tile.width) // 2, y))
+        label = f'#{i + 1} {int(at) // 60}:{int(at) % 60:02d}'
+        right = int(draw.textlength(label, font=font)) + 12
+        draw.rectangle((x, y, x + right, y + 30), fill='black')
+        draw.text((x + 6, y + 3), label, fill='white', font=font)
+    output = io.BytesIO()
+    sheet.save(output, format='JPEG', quality=85)
+    return output.getvalue(), duration, len(frames)
+
+
+def _image(data: bytes, timeout: float | None, prompt: str = _PROMPT, max_side: int = 2000) -> tuple[str, str]:
     base = settings.vision_base_url or settings.llm_base_url
     key = settings.vision_api_key if settings.vision_base_url else (settings.vision_api_key or settings.llm_api_key)
     model = settings.vision_model or settings.llm_model
     if not base or not key or not model:
         raise SkipMedia('未配置识图接口')
     deadline = time.monotonic() + timeout if timeout is not None else None
-    url = image_data_url(data)
+    url = image_data_url(data, max_side)
     errors = []
     for name in [model] + ([settings.vision_fallback_model] if settings.vision_fallback_model else []):
         remaining = deadline - time.monotonic() if deadline is not None else settings.vision_timeout
@@ -92,7 +152,7 @@ def _image(data: bytes, timeout: float | None) -> tuple[str, str]:
                                   headers={'Authorization': f'Bearer {key}'},
                                   json={'model': name, 'max_tokens': settings.vision_max_tokens,
                                         'messages': [{'role': 'user', 'content': [
-                                            {'type': 'text', 'text': _PROMPT},
+                                            {'type': 'text', 'text': prompt},
                                             {'type': 'image_url', 'image_url': {'url': url}}]}]},
                                   timeout=min(settings.vision_timeout, remaining))
             response.raise_for_status()
@@ -127,6 +187,8 @@ def _kind(data: bytes, filename: str, mime: str) -> str:
     sniffed, _ = attachments.sniff(data[:16], '')
     if sniffed.startswith('image/'):
         return 'image'
+    if data[4:8] == b'ftyp' or mime.startswith('video/'):
+        return 'video'
     if data.startswith(b'%PDF-'):
         return 'pdf'
     if data.startswith(b'\xd0\xcf\x11\xe0'):
@@ -160,6 +222,11 @@ def _parse(data: bytes, attachment: Attachment, timeout: float | None) -> tuple[
     kind = _kind(data, attachment.filename, attachment.mime)
     if kind == 'image':
         return _image(data, timeout)
+    if kind == 'video':
+        sheet, duration, count = video_frames(data, max(1, settings.video_frames))
+        frames_path(attachment.id).write_bytes(sheet)
+        text, model = _image(sheet, timeout, _VIDEO_PROMPT, max_side=1920)
+        return f'（视频约 {int(round(duration))} 秒，按时间抽了 {count} 帧）\n{text}', model
     if kind in ('xls', 'doc'):
         raise SkipMedia(f'暂不支持 {kind} 老格式')
     if kind == 'excel':

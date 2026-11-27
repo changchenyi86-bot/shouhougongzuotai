@@ -22,6 +22,7 @@ class MessageType(str, enum.Enum):
     TEXT = "text"
     IMAGE = "image"
     FILE = "file"
+    VIDEO = "video"
     OTHER = "other"
 
 

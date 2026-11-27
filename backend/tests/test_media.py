@@ -19,7 +19,7 @@ from app.ai import media, suggest
 from app.channels.wecom import media as wecom_media
 from app.channels.wecom.archive import ArchiveSyncer, set_syncer
 from app.config import settings
-from app.models import Message
+from app.models import Message, MessageType
 from tests.test_round_context import CUSTOMER as CUSTOMER_ID, collect, post, run_pending, snapshot
 from tests.test_workspace import MediaArchive
 from tests.test_wecom import CUST, KEY, FakeDirectory, _item, rec
@@ -414,3 +414,78 @@ def test_openai_provider_sends_images():
     assert content[2] == {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,AAAA'}}
     p.draft('sys', 'prompt')
     assert seen['body']['messages'][1]['content'] == 'prompt'
+
+
+def video_bytes(seconds=3, fps=5, size=(320, 240)):
+    """现生成一段 mpeg4 小视频：每秒换一种颜色，便于看抽帧是否按时间分布。"""
+    import av
+
+    out = io.BytesIO()
+    with av.open(out, mode='w', format='mp4') as container:
+        stream = container.add_stream('mpeg4', rate=fps)
+        stream.width, stream.height, stream.pix_fmt = size[0], size[1], 'yuv420p'
+        for i in range(seconds * fps):
+            color = ['red', 'green', 'blue', 'yellow', 'white'][i // fps % 5]
+            frame = av.VideoFrame.from_image(Image.new('RGB', size, color))
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+    return out.getvalue()
+
+
+def test_video_sniff_frames_and_extract(monkeypatch):
+    data = video_bytes()
+    assert attachments.sniff(data, '视频_abc')[0] == 'video/mp4'
+    sheet, duration, count = media.video_frames(data, 6)
+    assert 2.5 <= duration <= 3.5 and count == 6
+    with Image.open(io.BytesIO(sheet)) as im:
+        assert im.size[0] == 3 * 640 and im.format == 'JPEG'
+    seen = {}
+
+    def handler(request):
+        body = json.loads(request.content)
+        seen['prompt'] = body['messages'][0]['content'][0]['text']
+        return success(request)
+
+    mock_vision(monkeypatch, handler)
+    with db.SessionLocal() as session:
+        att = save(session, data, '视频_abc')
+        media.extract(session, att)
+        assert att.mime == 'video/mp4' and att.extract_status == 'done'
+        assert att.extracted_text.startswith('（视频约 3 秒，按时间抽了 6 帧）')
+        assert '拼成一张图' in seen['prompt'] and media.frames_path(att.id).exists()
+
+
+def test_broken_video_fails_without_blocking():
+    with db.SessionLocal() as session:
+        att = save(session, b'\x00\x00\x00\x18ftypmp42' + b'\x00' * 100, '坏视频.mp4')
+        media.extract(session, att)
+        assert att.extract_status == 'failed'
+
+
+def test_round_video_sent_as_frame_sheet(client, fake_llm, monkeypatch):
+    pending = collect(monkeypatch)
+    mock_vision(monkeypatch, success)
+    mid = post(client, 1, '[视频]', 0)
+    with db.SessionLocal() as session:
+        att = save(session, video_bytes(), '视频_x')
+        msg = session.get(Message, mid)
+        msg.attachment_id, msg.msg_type = att.id, MessageType.VIDEO
+        session.commit()
+        media.extract(session, att)
+    last = post(client, 2, '点保存就这样', 5)
+    run_pending(pending)
+    assert snapshot(last).status.value == 'ready'
+    labels = [label for label, _ in fake_llm.images[-1]]
+    assert len(labels) == 1 and '视频按时间抽帧' in labels[0]
+    assert '（识别内容：（视频约' in fake_llm.calls[-1][1]
+
+
+def test_archive_video_message_and_download(client, monkeypatch):
+    from app.channels.wecom.archive import _content_of
+
+    assert _content_of({'msgtype': 'video', 'video': {'sdkfileid': 'V1'}}) == (MessageType.VIDEO, '[视频]')
+    raw = {'msgtype': 'video', 'msgid': 'abcdef123456', 'video': {'sdkfileid': 'V1', 'filesize': 30 * 1024 * 1024}}
+    assert wecom_media.media_info(raw) == ('V1', '视频_abcdef12.mp4', 30 * 1024 * 1024)
+    assert attachments.max_bytes(video=True) > 30 * 1024 * 1024 > attachments.max_bytes()

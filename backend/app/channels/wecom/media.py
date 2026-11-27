@@ -17,14 +17,15 @@ _executor: ThreadPoolExecutor | None = None
 
 
 def media_info(raw: dict | None) -> tuple[str, str, int] | None:
-    """(sdkfileid, 文件名, 大小)；不是可下载的图片或文件时返回 None。"""
+    """(sdkfileid, 文件名, 大小)；不是可下载的图片、文件、视频时返回 None。"""
     if not raw:
         return None
     t = raw.get("msgtype")
     body = raw.get(t) if isinstance(raw.get(t), dict) else None
-    if t not in ("image", "file") or not body or not body.get("sdkfileid"):
+    if t not in ("image", "file", "video") or not body or not body.get("sdkfileid"):
         return None
-    name = body.get("filename") or f"图片_{raw.get('msgid', '')[:8]}"
+    default = f"视频_{raw.get('msgid', '')[:8]}.mp4" if t == "video" else f"图片_{raw.get('msgid', '')[:8]}"
+    name = body.get("filename") or default
     return body["sdkfileid"], name, int(body.get("filesize") or 0)
 
 
@@ -50,8 +51,10 @@ def fetch(message_id: uuid.UUID) -> bool:
             session.commit()
             return False
         sdkfileid, name, size = info
-        if size > attachments.max_bytes():
-            msg.media_error = f"文件超过 {settings.attachment_max_mb}MB，未下载，请到企业微信里查看"
+        video = msg.msg_type == MessageType.VIDEO
+        limit = attachments.max_bytes(video)
+        if size > limit:
+            msg.media_error = f"{'视频' if video else '文件'}超过 {limit // (1024 * 1024)}MB，未下载，请到企业微信里查看"
             session.commit()
             return False
         syncer = get_syncer()
@@ -60,8 +63,8 @@ def fetch(message_id: uuid.UUID) -> bool:
             session.commit()
             return False
         try:
-            data = syncer.client.get_media(sdkfileid, attachments.max_bytes())
-            att = attachments.save(session, data, name, "channel")
+            data = syncer.client.get_media(sdkfileid, limit)
+            att = attachments.save(session, data, name, "channel", limit=limit)
         except Exception as exc:  # noqa: BLE001  下载失败不影响消息本身
             log.warning("下载企业微信媒体失败 message=%s: %s", message_id, exc)
             session.rollback()
@@ -85,4 +88,5 @@ def fetch(message_id: uuid.UUID) -> bool:
 
 
 def wants_media(msg: Message) -> bool:
-    return msg.msg_type in (MessageType.IMAGE, MessageType.FILE) and media_info(msg.raw) is not None
+    return (msg.msg_type in (MessageType.IMAGE, MessageType.FILE, MessageType.VIDEO)
+            and media_info(msg.raw) is not None)
