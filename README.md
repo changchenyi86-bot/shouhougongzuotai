@@ -211,6 +211,8 @@ AI 同时判断这条消息需不需要回复：寒暄、致谢、确认收到�
 - `claude`（默认）：Anthropic Claude，密钥放在 `ANTHROPIC_API_KEY`
 - `openai_compatible`：任何兼容 OpenAI Chat Completions 协议的接口，如公司自有模型网关，配置 `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL`
 
+客户图片和文件下载成功后会在后台识别一次，生成建议时最多等待 `MEDIA_WAIT_SECONDS` 秒，识别结果以文字加入聊天上下文；识别不成功不影响建议生成。`MEDIA_EXTRACT_ENABLED=false` 可关闭识别，默认识图使用 `LLM_MODEL`（公司网关为 `deepseek-flash`）；`VISION_MODEL` 可换成网关里其他能看图的模型，`VISION_BASE_URL` / `VISION_API_KEY` 可指定独立接口。客户截图可能含账号、内网地址，不要配置境外模型。上线前已下载的附件用 `python -m app.extract_media --since <日期>` 补识别。
+
 ### 参考售后数字人的知识
 
 生成建议前，工作台先到售后数字人（自建实例，不接生产）的检索服务查这条客户问题的参考知识，

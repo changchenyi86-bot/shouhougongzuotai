@@ -240,20 +240,32 @@ function build(): Room[] {
   bank.ends.push({ id: "end-demo-1", ended_by: "李四", ended_at: at(10, 4), closed_count: 1 });
   say(bank, "p3Lm", 10, 5, "[图片]", {
     msg_type: "image",
-    attachment: { id: "demo-img", filename: "截图.png", mime: "image/png", size: 182000 },
+    attachment: {
+      id: "demo-img", filename: "截图.png", mime: "image/png", size: 182000, extract_status: "done",
+      extracted_text: "导出 Excel\n报表名称：浙江分行经营日报\n导出失败：Export timeout, please retry later (code 50012)\n重试　取消\n\n说明：有数 BI 报表页面的导出弹窗，导出 Excel 时提示超时失败。",
+    },
   });
   say(bank, null, 10, 6, "收到，我看一下。方便把导出报错的日志也发一下吗？");
   say(bank, "p3Lm", 10, 8, "[文件] 导出报错日志.txt", {
     msg_type: "file",
-    attachment: { id: "demo-log", filename: "导出报错日志.txt", mime: "text/plain", size: 2100 },
+    attachment: {
+      id: "demo-log", filename: "导出报错日志.txt", mime: "text/plain", size: 2100, extract_status: "done",
+      extracted_text: "2026-06-02 10:07:41 ERROR ExportTask - export failed: timeout after 300s\n2026-06-02 10:07:41 ERROR ExportTask - rows=1203554, sheet=日报明细",
+    },
   });
   say(bank, "x9Kq", 10, 8, "[文件] 浙江分行经营日报-BI报表.xlsx", {
     msg_type: "file",
-    attachment: { id: "demo-xlsx", filename: "浙江分行经营日报-BI报表.xlsx", mime: "application/vnd.ms-excel", size: 99_300 },
+    attachment: {
+      id: "demo-xlsx", filename: "浙江分行经营日报-BI报表.xlsx", mime: "application/vnd.ms-excel", size: 99_300,
+      extract_status: "done", extracted_text: "日报：8行×4列\n日期 | 分行 | 存款余额 | 贷款余额\n2026-06-01 | 杭州 | 1203.5 | 980.2",
+    },
   });
   say(bank, "x9Kq", 10, 8, "[文件] 6.2 升级方案.docx", {
     msg_type: "file",
-    attachment: { id: "demo-docx", filename: "6.2 升级方案.docx", mime: "application/msword", size: 204_800 },
+    attachment: {
+      id: "demo-docx", filename: "6.2 升级方案.docx", mime: "application/msword", size: 204_800,
+      extract_status: "skipped", extract_error: "暂不支持 doc 老格式",
+    },
   });
   say(bank, "p3Lm", 10, 9, "[文件] 6231416b-e7b9-424f-a3c3-47c21ba522c3.zip", {
     msg_type: "file",
@@ -261,7 +273,7 @@ function build(): Room[] {
   });
   say(bank, "p3Lm", 10, 9, "[图片]", {
     msg_type: "image",
-    attachment: { id: "demo-img2", filename: "手机看板截图.png", mime: "image/png", size: 96_000 },
+    attachment: { id: "demo-img2", filename: "手机看板截图.png", mime: "image/png", size: 96_000, extract_status: "pending" },
   });
   say(bank, "p3Lm", 10, 9, "[文件] 元数据库全量备份.tar.gz", {
     msg_type: "file",

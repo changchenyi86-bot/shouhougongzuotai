@@ -43,6 +43,12 @@ class Attachment(Base):
     created_by: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
+    extracted_text: Mapped[str | None] = mapped_column(Text)
+    extract_status: Mapped[str | None] = mapped_column(String(16))
+    extract_error: Mapped[str | None] = mapped_column(Text)
+    extract_model: Mapped[str | None] = mapped_column(String(128))
+    extracted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     @property
     def is_image(self) -> bool:
         return self.mime.startswith("image/")

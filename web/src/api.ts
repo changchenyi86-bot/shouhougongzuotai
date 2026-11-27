@@ -28,11 +28,17 @@ export interface Message {
   media_error: string | null;
 }
 
+export type ExtractStatus = "pending" | "done" | "failed" | "skipped";
+
 export interface Attachment {
   id: string;
   filename: string;
   mime: string;
   size: number;
+  /** 客户发的图片、文件自动识别成文字的结果（给 AI 建议用）；技术支持上传的、上线前的老附件为 null */
+  extract_status?: ExtractStatus | null;
+  extracted_text?: string | null;
+  extract_error?: string | null;
 }
 
 export const attachmentUrl = (id: string, download = false) =>

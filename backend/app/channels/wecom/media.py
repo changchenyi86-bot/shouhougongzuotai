@@ -71,6 +71,16 @@ def fetch(message_id: uuid.UUID) -> bool:
             return False
         msg.attachment_id, msg.media_error = att.id, None
         session.commit()
+        if settings.media_extract_enabled:
+            try:
+                from app.ai import media as ai_media, worker
+
+                att.extract_status = "pending"
+                session.commit()
+                worker.submit(ai_media.run, att.id)
+            except Exception:  # 下载成功不能因识别排队失败而报错
+                log.exception("提交附件识别失败 attachment=%s", att.id)
+                session.rollback()
         return True
 
 
