@@ -114,8 +114,8 @@ function withSummary(run: (typeof runs)[number]): EvalRun {
 
 export function handleEval(path: string, method: string, data: Record<string, unknown>): unknown {
   if (path === "eval/sets")
-    return [{ name: "v1", total: CASES.length, areas: { "BI+知数": 5, 数据中台: 2, 通用: 1 }, kinds: {}, updated_at: ago(60) }];
-  if (/^eval\/sets\/[^/]+\/import$/.test(path)) return { name: "v1", added: 0, updated: CASES.length, retired: 0 };
+    return [{ name: "v1", total: CASES.length, areas: { "BI+知数": 5, 数据中台: 2, 通用: 1 }, kinds: {}, updated_at: ago(60), reviewing: 2 }];
+  if (/^eval\/sets\/[^/]+\/import$/.test(path)) return { name: "v1", added: 0, updated: CASES.length, retired: 0, reviewing: 2 };
   if (path === "eval/runs" && method === "POST") {
     const run = { id: `run-${Date.now()}`, set_name: "v1", areas: (data.areas as EvalArea[] | null) ?? null, status: "running" as const, total: CASES.length, done: 0, started_by: "李四", started_at: new Date().toISOString(), finished_at: null, model: "deepseek-flash", note: (data.note as string) || null, summary: [], startedMs: Date.now() };
     runs.unshift(run);

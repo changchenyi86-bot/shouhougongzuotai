@@ -44,7 +44,7 @@ def ev(client, fake_llm, monkeypatch):
     fake_llm.results[Verdict] = Verdict(verdict="对", reason="和期望一致")
     r = client.post("/api/eval/sets/v1/import", files={"file": ("v1.jsonl", _jsonl(CASES))})
     assert r.status_code == 200, r.text
-    assert r.json() == {"name": "v1", "added": 4, "updated": 0, "retired": 0}
+    assert r.json() == {"name": "v1", "added": 4, "updated": 0, "retired": 0, "reviewing": 0}
     return client
 
 
@@ -65,7 +65,7 @@ def test_import_updates_and_retires(ev):
     # 重新导入：改一题、去掉一题
     changed = [dict(CASES[0], expected="新的要点"), CASES[1], CASES[2]]
     r = ev.post("/api/eval/sets/v1/import", files={"file": ("v1.jsonl", _jsonl(changed))})
-    assert r.json() == {"name": "v1", "added": 0, "updated": 3, "retired": 1}
+    assert r.json() == {"name": "v1", "added": 0, "updated": 3, "retired": 1, "reviewing": 0}
     assert ev.get("/api/eval/sets").json()[0]["total"] == 3
 
 
@@ -184,3 +184,18 @@ def test_judge_prompt_uses_reference_by_kind():
                      reference="被点踩的回答", expected_keys=[], expect_reply=None)
     p = judge_prompt(fixed, "回复", True)
     assert "<expected>\n不会带出序号" in p and "<must_not>" in p and "没有可靠的标准答案" not in p
+
+
+def test_cases_under_review_are_imported_but_not_run(ev):
+    flagged = [CASES[0], dict(CASES[1], status="待复核", review_reason="参考答案说无法确认"), CASES[2], CASES[3]]
+    r = ev.post("/api/eval/sets/v1/import", files={"file": ("v1.jsonl", _jsonl(flagged))})
+    assert r.json()["reviewing"] == 1
+    s = ev.get("/api/eval/sets").json()[0]
+    assert s["total"] == 3 and s["reviewing"] == 1 and s["areas"] == {"BI+知数": 1, "数据中台": 1, "通用": 1}
+    run = _start(ev)
+    codes = [x["code"] for x in ev.get(f"/api/eval/runs/{run['id']}/results").json()]
+    assert "EV-002" not in codes and len(codes) == 3
+    # 复核完改回可用，重新导入就参与评测
+    ok = [CASES[0], dict(CASES[1], status="可用", review_reason=""), CASES[2], CASES[3]]
+    assert ev.post("/api/eval/sets/v1/import", files={"file": ("v1.jsonl", _jsonl(ok))}).json()["reviewing"] == 0
+    assert ev.get("/api/eval/sets").json()[0]["total"] == 4

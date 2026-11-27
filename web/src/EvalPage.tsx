@@ -330,7 +330,10 @@ export default function EvalPage({ me, notify }: { me: Staff; notify: (t: string
     const name = (setName || "v1").trim();
     try {
       const r = await importEvalSet(name, file);
-      notify(`题库 ${r.name}：新增 ${r.added} 道，更新 ${r.updated} 道${r.retired ? `，停用 ${r.retired} 道` : ""}`);
+      notify(
+        `题库 ${r.name}：新增 ${r.added} 道，更新 ${r.updated} 道${r.retired ? `，停用 ${r.retired} 道` : ""}` +
+          (r.reviewing ? `；${r.reviewing} 道待复核，暂不算分` : ""),
+      );
       setSetName(r.name);
       loadSets();
     } catch (e) {
@@ -374,6 +377,7 @@ export default function EvalPage({ me, notify }: { me: Staff; notify: (t: string
           {set && (
             <small className="muted">
               {EVAL_AREAS.filter((a) => set.areas[a]).map((a) => `${AREA_LABEL[a]} ${set.areas[a]}`).join(" · ")}
+              {set.reviewing > 0 && ` · 另有 ${set.reviewing} 道待复核，暂不算分`}
             </small>
           )}
         </div>
