@@ -309,7 +309,7 @@ def test_backfill_group_names(client):
         assert {m.group_name for m in s.query(Message).all()} == {None}
 
     directory.names["wrA"] = "某客户-有数项目群"
-    syncer._names_checked_at = 0  # 跳过 10 分钟间隔
+    syncer._names_checked_at = float("-inf")  # 跳过 10 分钟间隔（不能用 0：刚开机的机器 monotonic() 还不到 10 分钟）
     syncer.sync_once()
     with db.SessionLocal() as s:
         names = {m.group_id: m.group_name for m in s.query(Message).all()}

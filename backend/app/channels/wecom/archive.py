@@ -115,7 +115,7 @@ class ArchiveSyncer:
         self._batch_size = batch_size
         self._lock = threading.Lock()
         self._rerun = threading.Event()
-        self._names_checked_at = 0.0
+        self._names_checked_at = float("-inf")  # monotonic() 从开机算起，刚开机时也要能立刻查第一轮
 
     @property
     def client(self) -> ArchiveClient:
