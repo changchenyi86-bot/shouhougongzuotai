@@ -507,6 +507,8 @@ export interface EvalSet {
   areas: Partial<Record<EvalArea, number>>;
   kinds: Record<string, number>;
   updated_at: string | null;
+  /** 标了待复核、暂不参与评测的题 */
+  reviewing: number;
 }
 
 export interface EvalBucket {
@@ -593,7 +595,7 @@ export async function importEvalSet(name: string, file: File) {
   form.append("file", file);
   const res = await fetch(`/api/eval/sets/${encodeURIComponent(name)}/import`, { method: "POST", body: form });
   if (!res.ok) throw await failure(res);
-  return (await res.json()) as { name: string; added: number; updated: number; retired: number };
+  return (await res.json()) as { name: string; added: number; updated: number; retired: number; reviewing: number };
 }
 
 // ---------- 客户档案 ----------

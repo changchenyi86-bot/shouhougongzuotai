@@ -44,12 +44,17 @@ def _out(session: Session, run: EvalRun) -> EvalRunOut:
 
 @router.get("/sets", response_model=list[EvalSetOut])
 def list_sets(session: Session = Depends(get_session)) -> list[EvalSetOut]:
-    cases = session.scalars(select(EvalCase).where(EvalCase.active.is_(True))).all()
+    cases = session.scalars(select(EvalCase)).all()
     sets: dict[str, list[EvalCase]] = {}
+    reviewing: Counter = Counter()
     for c in cases:
-        sets.setdefault(c.set_name, []).append(c)
+        if c.active:
+            sets.setdefault(c.set_name, []).append(c)
+        elif (c.data or {}).get("status") == evaluate.REVIEWING:
+            reviewing[c.set_name] += 1
     return [EvalSetOut(name=name, total=len(cs), areas=dict(Counter(c.area for c in cs)),
-                       kinds=dict(Counter(c.kind for c in cs)), updated_at=max(c.updated_at for c in cs))
+                       kinds=dict(Counter(c.kind for c in cs)), updated_at=max(c.updated_at for c in cs),
+                       reviewing=reviewing[name])
             for name, cs in sorted(sets.items())]
 
 

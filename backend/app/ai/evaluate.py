@@ -32,6 +32,7 @@ AREAS = ("BI+知数", "数据中台", "通用")
 KINDS = ("确认答对", "多人问过", "确认答错", "被追问纠正", "数字人自认没覆盖", "工作台真实群", "是否需要回复")
 VERDICTS = ("对", "部分对", "错", "没答上")
 ACTIVE = ("running", "stopping")
+REVIEWING = "待复核"  # 题目本身要技术支持复核的，导入但不参与评测
 
 
 class EvalError(Exception):
@@ -50,7 +51,11 @@ def _area(rec: dict) -> str:
 
 
 def import_cases(session: Session, set_name: str, records: list[dict]) -> dict[str, int]:
-    """导入或更新一个题库（按编号覆盖）；文件里没有了的题停用。返回 新增 / 更新 / 停用 条数。"""
+    """导入或更新一个题库（按编号覆盖）；文件里没有了的题停用。返回 新增 / 更新 / 停用 / 待复核 条数。
+
+    标了 status「待复核」的题（题目缺截图、参考答案矛盾等，见 review_reason）照样导入，但不参与评测、不算分，
+    技术支持改好后把 status 改回「可用」重新导入即可。
+    """
     if not records:
         raise EvalError("文件里没有题目")
     existing = {c.code: c for c in session.scalars(select(EvalCase).where(EvalCase.set_name == set_name))}
@@ -70,9 +75,10 @@ def import_cases(session: Session, set_name: str, records: list[dict]) -> dict[s
             kind=kind, area=_area(rec), branch=rec.get("branch") or "", question=question,
             context=rec.get("context") or "", expected=rec.get("expected") or "", must_not=rec.get("must_not") or "",
             reference=rec.get("reference") or "", expected_keys=[str(k).lower() for k in rec.get("expected_keys") or []],
-            expect_reply=rec.get("expect_reply"), sort=i, active=True,
+            expect_reply=rec.get("expect_reply"), sort=i, active=rec.get("status") != REVIEWING,
             data={k: rec.get(k) for k in ("audience", "alt_questions", "basis", "card", "signal", "dh_hit", "source",
-                                          "src_id", "answer_status", "wb_suggestion", "wb_judgement", "round", "expected_question") if rec.get(k)},
+                                          "src_id", "answer_status", "wb_suggestion", "wb_judgement", "round", "expected_question",
+                                          "status", "review_reason") if rec.get(k)},
         )
         case = existing.get(code)
         if case is None:
@@ -88,7 +94,8 @@ def import_cases(session: Session, set_name: str, records: list[dict]) -> dict[s
             case.active = False
             retired += 1
     session.commit()
-    return {"added": added, "updated": updated, "retired": retired}
+    reviewing = sum(1 for r in records if r.get("status") == REVIEWING)
+    return {"added": added, "updated": updated, "retired": retired, "reviewing": reviewing}
 
 
 # ---------- 跑一道题 ----------

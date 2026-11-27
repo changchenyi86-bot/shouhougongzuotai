@@ -35,6 +35,10 @@ class LLMError(Exception):
     pass
 
 
+class LLMFormatError(LLMError):
+    """模型回了，但输出不是要求的格式（没有 JSON、字段不对）。偶发，重问一次通常就好。"""
+
+
 class LLMProvider(Protocol):
     def draft(self, system: str, prompt: str) -> tuple[SuggestionDraft, str]:
         """返回 (建议, 实际使用的模型名)。失败抛 LLMError。"""
@@ -111,13 +115,13 @@ def json_instruction(schema: type[BaseModel]) -> str:
 def _json_object(text: str) -> dict:
     match = re.search(r"\{.*\}", text or "", re.S)
     if not match:
-        raise LLMError("模型没有返回 JSON")
+        raise LLMFormatError("模型没有返回 JSON")
     try:
         data = json.loads(match.group(0))
     except ValueError as exc:
-        raise LLMError(f"模型输出格式不正确：{exc}") from exc
+        raise LLMFormatError(f"模型输出格式不正确：{exc}") from exc
     if not isinstance(data, dict):
-        raise LLMError("模型输出格式不正确：不是 JSON 对象")
+        raise LLMFormatError("模型输出格式不正确：不是 JSON 对象")
     return data
 
 
@@ -130,7 +134,7 @@ def parse_draft(text: str) -> SuggestionDraft:
     try:
         return SuggestionDraft.model_validate(data)
     except ValidationError as exc:
-        raise LLMError(f"模型输出格式不正确：{exc}") from exc
+        raise LLMFormatError(f"模型输出格式不正确：{exc}") from exc
 
 
 def parse_json(text: str, schema: type[T]) -> T:
@@ -139,7 +143,7 @@ def parse_json(text: str, schema: type[T]) -> T:
     try:
         return schema.model_validate(_json_object(text))
     except ValidationError as exc:
-        raise LLMError(f"模型输出格式不正确：{exc}") from exc
+        raise LLMFormatError(f"模型输出格式不正确：{exc}") from exc
 
 
 class OpenAICompatibleProvider:
@@ -163,14 +167,20 @@ class OpenAICompatibleProvider:
         if self.json_mode:
             body["response_format"] = {"type": "json_object"}
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        try:
-            r = self._client.post(self.url, json=body, headers=headers)
-            r.raise_for_status()
-            data = r.json()
-            text = data["choices"][0]["message"]["content"]
-        except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
-            raise LLMError(f"调用模型接口失败：{exc}") from exc
-        return parse_json(text, schema), data.get("model") or self.model
+        for attempt in range(2):  # 输出格式不对时重问一次（评测里约百分之一的回复是这样）
+            try:
+                r = self._client.post(self.url, json=body, headers=headers)
+                r.raise_for_status()
+                data = r.json()
+                text = data["choices"][0]["message"]["content"]
+            except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
+                raise LLMError(f"调用模型接口失败：{exc}") from exc
+            try:
+                return parse_json(text, schema), data.get("model") or self.model
+            except LLMFormatError:
+                if attempt:
+                    raise
+        raise AssertionError("unreachable")
 
 
 _provider: LLMProvider | None = None

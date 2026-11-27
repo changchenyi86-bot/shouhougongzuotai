@@ -574,6 +574,7 @@ class EvalSetOut(BaseModel):
     areas: dict[str, int]
     kinds: dict[str, int]
     updated_at: datetime | None
+    reviewing: int = 0  # 标了待复核、暂不参与评测的题
 
 
 class EvalImportResult(BaseModel):
@@ -581,6 +582,7 @@ class EvalImportResult(BaseModel):
     added: int
     updated: int
     retired: int
+    reviewing: int = 0
 
 
 class EvalStartIn(BaseModel):
