@@ -126,6 +126,9 @@ function StartDialog({ set, onClose, onStarted }: {
   );
 }
 
+/** 刚拖选了文字（想复制题目）时，松开鼠标不算点这一行 */
+const selecting = () => !!window.getSelection()?.toString();
+
 function ResultDetail({ r }: { r: EvalResult }) {
   const docs = (r.knowledge ?? []).filter((k) => k.kind !== "workbench" && k.kind !== "history");
   const similar = (r.knowledge ?? []).filter((k) => k.kind === "workbench" || k.kind === "history");
@@ -514,7 +517,7 @@ export default function EvalPage({ me, notify }: { me: Staff; notify: (t: string
                 <tbody>
                   {shown.map((r) => (
                     <Fragment key={r.case_id}>
-                      <tr className={`clickable ${open === r.case_id ? "open" : ""}`} onClick={() => setOpen(open === r.case_id ? null : r.case_id)}>
+                      <tr className={`clickable ${open === r.case_id ? "open" : ""}`} onClick={() => !selecting() && setOpen(open === r.case_id ? null : r.case_id)}>
                         <td className="code">{r.code}</td>
                         <td>{r.kind}</td>
                         <td className="q-col"><span className="q-text">{r.question}</span></td>

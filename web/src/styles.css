@@ -839,6 +839,39 @@ input.group-search {
   color: var(--bubble-staff-text);
 }
 .bubble.media { color: var(--text-2); font-style: italic; }
+/* 聊天文字、AI 建议、AI 对话、评测题目、知识库问答都能拖选复制 */
+.chat-list, .ai-text, .ai-chat-list, .eval-detail, .cand-body { -webkit-user-select: text; user-select: text; }
+/* 文字气泡旁边的「复制」：鼠标移到这条消息上才出现 */
+.bubble-line { display: flex; align-items: flex-end; gap: 2px; max-width: calc(68% + 30px); min-width: 0; }
+.bubble-row.staff .bubble-line { flex-direction: row-reverse; }
+.bubble-line .bubble { max-width: 100%; min-width: 0; }
+.copy-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-3);
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.copy-btn svg { width: 14px; height: 14px; flex: none; }
+.copy-btn:hover { color: var(--accent-text); background: var(--hover); }
+.copy-btn.ok, .copy-btn.ok:hover { color: var(--ok); }
+.copy-btn.fail, .copy-btn.fail:hover { color: var(--danger); }
+.bubble-line .copy-btn { opacity: 0; transition: opacity .15s; }
+.bubble-row:hover .bubble-line .copy-btn, .bubble-line .copy-btn:focus-visible,
+.bubble-line .copy-btn.ok, .bubble-line .copy-btn.fail { opacity: 1; }
+@media (hover: none) { .bubble-line .copy-btn { opacity: .7; } }
+.actions .copy-btn { height: 32px; margin-left: auto; padding: 0 8px; border-color: transparent; background: none; color: var(--text-2); }
+.actions .copy-btn:hover { background: var(--hover); color: var(--accent-text); }
 .media-error { font-style: normal; font-size: 12px; color: var(--danger); margin-top: 4px; }
 .media-error .link { margin: 0 0 0 8px; font-size: 12px; }
 
@@ -1347,6 +1380,7 @@ mark.mention {
   .ai-panel { max-height: 30vh; }
   .composer-bar { flex-wrap: wrap; }
   .bubble, .outbox-status, .outbox .confirm-send { max-width: 85%; }
+  .bubble-line { max-width: calc(85% + 30px); }
   .bubble-row { gap: 8px; }
   .avatar { width: 28px; height: 28px; font-size: 12.5px; }
 }
@@ -1557,7 +1591,8 @@ table.t select { width: auto; min-width: 150px; }
 .ai-chat-ai .ai-chat-note { margin-top: 4px; font-size: 12px; color: var(--text-3); }
 .ai-chat-ai.pending { color: var(--text-3); }
 .ai-chat-ai.pending::after { content: ""; display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: var(--ai-mark); animation: pulse 1.2s ease-in-out infinite; }
-.ai-chat-tools { display: flex; justify-content: flex-end; margin-top: 2px; }
+.ai-chat-tools { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 2px; }
+.ai-chat-tools .copy-btn { height: 22px; padding: 0 4px; font-size: 12px; }
 .ai-chat-tools .link { margin: 0; font-size: 12.5px; }
 .ai-chat-tools .link.strong { font-weight: 600; }
 .ai-chat-tools .filled { font-size: 12px; color: var(--ok); }

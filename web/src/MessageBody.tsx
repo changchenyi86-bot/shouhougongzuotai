@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { attachmentUrl, fetchMedia, type Attachment, type Message } from "./api";
+import CopyButton from "./CopyButton";
 import { useImageViewer } from "./ImageViewer";
 
 export function formatSize(bytes: number): string {
@@ -183,7 +184,13 @@ export default function MessageBody({ message: m, onChanged }: { message: Messag
       </>
     );
   }
-  if (m.msg_type === "text") return <div className="bubble">{m.content}</div>;
+  if (m.msg_type === "text")
+    return (
+      <div className="bubble-line">
+        <div className="bubble">{m.content}</div>
+        <CopyButton text={m.content} title="复制这条消息" />
+      </div>
+    );
 
   const retry = async () => {
     setRetrying(true);
