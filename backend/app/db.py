@@ -35,6 +35,9 @@ _NEW_COLUMNS = {
                     "via_chat": "BOOLEAN NOT NULL DEFAULT FALSE", "profile": "JSON",
                     "covers": "JSON", "merged_into": "UUID", "question": "TEXT"},
     "eval_results": {"question": "TEXT"},
+    "attachments": {"extracted_text": "TEXT", "extract_status": "VARCHAR(16)",
+                    "extract_error": "TEXT", "extract_model": "VARCHAR(128)",
+                    "extracted_at": "TIMESTAMP WITH TIME ZONE"},
     "messages": {"attachment_id": "UUID REFERENCES attachments(id) ON DELETE SET NULL", "media_error": "TEXT"},
     "send_tasks": {"attachment_ids": "JSON", "replaced_by": "UUID", "mentions": "JSON", "warning": "TEXT"},
 }

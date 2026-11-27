@@ -31,6 +31,8 @@ class AttachmentOut(BaseModel):
     filename: str
     mime: str
     size: int
+    extract_status: str | None = None
+    extracted_text: str | None = None
 
 
 class MessageOut(MessageIn):

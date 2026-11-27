@@ -28,6 +28,17 @@ class Settings(BaseSettings):
     ai_workers: int = 4
     ai_suggest_max_age_minutes: int = 120  # 超过这个时间的旧消息（如首次导入的历史记录）不生成建议
 
+    # ---- 客户图片和文件识别 ----
+    media_extract_enabled: bool = True
+    vision_base_url: str = ""
+    vision_api_key: str = ""
+    vision_model: str = ""
+    vision_fallback_model: str = ""
+    vision_timeout: float = 60
+    vision_max_tokens: int = 4000
+    media_wait_seconds: float = 25
+    media_text_max_chars: int = 2000
+
     # ---- 售后数字人知识检索（自建实例的检索服务，MCP 接口） ----
     # 如 http://host.docker.internal:<本机端口>/messages，留空表示生成建议时不查知识库
     knowledge_mcp_url: str = ""
