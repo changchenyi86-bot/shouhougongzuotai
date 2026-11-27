@@ -116,13 +116,14 @@ def test_status_and_password(client):
 
 
 def test_actions_recorded_under_login_name(client):
-    _add(client, "唐已杰", "tyj")
+    tyj = _add(client, "唐已杰", "tyj").json()["id"]
     c, _ = _login("tyj", "secret-123")
-    r = c.post("/api/messages", json={
+    r = client.post("/api/messages", json={
         "channel": "wecom", "external_id": "x1", "group_id": "wrA", "group_name": "A群", "is_external_group": True,
         "sender_id": "wmAbCdEfGhIjKlMnOpQrStUvWxYz012345", "content": "导出报错",
         "sent_at": datetime.now(timezone.utc).isoformat(),
     })
+    client.put("/api/groups/owner", json={"channel": "wecom", "group_id": "wrA", "owner_id": tyj})
     sid = next(i["suggestion"]["id"] for i in c.get("/api/inbox", params={"view": "all"}).json()
                if i["message"]["id"] == r.json()["id"])
     # 请求里写的处理人不算数，一律记登录的人

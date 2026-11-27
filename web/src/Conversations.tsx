@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   CHANNEL_LABEL,
+  assignConversation,
   cancelTask,
   dismissTask,
   endConversation,
   fetchConversation,
   fetchGroups,
+  fetchStaff,
   resendTask,
   setGroupName,
   type Channel,
@@ -14,6 +16,8 @@ import {
   type GroupView,
   type InboxItem,
   type SendTask,
+  type Staff,
+  type StaffBrief,
   type Suggestion,
 } from "./api";
 import Composer, { customerLabel } from "./Composer";
@@ -25,15 +29,30 @@ export interface ChatTarget {
 }
 
 interface Props {
+  me: Staff;
   canAutoSend: (channel: Channel) => boolean;
   notify: (text: string) => void;
 }
 
-const VIEWS: { key: GroupView; label: string }[] = [
+const VIEWS: { key: GroupView; label: string; admin?: boolean }[] = [
   { key: "todo", label: "待处理" },
   { key: "escalated", label: "已转人工" },
+  { key: "unassigned", label: "待分配", admin: true },
   { key: "all", label: "全部" },
 ];
+
+/** 这个群当前由谁负责、谁在处理 */
+interface Who {
+  owner: StaffBrief | null;
+  assignee: StaffBrief | null;
+  open: boolean;
+}
+const NOBODY: Who = { owner: null, assignee: null, open: false };
+const whoOf = (c: { owner: StaffBrief | null; assignee: StaffBrief | null; conversation_open: boolean }): Who => ({
+  owner: c.owner,
+  assignee: c.assignee,
+  open: c.conversation_open,
+});
 const OPEN: Suggestion["status"][] = ["generating", "ready", "failed", "escalated"];
 
 const sameGroup = (a: ChatTarget | null, b: ChatTarget) => !!a && a.channel === b.channel && a.group_id === b.group_id;
@@ -72,6 +91,22 @@ function SugChip({ s, focused, onFocus }: { s: Suggestion; focused: boolean; onF
       {label}
     </button>
   );
+}
+
+function WhoChip({ who, me }: { who: Who; me: Staff }) {
+  const { owner, assignee } = who;
+  const ownerText = owner ? `负责人 ${owner.id === me.id ? "是我" : owner.name}` : "这个群还没有负责人";
+  if (who.open && !assignee) return <span className="owner-chip warn" title={ownerText}>待分配</span>;
+  if (who.open && assignee) {
+    const text =
+      assignee.id === me.id
+        ? owner && owner.id !== me.id
+          ? `替${owner.name}处理`
+          : "我在处理"
+        : `${assignee.name} 处理中`;
+    return <span className="owner-chip" title={ownerText}>{text}</span>;
+  }
+  return <span className="owner-chip">{owner ? ownerText : "没有负责人"}</span>;
 }
 
 function EndSep({ end }: { end: ConversationEnd }) {
@@ -133,7 +168,8 @@ function OutboxBubble({ task, busy, onAction }: { task: SendTask; busy: boolean;
   );
 }
 
-export default function Conversations({ canAutoSend, notify }: Props) {
+export default function Conversations({ me, canAutoSend, notify }: Props) {
+  const admin = me.role === "admin";
   const [view, setView] = useState<GroupView>("todo");
   const [groups, setGroups] = useState<Group[]>([]);
   const [search, setSearch] = useState("");
@@ -141,6 +177,11 @@ export default function Conversations({ canAutoSend, notify }: Props) {
   const [items, setItems] = useState<InboxItem[]>([]);
   const [outbox, setOutbox] = useState<SendTask[]>([]);
   const [ends, setEnds] = useState<ConversationEnd[]>([]);
+  const [who, setWho] = useState<Who>(NOBODY);
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [colleagues, setColleagues] = useState<Staff[]>([]);
+  const [remind, setRemind] = useState<number | null>(null); // 分给我、还在等回复的群数
+  const transferBox = useRef<HTMLDivElement>(null);
   const [endAsk, setEndAsk] = useState<string | null>(null); // 群列表里正在确认结束的群
   const [headAsk, setHeadAsk] = useState(false); // 会话顶部正在确认结束
   const [moreBefore, setMoreBefore] = useState(false);
@@ -173,10 +214,12 @@ export default function Conversations({ canAutoSend, notify }: Props) {
   useEffect(() => {
     setNameDraft(null);
     setHeadAsk(false);
+    setTransferOpen(false);
     if (!target) return;
     setItems([]);
     setOutbox([]);
     setEnds([]);
+    setWho(NOBODY);
     setFocusId(null);
     setLoading(true);
     fetchConversation(target.channel, target.group_id)
@@ -185,6 +228,7 @@ export default function Conversations({ canAutoSend, notify }: Props) {
         setItems(c.items);
         setOutbox(c.outbox);
         setEnds(c.ends);
+        setWho(whoOf(c));
         setMoreBefore(c.has_more_before);
         setMoreAfter(c.has_more_after);
         setError(null);
@@ -250,12 +294,18 @@ export default function Conversations({ canAutoSend, notify }: Props) {
         setItems((prev) => [...prev.slice(0, start), ...fresh]);
         setOutbox(c.outbox);
         setEnds(c.ends);
+        setWho(whoOf(c));
         if (!moreAfter) setMoreAfter(c.has_more_after);
-      } catch {
-        /* 下次再刷新 */
+      } catch (e) {
+        // 会话被转给了别人，这个群已经不归我了
+        if ((e as Error).message === "这个群没有分给你") {
+          setTarget(null);
+          notify("这个群已经转给别人处理了");
+        }
+        /* 其他错误：下次再刷新 */
       }
     },
-    [target, items, moreAfter, outbox.length],
+    [target, items, moreAfter, outbox.length, notify],
   );
 
   const sending = outbox.some((t) => t.status === "queued" || t.status === "sending");
@@ -293,7 +343,13 @@ export default function Conversations({ canAutoSend, notify }: Props) {
       notify(r.closed_count ? `会话已结束，${r.closed_count} 条没回复的消息不再提醒` : "会话已结束");
       setEndAsk(null);
       setHeadAsk(false);
-      if (sameGroup(target, g)) refresh(true);
+      // 替别人处理的群，结束后就不归我了
+      const g2 = groups.find((x) => sameGroup(x, g));
+      const mine = admin || g2?.owner?.id === me.id || (sameGroup(target, g) && who.owner?.id === me.id);
+      if (sameGroup(target, g)) {
+        if (mine) refresh(true);
+        else setTarget(null);
+      }
     } catch (e) {
       notify(`结束失败：${(e as Error).message}`);
     } finally {
@@ -301,6 +357,53 @@ export default function Conversations({ canAutoSend, notify }: Props) {
       loadGroups();
     }
   };
+
+  // 转给同事：打开时取最新的成员在线情况和手上会话数
+  const openTransfer = () => {
+    setTransferOpen(true);
+    fetchStaff()
+      .then(setColleagues)
+      .catch((e: Error) => notify(`加载同事失败：${e.message}`));
+  };
+
+  const transfer = async (to: Staff) => {
+    if (!target) return;
+    setBusy(true);
+    try {
+      await assignConversation(target.channel, target.group_id, to.id);
+      notify(to.id === me.id ? "这次会话由你处理" : `已转给${to.name}`);
+      setTransferOpen(false);
+      if (admin || who.owner?.id === me.id || to.id === me.id) refresh();
+      else setTarget(null); // 转走以后就不归我了
+      loadGroups();
+    } catch (e) {
+      notify(`转交失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!transferOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!transferBox.current?.contains(e.target as Node)) setTransferOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setTransferOpen(false);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [transferOpen]);
+
+  // 打开工作台、或从「离开」切回「在线」时，提醒分给我、还在等回复的群（包括我不在时分来的）
+  useEffect(() => {
+    if (me.status !== "online") return;
+    fetchGroups("todo")
+      .then((g) => setRemind(g.filter((x) => x.assignee?.id === me.id).length || null))
+      .catch(() => {});
+  }, [me.status, me.id]);
 
   useEffect(() => {
     if (!endAsk && !headAsk) return;
@@ -340,6 +443,10 @@ export default function Conversations({ canAutoSend, notify }: Props) {
   // 还没处理完的：没回复的客户消息、没发出去的回复。群列表里的数是全群的，聊天里只算已加载的
   const unsent = outbox.filter((t) => t.status === "failed" || t.status === "cancelled").length;
   const openCount = Math.max(current ? current.pending_count + current.escalated_count : 0, open.length + unsent);
+  const canTransfer = who.open && (admin || who.assignee?.id === me.id || who.owner?.id === me.id);
+  const ranked = colleagues
+    .filter((s) => s.active && s.id !== who.assignee?.id)
+    .sort((a, b) => Number(b.online) - Number(a.online) || a.open_count - b.open_count);
 
   // 会话结束的分隔线放在结束前的最后一条消息后面；落在已加载范围之外的不显示
   const endsAt = useMemo(() => {
@@ -364,7 +471,7 @@ export default function Conversations({ canAutoSend, notify }: Props) {
     <div className="chat-layout">
       <div className={`group-list ${target ? "has-target" : ""}`}>
         <div className="tabs group-tabs">
-          {VIEWS.map((v) => (
+          {VIEWS.filter((v) => admin || !v.admin).map((v) => (
             <button
               key={v.key}
               className={view === v.key ? "on" : ""}
@@ -377,11 +484,25 @@ export default function Conversations({ canAutoSend, notify }: Props) {
             </button>
           ))}
         </div>
+        {remind && (
+          <div className="remind-bar">
+            <span>有 {remind} 个群分给了你，还在等回复</span>
+            <button className="link" aria-label="知道了" onClick={() => setRemind(null)}>知道了</button>
+          </div>
+        )}
         <input className="group-search" placeholder="搜索群名" value={search} onChange={(e) => setSearch(e.target.value)} />
         {error && !target && <p className="error pad">加载失败：{error}</p>}
         {shown.length === 0 && (
           <p className="empty pad">
-            {view === "todo" ? "没有待处理的群 🎉" : view === "escalated" ? "没有转人工的消息" : "暂无群聊"}
+            {view === "todo"
+              ? "没有待处理的群 🎉"
+              : view === "escalated"
+                ? "没有转人工的消息"
+                : view === "unassigned"
+                  ? "没有等着分配的会话"
+                  : admin
+                    ? "暂无群聊"
+                    : "还没有分给你的群"}
           </p>
         )}
         <ul>
@@ -389,6 +510,16 @@ export default function Conversations({ canAutoSend, notify }: Props) {
             const k = groupKey(g);
             const left = g.pending_count + g.escalated_count;
             const asking = endAsk === k;
+            // 管理员看谁在处理；其他人只在替别人处理时标出来
+            const chip = admin
+              ? g.conversation_open
+                ? g.assignee
+                  ? <span className="who-chip">{g.assignee.name}</span>
+                  : <span className="who-chip warn">待分配</span>
+                : null
+              : g.assignee?.id === me.id && g.owner && g.owner.id !== me.id
+                ? <span className="who-chip">替{g.owner.name}</span>
+                : null;
             return (
               <li
                 key={k}
@@ -401,8 +532,9 @@ export default function Conversations({ canAutoSend, notify }: Props) {
                 <div className="g-main">
                   <div className="g-top">
                     <span className={`g-name ${g.group_name ? "" : "unnamed"}`}>{groupLabel(g.group_name, g.group_id)}</span>
+                    {chip}
                     <time>{shortTime(g.last_message_at)}</time>
-                    {left > 0 && !asking && (
+                    {(left > 0 || g.conversation_open) && !asking && (
                       <button
                         className="g-end"
                         title="结束会话"
@@ -426,7 +558,7 @@ export default function Conversations({ canAutoSend, notify }: Props) {
                   </div>
                   {asking && (
                     <div className="g-confirm" onClick={(e) => e.stopPropagation()}>
-                      <span>还有 {left} 条没处理完，结束后不再提醒</span>
+                      <span>{left > 0 ? `还有 ${left} 条没处理完，结束后不再提醒` : "消息都处理完了，结束这次会话？"}</span>
                       <button className="primary" disabled={busy} onClick={() => endGroup(g)}>结束会话</button>
                       <button disabled={busy} onClick={() => setEndAsk(null)}>取消</button>
                     </div>
@@ -476,19 +608,54 @@ export default function Conversations({ canAutoSend, notify }: Props) {
               )}
               <span className={`tag ${target.channel}`}>{CHANNEL_LABEL[target.channel]}</span>
               {current && <span className="msg-count">共 {current.message_count} 条消息</span>}
-              <button
-                className="end-btn"
-                disabled={busy || openCount === 0 || headAsk}
-                title={openCount ? "结束这个会话" : "没有待处理的消息"}
-                onClick={() => setHeadAsk(true)}
-              >
-                结束会话
-              </button>
+              <WhoChip who={who} me={me} />
+              <div className="head-actions" ref={transferBox}>
+                {canTransfer && (
+                  <button disabled={busy} aria-expanded={transferOpen} onClick={() => (transferOpen ? setTransferOpen(false) : openTransfer())}>
+                    {who.assignee ? "转给同事" : "分给…"}
+                  </button>
+                )}
+                <button
+                  disabled={busy || (openCount === 0 && !who.open) || headAsk}
+                  title={openCount || who.open ? "结束这个会话" : "没有进行中的会话"}
+                  onClick={() => setHeadAsk(true)}
+                >
+                  结束会话
+                </button>
+                {transferOpen && (
+                  <div className="transfer-pop" role="dialog" aria-label="转给同事">
+                    <p className="hint">
+                      {who.assignee ? "转过去以后由对方处理这次会话，对方的待处理里会出现这个群。" : "这次会话还没分给人，选一个人处理。"}
+                    </p>
+                    {ranked.length === 0 && <p className="hint">{colleagues.length ? "没有可以转的同事" : "加载中…"}</p>}
+                    <ul className="people">
+                      {ranked.map((s) => (
+                        <li key={s.id}>
+                          <button disabled={busy} onClick={() => transfer(s)}>
+                            <span className="ava s">
+                              {s.name.slice(0, 1)}
+                              <i className={`st-dot ${s.online ? "online" : s.status === "away" ? "away" : "off"}`} />
+                            </span>
+                            <span className="nm">
+                              {s.name}
+                              {s.id === me.id && <small>（我）</small>}
+                            </span>
+                            {s.team && <span className="team-tag">{s.team.name}</span>}
+                            <span className="meta">
+                              {s.online ? "在线" : s.status === "away" ? "离开" : "不在线"} · 手上 {s.open_count} 个
+                            </span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
             </div>
             {headAsk && (
               <div className="confirm-send end-confirm">
                 <span>
-                  {openCount > 0 ? `还有 ${openCount} 条没处理完，结束后不再提醒` : "结束这个会话"}
+                  {openCount > 0 ? `还有 ${openCount} 条没处理完，结束后不再提醒` : "消息都处理完了，结束这次会话"}
                   {unsent > 0 && `，其中没发出去的 ${unsent} 条回复不再发送`}；客户再发消息会重新回到待处理。
                 </span>
                 <button className="primary" disabled={busy} onClick={() => endGroup(target)}>结束会话</button>

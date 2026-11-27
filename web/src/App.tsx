@@ -155,7 +155,7 @@ export default function App() {
           </div>
         </header>
         {current === "会话" ? (
-          <Conversations canAutoSend={(c) => c === "wecom" && !!sendState?.ready} notify={notify} />
+          <Conversations me={me} canAutoSend={(c) => c === "wecom" && !!sendState?.ready} notify={notify} />
         ) : (
           <TeamSettings me={me} notify={notify} />
         )}

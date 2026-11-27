@@ -10,11 +10,11 @@ from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import send_queue
+from app import routing, send_queue
 from app.auth import current_staff
 from app.config import settings
 from app.db import get_session
-from app.models import Attachment, SendTask, Staff, Suggestion
+from app.models import Attachment, Message, SendTask, Staff, Suggestion
 from app.schemas import (
     AgentClaimIn,
     AgentClaimOut,
@@ -44,10 +44,12 @@ def send_status(session: Session = Depends(get_session)) -> SendStatusOut:
     )
 
 
-def _suggestion(session: Session, suggestion_id: uuid.UUID) -> Suggestion:
+def _suggestion(session: Session, suggestion_id: uuid.UUID, staff: Staff) -> Suggestion:
     sug = session.get(Suggestion, suggestion_id, with_for_update=True)
     if sug is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "建议不存在")
+    msg = session.get(Message, sug.message_id)
+    routing.ensure_access(session, staff, msg.channel, msg.group_id)
     return sug
 
 
@@ -55,7 +57,7 @@ def _suggestion(session: Session, suggestion_id: uuid.UUID) -> Suggestion:
 def resend(suggestion_id: uuid.UUID, staff: Staff = Depends(current_staff),
            session: Session = Depends(get_session)) -> Suggestion:
     """自动发送失败或取消后，确认再发一次。"""
-    sug = _suggestion(session, suggestion_id)
+    sug = _suggestion(session, suggestion_id, staff)
     try:
         send_queue.resend(session, sug, staff.name)
     except (send_queue.SendRejected, send_queue.ReportConflict) as exc:
@@ -66,9 +68,10 @@ def resend(suggestion_id: uuid.UUID, staff: Staff = Depends(current_staff),
 
 
 @router.post("/suggestions/{suggestion_id}/cancel-send", response_model=SuggestionOut)
-def cancel_send(suggestion_id: uuid.UUID, session: Session = Depends(get_session)) -> Suggestion:
+def cancel_send(suggestion_id: uuid.UUID, staff: Staff = Depends(current_staff),
+                session: Session = Depends(get_session)) -> Suggestion:
     """取消还在排队的自动发送。"""
-    sug = _suggestion(session, suggestion_id)
+    sug = _suggestion(session, suggestion_id, staff)
     try:
         send_queue.cancel(session, sug)
     except send_queue.ReportConflict as exc:
@@ -78,9 +81,10 @@ def cancel_send(suggestion_id: uuid.UUID, session: Session = Depends(get_session
 
 
 @router.post("/suggestions/{suggestion_id}/mark-manual-sent", response_model=SuggestionOut)
-def mark_manual_sent(suggestion_id: uuid.UUID, session: Session = Depends(get_session)) -> Suggestion:
+def mark_manual_sent(suggestion_id: uuid.UUID, staff: Staff = Depends(current_staff),
+                     session: Session = Depends(get_session)) -> Suggestion:
     """自动发送失败或取消后，技术支持已复制到企业微信手动发出。"""
-    sug = _suggestion(session, suggestion_id)
+    sug = _suggestion(session, suggestion_id, staff)
     try:
         send_queue.mark_manual(session, sug)
     except send_queue.ReportConflict as exc:
@@ -104,10 +108,11 @@ def task_out(session: Session, task: SendTask) -> SendTaskOut:
     )
 
 
-def _task(session: Session, task_id: uuid.UUID) -> SendTask:
+def _task(session: Session, task_id: uuid.UUID, staff: Staff) -> SendTask:
     task = session.get(SendTask, task_id, with_for_update=True)
     if task is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "发送记录不存在")
+    routing.ensure_access(session, staff, task.channel, task.group_id)
     return task
 
 
@@ -116,7 +121,7 @@ def resend_task(task_id: uuid.UUID, staff: Staff = Depends(current_staff),
                 session: Session = Depends(get_session)) -> SendTaskOut:
     """发送失败或取消后，确认再发一次。"""
     try:
-        new = send_queue.resend_task(session, _task(session, task_id), staff.name)
+        new = send_queue.resend_task(session, _task(session, task_id, staff), staff.name)
     except (send_queue.SendRejected, send_queue.ReportConflict) as exc:
         session.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
@@ -125,8 +130,9 @@ def resend_task(task_id: uuid.UUID, staff: Staff = Depends(current_staff),
 
 
 @router.post("/send-tasks/{task_id}/cancel", response_model=SendTaskOut)
-def cancel_task(task_id: uuid.UUID, session: Session = Depends(get_session)) -> SendTaskOut:
-    task = _task(session, task_id)
+def cancel_task(task_id: uuid.UUID, staff: Staff = Depends(current_staff),
+                session: Session = Depends(get_session)) -> SendTaskOut:
+    task = _task(session, task_id, staff)
     try:
         send_queue.cancel_task(session, task)
     except send_queue.ReportConflict as exc:
@@ -136,9 +142,10 @@ def cancel_task(task_id: uuid.UUID, session: Session = Depends(get_session)) -> 
 
 
 @router.post("/send-tasks/{task_id}/mark-manual-sent", response_model=SendTaskOut)
-def dismiss_task(task_id: uuid.UUID, session: Session = Depends(get_session)) -> SendTaskOut:
+def dismiss_task(task_id: uuid.UUID, staff: Staff = Depends(current_staff),
+                 session: Session = Depends(get_session)) -> SendTaskOut:
     """失败或取消后，已自己在企业微信里发出（或不用再发）。"""
-    task = _task(session, task_id)
+    task = _task(session, task_id, staff)
     try:
         send_queue.dismiss_task(session, task)
     except send_queue.ReportConflict as exc:

@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app import auth
+from app import auth, routing
 from app.db import get_session
 from app.models import Role, Staff, Team
 from app.schemas import (AuthState, LoginIn, PasswordIn, SetupIn, StaffIn, StaffOut, StaffPatch, StatusIn,
@@ -16,10 +16,10 @@ from app.schemas import (AuthState, LoginIn, PasswordIn, SetupIn, StaffIn, Staff
 router = APIRouter(prefix="/api")
 
 
-def staff_out(s: Staff) -> StaffOut:
+def staff_out(s: Staff, open_count: int = 0) -> StaffOut:
     return StaffOut(id=s.id, name=s.name, username=s.username, role=s.role,
                     team=TeamOut.model_validate(s.team) if s.team else None, active=s.active, status=s.status,
-                    online=auth.is_online(s), last_seen=s.last_seen)
+                    online=auth.is_online(s), last_seen=s.last_seen, open_count=open_count)
 
 
 # ---------- 登录 ----------
@@ -96,9 +96,10 @@ def list_teams(session: Session = Depends(get_session)) -> list[Team]:
 
 @router.get("/staff", response_model=list[StaffOut], dependencies=[Depends(auth.current_staff)])
 def list_staff(session: Session = Depends(get_session)) -> list[StaffOut]:
-    """全部成员（转给同事时要看谁在线）。"""
+    """全部成员（转给同事时要看谁在线、手上有几个会话）。"""
     rows = session.scalars(select(Staff).order_by(Staff.active.desc(), Staff.role, Staff.created_at))
-    return [staff_out(s) for s in rows]
+    counts = routing.open_counts(session)
+    return [staff_out(s, counts.get(s.id, 0)) for s in rows]
 
 
 def _team(session: Session, team_id: uuid.UUID | None) -> Team | None:
@@ -155,6 +156,9 @@ def edit_staff(staff_id: uuid.UUID, body: StaffPatch, _: Staff = Depends(auth.re
         staff.active = body.active
     if body.password is not None:
         staff.password_hash = auth.hash_password(body.password)
+    if body.active is False:
+        session.flush()
+        routing.release(session, staff)
     _commit_unique(session)
     session.refresh(staff)
     return staff_out(staff)

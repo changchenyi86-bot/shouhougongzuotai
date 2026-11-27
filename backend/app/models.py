@@ -4,7 +4,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Index, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -89,6 +89,11 @@ class SuggestionStatus(str, enum.Enum):
     ESCALATED = "escalated"  # 转人工
     DISMISSED = "dismissed"  # 忽略（无需回复）
     CLOSED = "closed"  # 结束会话时还没回复，随会话一起结束
+
+
+# 还没处理完的建议；结束会话时这些随会话结束
+OPEN_SUGGESTION = {SuggestionStatus.GENERATING, SuggestionStatus.READY, SuggestionStatus.FAILED,
+                   SuggestionStatus.ESCALATED}
 
 
 class SendStatus(str, enum.Enum):
@@ -188,24 +193,6 @@ class GroupName(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
 
-class ConversationEnd(Base):
-    """技术支持主动结束会话的记录。
-
-    群聊里的一次会话：从客户发来要处理的消息开始，到技术支持结束会话为止。结束时群里还没回复的客户消息
-    随会话结束，不再算待处理；之后客户再发消息，这个群重新回到待处理，算新的一次会话。
-    """
-
-    __tablename__ = "conversation_ends"
-    __table_args__ = (Index("ix_conversation_ends_group", "channel", "group_id", "ended_at"),)
-
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    channel: Mapped[Channel] = mapped_column(Enum(Channel, native_enum=False, length=16))
-    group_id: Mapped[str] = mapped_column(String(128))
-    ended_by: Mapped[str | None] = mapped_column(String(64), comment="谁结束的")
-    ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
-    closed_count: Mapped[int] = mapped_column(default=0, comment="随会话结束的未回复客户消息数")
-
-
 class Role(str, enum.Enum):
     ADMIN = "admin"  # 管理员：看全部会话，管成员、群负责人和设置
     SUPPORT = "support"  # 技术支持：处理分给自己的会话
@@ -255,6 +242,48 @@ class LoginToken(Base):
     staff_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("staff.id", ondelete="CASCADE"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Conversation(Base):
+    """群里的一次会话。
+
+    客户发来要处理的消息、这个群又没有进行中的会话时开始，按分流规则分给一个人处理；
+    技术支持结束会话时结束，群里还没回复的客户消息随会话结束。之后客户再发消息，就是新的一次会话。
+    """
+
+    __tablename__ = "conversations"
+    __table_args__ = (
+        Index("ix_conversations_group", "channel", "group_id", "ended_at"),
+        # 一个群同时只有一个进行中的会话
+        Index("uq_conversations_open", "channel", "group_id", unique=True,
+              postgresql_where=text("ended_at IS NULL"), sqlite_where=text("ended_at IS NULL")),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    channel: Mapped[Channel] = mapped_column(Enum(Channel, native_enum=False, length=16))
+    group_id: Mapped[str] = mapped_column(String(128))
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    assignee_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("staff.id", ondelete="SET NULL"), index=True, comment="分给谁处理；为空表示等管理员分配"
+    )
+    assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), comment="为空表示进行中")
+    ended_by: Mapped[str | None] = mapped_column(String(64), comment="谁结束的")
+    closed_count: Mapped[int] = mapped_column(default=0, comment="随会话结束的未回复客户消息数")
+    assignee: Mapped["Staff | None"] = relationship(lazy="selectin")
+
+
+class GroupOwner(Base):
+    """群负责人：这个群的新会话先分给负责人；负责人不在线时分给同组的人。"""
+
+    __tablename__ = "group_owners"
+
+    channel: Mapped[Channel] = mapped_column(Enum(Channel, native_enum=False, length=16), primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("staff.id", ondelete="CASCADE"), index=True)
+    updated_by: Mapped[str | None] = mapped_column(String(64))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+    owner: Mapped["Staff"] = relationship(lazy="selectin")
 
 
 class SyncCursor(Base):

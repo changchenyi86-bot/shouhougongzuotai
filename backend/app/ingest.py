@@ -52,7 +52,11 @@ def ingest(session: Session, data: MessageIn) -> tuple[Message, bool]:
     from app.ai import worker
     from app.channels import ADAPTERS
 
+    from app import routing
+
     msg, created = save_message(session, data)
     if created and _is_recent(msg) and ADAPTERS[msg.channel].needs_reply(msg):
+        # 群里没有进行中的会话就开一个，按分流规则分给人
+        routing.open_conversation(session, msg.channel, msg.group_id, msg.sent_at)
         worker.enqueue(msg.id)
     return msg, created

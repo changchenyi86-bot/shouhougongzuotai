@@ -28,12 +28,20 @@ backend/
     api/attachments.py  图片、文件上传和下载（客户发来的也会下载保存）
     api/sending.py   自动发送：发送程序心跳 / 领取 / 回报，工作台重发 / 取消 / 改为手动
     auth.py、api/staff.py  登录（账号密码）、成员、角色（管理员 / 技术支持）、分组（BI 组 / 中台组）
+    routing.py       会话分流（群负责人 → 同组在线、手上会话最少的人 → 都不在线还给负责人）和可见范围
     channels/        各 IM 渠道适配器（wecom 已实现：会话内容存档；dingtalk / feishu 待实现）
   tests/
 windows-agent/       电脑端发送程序：在常开的 Windows 电脑上操作官方企业微信客户端发消息
-web/                 React 工作台（登录；会话：群列表 + 聊天记录 + AI 建议 + 输入框；团队设置：成员；工单/知识库/积分排名占位）
+web/                 React 工作台（登录；会话：群列表 + 聊天记录 + AI 建议 + 输入框；团队设置：成员、群负责人；工单/知识库/积分排名占位）
 docker-compose.yml
 ```
+
+## 会话分流
+
+群里的一次会话：客户发来要处理的消息、这个群又没有进行中的会话时开始，技术支持结束会话时结束。
+新会话先给群负责人；负责人不在线（设成离开，或 2 分钟内没打开工作台），给同组里在线、手上会话最少的人；
+同组都不在线，还是给负责人，负责人打开工作台时提醒。没有负责人的群进「待分配」，由管理员分。
+群负责人在「团队设置 → 群负责人」里指定，群属于负责人所在的组。
 
 ## 统一消息模型
 
@@ -67,7 +75,9 @@ docker-compose.yml
 - `GET /api/messages?channel=&group_id=&since=&limit=`：查询消息
 - `POST /webhooks/{channel}`：渠道回调（钉钉、飞书目前返回 501）
 - `GET/POST /webhooks/wecom`：企业微信会话存档应用的事件回调（URL 校验、msgaudit_notify）
-- `GET /api/groups?view=todo|escalated|all`：群列表（待处理数、转人工数）
+- `GET /api/groups?view=todo|escalated|unassigned|all`：群列表（待处理数、转人工数、负责人、谁在处理）。管理员看全部，其他人只看自己负责的群和正在替别人处理的群；unassigned 是还没分给人的会话
+- `PUT /api/groups/owner`：指定或取消群负责人（管理员）
+- `POST /api/conversations/assign`：把进行中的会话转给同事（管理员、群负责人、正在处理的人）
 - `GET /api/conversation?channel=&group_id=&before=|after=|anchor=`：一个群的聊天记录（含 AI 建议、附件、工作台发出的消息状态）
 - `POST /api/attachments`（表单上传）、`GET /api/attachments/{id}`：图片、文件
 - `POST /api/conversations/send`：在会话里发文字 + 图片 + 文件（可带 `suggestion_id` 表示回复哪条客户消息）

@@ -8,11 +8,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app import send_queue
+from app import routing, send_queue
 from app.ai import worker
 from app.auth import current_staff
 from app.db import get_session
-from app.models import Channel, Message, Staff, Suggestion, SuggestionStatus
+from app.models import OPEN_SUGGESTION, Channel, Message, Staff, Suggestion, SuggestionStatus
 from app.schemas import AdoptIn, AdoptOut, HandleIn, InboxItem, MessageOut, SuggestionOut
 
 router = APIRouter(prefix="/api", dependencies=[Depends(current_staff)])
@@ -24,8 +24,7 @@ VIEWS: dict[str, list[SuggestionStatus] | None] = {
     "done": [S.ADOPTED, S.EDITED, S.DISMISSED, S.CLOSED],
     "all": None,
 }
-# 还没处理完的建议；结束会话时这些随会话结束
-OPEN = {S.GENERATING, S.READY, S.FAILED, S.ESCALATED}
+OPEN = OPEN_SUGGESTION
 # 还能回复的：随会话结束的消息之后补上回复，也记为已回复
 REPLYABLE = OPEN | {S.CLOSED}
 
@@ -36,6 +35,7 @@ def inbox(
     channel: Channel | None = None,
     group_id: str | None = None,
     limit: int = Query(50, ge=1, le=200),
+    staff: Staff = Depends(current_staff),
     session: Session = Depends(get_session),
 ) -> list[InboxItem]:
     """待处理的客户消息及其 AI 建议。view=all 时包含员工发言等没有建议的消息。
@@ -56,6 +56,9 @@ def inbox(
         stmt = stmt.where(Message.channel == channel)
     if group_id:
         stmt = stmt.where(Message.group_id == group_id)
+    scope = routing.message_scope(routing.visible(session, staff))
+    if scope is not None:
+        stmt = stmt.where(scope)
     stmt = stmt.order_by(Message.sent_at.desc()).limit(limit)
     return [
         InboxItem(message=MessageOut.model_validate(m), suggestion=SuggestionOut.model_validate(s) if s else None)
@@ -63,11 +66,13 @@ def inbox(
     ]
 
 
-def _get(session: Session, suggestion_id: uuid.UUID) -> Suggestion:
+def _get(session: Session, suggestion_id: uuid.UUID, staff: Staff) -> Suggestion:
     # 行锁：两人同时处理同一条建议时，后到的请求会看到已处理状态并返回 409
     sug = session.get(Suggestion, suggestion_id, with_for_update=True)
     if sug is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "建议不存在")
+    msg = session.get(Message, sug.message_id)
+    routing.ensure_access(session, staff, msg.channel, msg.group_id)
     return sug
 
 
@@ -88,7 +93,7 @@ def adopt(suggestion_id: uuid.UUID, body: AdoptIn, staff: Staff = Depends(curren
     send=true 时交给电脑端发送程序自动发到群里（不满足条件时返回 409 和原因，建议保持未处理）；
     否则由技术支持复制后在客户端手动发送。
     """
-    sug = _get(session, suggestion_id)
+    sug = _get(session, suggestion_id, staff)
     _ensure_open(sug, REPLYABLE)
     content = (body.content if body.content is not None else sug.content or "").strip()
     if not content:
@@ -113,7 +118,7 @@ def adopt(suggestion_id: uuid.UUID, body: AdoptIn, staff: Staff = Depends(curren
 def escalate(suggestion_id: uuid.UUID, body: HandleIn, staff: Staff = Depends(current_staff),
              session: Session = Depends(get_session)) -> Suggestion:
     """转人工：AI 答不了，交给技术支持专人处理。"""
-    sug = _get(session, suggestion_id)
+    sug = _get(session, suggestion_id, staff)
     _ensure_open(sug)
     _mark(sug, S.ESCALATED, staff)
     sug.note = body.note
@@ -125,7 +130,7 @@ def escalate(suggestion_id: uuid.UUID, body: HandleIn, staff: Staff = Depends(cu
 def dismiss(suggestion_id: uuid.UUID, body: HandleIn, staff: Staff = Depends(current_staff),
             session: Session = Depends(get_session)) -> Suggestion:
     """忽略：这条消息无需回复（如“好的”“谢谢”）或已在群里回复过。"""
-    sug = _get(session, suggestion_id)
+    sug = _get(session, suggestion_id, staff)
     _ensure_open(sug)
     _mark(sug, S.DISMISSED, staff)
     sug.note = body.note
@@ -134,8 +139,9 @@ def dismiss(suggestion_id: uuid.UUID, body: HandleIn, staff: Staff = Depends(cur
 
 
 @router.post("/suggestions/{suggestion_id}/regenerate", response_model=SuggestionOut)
-def regenerate(suggestion_id: uuid.UUID, session: Session = Depends(get_session)) -> Suggestion:
-    sug = _get(session, suggestion_id)
+def regenerate(suggestion_id: uuid.UUID, staff: Staff = Depends(current_staff),
+               session: Session = Depends(get_session)) -> Suggestion:
+    sug = _get(session, suggestion_id, staff)
     if sug.status not in (S.READY, S.FAILED):
         raise HTTPException(status.HTTP_409_CONFLICT, f"当前状态不能重新生成（{sug.status.value}）")
     session.rollback()  # 释放行锁，enqueue 用独立会话更新状态

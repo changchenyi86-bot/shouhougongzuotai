@@ -169,6 +169,13 @@ class AgentResultIn(BaseModel):
 # ---------- 群聊记录 ----------
 
 
+class StaffBrief(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+
+
 class GroupOut(BaseModel):
     channel: Channel
     group_id: str
@@ -179,6 +186,9 @@ class GroupOut(BaseModel):
     message_count: int
     pending_count: int = Field(description="待处理数：待回复的客户消息、还没发出或发送失败的回复")
     escalated_count: int = Field(description="已转人工、还没回复的客户消息数")
+    owner: StaffBrief | None = Field(default=None, description="群负责人")
+    assignee: StaffBrief | None = Field(default=None, description="进行中的会话分给了谁")
+    conversation_open: bool = Field(default=False, description="有进行中的会话")
 
 
 class SendTaskOut(BaseModel):
@@ -208,6 +218,21 @@ class ConversationOut(BaseModel):
     has_more_after: bool
     outbox: list[SendTaskOut] = Field(default=[], description="工作台发出、还没出现在聊天记录里的消息（排队、发送中、失败，及刚发出的）")
     ends: list[ConversationEndOut] = Field(default=[], description="这个群最近的会话结束记录，按时间从早到晚")
+    owner: StaffBrief | None = Field(default=None, description="群负责人")
+    assignee: StaffBrief | None = Field(default=None, description="进行中的会话分给了谁")
+    conversation_open: bool = Field(default=False, description="有进行中的会话")
+
+
+class OwnerIn(BaseModel):
+    channel: Channel
+    group_id: str = Field(min_length=1, max_length=128)
+    owner_id: uuid.UUID | None = Field(description="为空表示取消负责人")
+
+
+class AssignIn(BaseModel):
+    channel: Channel
+    group_id: str = Field(min_length=1, max_length=128)
+    staff_id: uuid.UUID
 
 
 class EndIn(BaseModel):
@@ -297,6 +322,7 @@ class StaffOut(BaseModel):
     status: StaffStatus
     online: bool = Field(description="设成在线，并且最近打开着工作台")
     last_seen: datetime | None
+    open_count: int = Field(default=0, description="手上进行中的会话数")
 
 
 class StaffIn(BaseModel):

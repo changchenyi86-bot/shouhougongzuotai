@@ -28,7 +28,7 @@ const TEAMS: Team[] = [
 ];
 const seen = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
 function member(name: string, username: string, role: Staff["role"], team: Team | null, online: boolean, extra: Partial<Staff> = {}): Staff {
-  return { id: `u-${username}`, name, username, role, team, active: true, status: "online", online, last_seen: seen(online ? 0 : 300), ...extra };
+  return { id: `u-${username}`, name, username, role, team, active: true, status: "online", online, last_seen: seen(online ? 0 : 300), open_count: 0, ...extra };
 }
 const STAFF: Staff[] = [
   member("李四", "lisi", "admin", null, true),
@@ -38,6 +38,10 @@ const STAFF: Staff[] = [
   member("陆宣任", "luxuanren", "support", TEAMS[1], false),
 ];
 const ME = STAFF[0];
+const brief = (name: string) => {
+  const s = STAFF.find((x) => x.name === name)!;
+  return { id: s.id, name: s.name };
+};
 const key = (channel: string, groupId: string) => `${channel}:${groupId}`;
 
 interface Room {
@@ -59,6 +63,9 @@ function room(channel: Channel, id: string, name: string | null, external: boole
       message_count: total,
       pending_count: 0,
       escalated_count: 0,
+      owner: null,
+      assignee: null,
+      conversation_open: false,
     },
     items: [],
     outbox: [],
@@ -233,6 +240,15 @@ function build(): Room[] {
     reason: "常见权限问题",
   });
 
+  // 负责人、处理人：宋奔离开了，零售群分给了同组的姜瑜；未命名的群还没有负责人，等分配
+  const who = (r: Room, owner: string | null, assignee: string | null, open: boolean) =>
+    Object.assign(r.group, { owner: owner ? brief(owner) : null, assignee: assignee ? brief(assignee) : null, conversation_open: open });
+  who(bank, "姜瑜", "姜瑜", true);
+  who(factory, "唐已杰", "唐已杰", true);
+  who(retail, "宋奔", "姜瑜", true);
+  who(broker, "唐已杰", null, false);
+  who(unnamed, null, null, true);
+
   return [bank, factory, retail, broker, team, unnamed];
 }
 
@@ -300,7 +316,11 @@ async function handle(path: string, query: URLSearchParams, method: string, body
     return ME;
   }
   if (path === "teams") return TEAMS;
-  if (path === "staff" && method === "GET") return STAFF;
+  if (path === "staff" && method === "GET")
+    return STAFF.map((s) => ({
+      ...s,
+      open_count: rooms.filter((r) => r.group.conversation_open && r.group.assignee?.id === s.id).length,
+    }));
   if (path === "staff" && method === "POST") {
     const team = TEAMS.find((t) => t.id === data.team_id) ?? null;
     const s = member(String(data.name), String(data.username), data.role as Staff["role"], team, false, { last_seen: null });
@@ -329,7 +349,15 @@ async function handle(path: string, query: URLSearchParams, method: string, body
     const view = query.get("view");
     return rooms
       .map(summary)
-      .filter((g) => (view === "todo" ? g.pending_count > 0 : view === "escalated" ? g.escalated_count > 0 : true))
+      .filter((g) =>
+        view === "todo"
+          ? g.pending_count > 0
+          : view === "escalated"
+            ? g.escalated_count > 0
+            : view === "unassigned"
+              ? g.conversation_open && !g.assignee
+              : true,
+      )
       .sort((a, b) => b.last_message_at.localeCompare(a.last_message_at));
   }
 
@@ -351,7 +379,25 @@ async function handle(path: string, query: URLSearchParams, method: string, body
       has_more_after: false,
       outbox: r?.outbox ?? [],
       ends: r?.ends ?? [],
+      owner: r?.group.owner ?? null,
+      assignee: r?.group.assignee ?? null,
+      conversation_open: r?.group.conversation_open ?? false,
     };
+  }
+
+  if (path === "groups/owner") {
+    const r = rooms.find((x) => key(x.group.channel, x.group.group_id) === key(String(data.channel), String(data.group_id)))!;
+    const owner = STAFF.find((x) => x.id === data.owner_id);
+    r.group.owner = owner ? { id: owner.id, name: owner.name } : null;
+    if (r.group.conversation_open && !r.group.assignee && owner) r.group.assignee = { id: owner.id, name: owner.name };
+    return {};
+  }
+
+  if (path === "conversations/assign") {
+    const r = rooms.find((x) => key(x.group.channel, x.group.group_id) === key(String(data.channel), String(data.group_id)))!;
+    const to = STAFF.find((x) => x.id === data.staff_id)!;
+    r.group.assignee = { id: to.id, name: to.name };
+    return r.group.assignee;
   }
 
   if (path === "conversations/end") {
@@ -366,6 +412,8 @@ async function handle(path: string, query: URLSearchParams, method: string, body
       closed_count: open.length,
     };
     r.ends.push(end);
+    r.group.conversation_open = false;
+    r.group.assignee = null;
     return end;
   }
 

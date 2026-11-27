@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.ai import worker
-from app import auth, db
+from app import auth, db, routing
 from app.api import attachments, conversations, messages, sending, staff, suggestions
 from app.channels.wecom import router as wecom_router
 from app.channels.wecom.archive import get_syncer
@@ -34,6 +34,7 @@ async def lifespan(_: FastAPI):
     init_db()
     with db.SessionLocal() as session:
         auth.seed_teams(session)
+        routing.backfill(session)
     poller = None
     if settings.wecom_archive_enabled and settings.wecom_archive_poll_interval > 0:
         poller = asyncio.create_task(_poll_wecom_archive())
