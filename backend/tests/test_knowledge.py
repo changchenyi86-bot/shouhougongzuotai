@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from app.ai import knowledge
+from app.ai import embedding, knowledge
 from app.ai.knowledge import KnowledgeClient, search_query
 from app.ai.llm import SuggestionDraft, parse_draft
 from app.config import settings
@@ -157,6 +157,46 @@ def test_retrieve_by_group_product(mcp):
     # 假接口两个产品返回同样的文件：按文件去重，不重复带给模型
     assert [k.source_id for k in items] == [CARD["card_id"], "bi-manual-daochu.md", "bi-faq-cjwt14.md", "zs-bug-188123.md"]
     assert [k.ref for k in items] == ["K1", "K2", "K3", "K4"]
+
+
+class FakeEmbedder:
+    """标题含「损坏」的文档向量和问题最接近，其余正交；调用失败时抛 EmbeddingError。"""
+
+    def __init__(self, fail=False):
+        self.fail, self.calls = fail, 0
+
+    def embed(self, texts):
+        self.calls += 1
+        if self.fail:
+            raise embedding.EmbeddingError("timed out")
+        return [[1.0, 0.0] if ("损坏" in t or i == 0) else [0.0, 1.0] for i, t in enumerate(texts)]
+
+
+def test_rerank_by_vector_and_title(monkeypatch):
+    rows = [{"file": "a.md", "title": "导出设置", "snippet": "导出当前页"},
+            {"file": "c.md", "title": "Excel导出后，打开提示Excel文件损坏", "snippet": "重名报表"},
+            {"file": "b.md", "title": "员工信息登记表", "snippet": "登记"}]
+    query = "报表导出 Excel 打开提示文件损坏怎么办"
+    monkeypatch.setattr(embedding, "_client", FakeEmbedder())
+    # 向量和标题都更贴的 c 从第 2 升到第 1
+    assert [r["file"] for r in knowledge.rerank(query, rows)] == ["c.md", "a.md", "b.md"]
+    # 标题前缀不算；中文按相邻两字切
+    assert knowledge._words("FAQ-文件损坏") == {"文件", "件损", "损坏"}
+    # 向量模型失败或没配置：保持原顺序
+    monkeypatch.setattr(embedding, "_client", FakeEmbedder(fail=True))
+    assert [r["file"] for r in knowledge.rerank(query, rows)] == ["a.md", "c.md", "b.md"]
+    monkeypatch.setattr(embedding, "_client", None)
+    monkeypatch.setattr(settings, "embedding_base_url", "")
+    assert [r["file"] for r in knowledge.rerank(query, rows)] == ["a.md", "c.md", "b.md"]
+
+
+def test_documents_search_pool_and_rerank(mcp, monkeypatch):
+    fake = FakeEmbedder()
+    monkeypatch.setattr(embedding, "_client", fake)
+    items = knowledge.retrieve(MSG["content"])
+    # 每路取 RERANK_POOL 篇，合并后整体重排一次（一次向量调用），再取前几篇
+    assert {a["top"] for n, a in mcp.calls if n == "search"} == {knowledge.RERANK_POOL}
+    assert fake.calls == 1 and len([k for k in items if k.kind != "card"]) == 3
 
 
 def test_retrieve_skips_small_talk_and_unconfigured(mcp, monkeypatch):
