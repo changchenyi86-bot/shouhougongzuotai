@@ -4,7 +4,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -88,6 +88,7 @@ class SuggestionStatus(str, enum.Enum):
     EDITED = "edited"  # 修改后采纳
     ESCALATED = "escalated"  # 转人工
     DISMISSED = "dismissed"  # 忽略（无需回复）
+    CLOSED = "closed"  # 结束会话时还没回复，随会话一起结束
 
 
 class SendStatus(str, enum.Enum):
@@ -185,6 +186,24 @@ class GroupName(Base):
     name: Mapped[str] = mapped_column(String(256))
     updated_by: Mapped[str | None] = mapped_column(String(64))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class ConversationEnd(Base):
+    """技术支持主动结束会话的记录。
+
+    群聊里的一次会话：从客户发来要处理的消息开始，到技术支持结束会话为止。结束时群里还没回复的客户消息
+    随会话结束，不再算待处理；之后客户再发消息，这个群重新回到待处理，算新的一次会话。
+    """
+
+    __tablename__ = "conversation_ends"
+    __table_args__ = (Index("ix_conversation_ends_group", "channel", "group_id", "ended_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    channel: Mapped[Channel] = mapped_column(Enum(Channel, native_enum=False, length=16))
+    group_id: Mapped[str] = mapped_column(String(128))
+    ended_by: Mapped[str | None] = mapped_column(String(64), comment="谁结束的")
+    ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    closed_count: Mapped[int] = mapped_column(default=0, comment="随会话结束的未回复客户消息数")
 
 
 class SyncCursor(Base):

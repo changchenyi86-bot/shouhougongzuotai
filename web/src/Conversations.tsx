@@ -3,11 +3,13 @@ import {
   CHANNEL_LABEL,
   cancelTask,
   dismissTask,
+  endConversation,
   fetchConversation,
   fetchGroups,
   resendTask,
   setGroupName,
   type Channel,
+  type ConversationEnd,
   type Group,
   type GroupView,
   type InboxItem,
@@ -45,6 +47,8 @@ function day(iso: string) {
 }
 
 const hm = (iso: string) => new Date(iso).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+const ms = (iso: string) => new Date(iso).getTime();
+const groupKey = (g: ChatTarget) => `${g.channel}:${g.group_id}`;
 
 function shortTime(iso: string) {
   const d = new Date(iso);
@@ -57,11 +61,29 @@ function SugChip({ s, focused, onFocus }: { s: Suggestion; focused: boolean; onF
   if (s.status === "adopted" || s.status === "edited")
     return <span className="chip-status ok" title={s.final_content ?? undefined}>已回复{s.handled_by ? ` · ${s.handled_by}` : ""}</span>;
   if (s.status === "dismissed") return <span className="chip-status">无需回复</span>;
+  if (s.status === "closed")
+    return (
+      <span className="chip-status" title={`${s.handled_by ?? ""}结束会话时这条还没回复`}>
+        会话已结束
+      </span>
+    );
   const label = { generating: "AI 生成中…", ready: "AI 建议待处理", failed: "AI 建议生成失败", escalated: "已转人工" }[s.status];
   return (
     <button className={`chip-status open ${s.status} ${focused ? "on" : ""}`} onClick={onFocus}>
       {label}
     </button>
+  );
+}
+
+function EndSep({ end }: { end: ConversationEnd }) {
+  const today = new Date().toDateString() === new Date(end.ended_at).toDateString();
+  const when = today ? hm(end.ended_at) : `${new Date(end.ended_at).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })} ${hm(end.ended_at)}`;
+  return (
+    <div className="end-sep" title={end.closed_count ? `${end.closed_count} 条没回复的消息随会话结束` : undefined}>
+      <span>
+        {end.ended_by ? `${end.ended_by} 结束了会话` : "会话已结束"} · {when}
+      </span>
+    </div>
   );
 }
 
@@ -119,6 +141,9 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
   const [target, setTarget] = useState<ChatTarget | null>(null);
   const [items, setItems] = useState<InboxItem[]>([]);
   const [outbox, setOutbox] = useState<SendTask[]>([]);
+  const [ends, setEnds] = useState<ConversationEnd[]>([]);
+  const [endAsk, setEndAsk] = useState<string | null>(null); // 群列表里正在确认结束的群
+  const [headAsk, setHeadAsk] = useState(false); // 会话顶部正在确认结束
   const [moreBefore, setMoreBefore] = useState(false);
   const [moreAfter, setMoreAfter] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -148,9 +173,11 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
   // 打开一个群：显示最新的 50 条
   useEffect(() => {
     setNameDraft(null);
+    setHeadAsk(false);
     if (!target) return;
     setItems([]);
     setOutbox([]);
+    setEnds([]);
     setFocusId(null);
     setLoading(true);
     fetchConversation(target.channel, target.group_id)
@@ -158,6 +185,7 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
         scrollPlan.current = { kind: "bottom" };
         setItems(c.items);
         setOutbox(c.outbox);
+        setEnds(c.ends);
         setMoreBefore(c.has_more_before);
         setMoreAfter(c.has_more_after);
         setError(null);
@@ -182,6 +210,7 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
       const c = await fetchConversation(target.channel, target.group_id, { before: items[0].message.id });
       if (el) scrollPlan.current = { kind: "keep", height: el.scrollHeight, top: el.scrollTop };
       setItems((prev) => [...c.items, ...prev]);
+      setEnds(c.ends);
       setMoreBefore(c.has_more_before);
     } catch (e) {
       notify(`加载失败：${(e as Error).message}`);
@@ -194,6 +223,7 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
       const c = await fetchConversation(target.channel, target.group_id, { after: items[items.length - 1].message.id });
       setItems((prev) => [...prev, ...c.items]);
       setOutbox(c.outbox);
+      setEnds(c.ends);
       setMoreAfter(c.has_more_after);
     } catch (e) {
       notify(`加载失败：${(e as Error).message}`);
@@ -220,6 +250,7 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
           scrollPlan.current = { kind: "bottom" };
         setItems((prev) => [...prev.slice(0, start), ...fresh]);
         setOutbox(c.outbox);
+        setEnds(c.ends);
         if (!moreAfter) setMoreAfter(c.has_more_after);
       } catch {
         /* 下次再刷新 */
@@ -255,6 +286,34 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
     }
   };
 
+  // 结束会话：没回复的客户消息不再提醒，客户再发消息时这个群重新回到待处理
+  const endGroup = async (g: ChatTarget) => {
+    setBusy(true);
+    try {
+      const r = await endConversation(g.channel, g.group_id, operator);
+      notify(r.closed_count ? `会话已结束，${r.closed_count} 条没回复的消息不再提醒` : "会话已结束");
+      setEndAsk(null);
+      setHeadAsk(false);
+      if (sameGroup(target, g)) refresh(true);
+    } catch (e) {
+      notify(`结束失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+      loadGroups();
+    }
+  };
+
+  useEffect(() => {
+    if (!endAsk && !headAsk) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setEndAsk(null);
+      setHeadAsk(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [endAsk, headAsk]);
+
   const taskAction = async (task: SendTask, kind: "resend" | "cancel" | "dismiss") => {
     setBusy(true);
     try {
@@ -279,12 +338,42 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
   const groupName =
     current?.group_name ?? [...items].reverse().find((i) => i.message.group_name)?.message.group_name ?? null;
 
+  // 还没处理完的：没回复的客户消息、没发出去的回复。群列表里的数是全群的，聊天里只算已加载的
+  const unsent = outbox.filter((t) => t.status === "failed" || t.status === "cancelled").length;
+  const openCount = Math.max(current ? current.pending_count + current.escalated_count : 0, open.length + unsent);
+
+  // 会话结束的分隔线放在结束前的最后一条消息后面；落在已加载范围之外的不显示
+  const endsAt = useMemo(() => {
+    const before: ConversationEnd[] = [];
+    const after = new Map<number, ConversationEnd[]>();
+    if (!items.length) return { before, after };
+    for (const e of ends) {
+      const t = ms(e.ended_at);
+      if (t < ms(items[0].message.sent_at)) {
+        if (!moreBefore) before.push(e);
+        continue;
+      }
+      let i = items.length - 1;
+      while (i > 0 && ms(items[i].message.sent_at) > t) i--;
+      if (i === items.length - 1 && moreAfter) continue;
+      after.set(i, [...(after.get(i) ?? []), e]);
+    }
+    return { before, after };
+  }, [ends, items, moreBefore, moreAfter]);
+
   return (
     <div className="chat-layout">
       <div className={`group-list ${target ? "has-target" : ""}`}>
         <div className="tabs group-tabs">
           {VIEWS.map((v) => (
-            <button key={v.key} className={view === v.key ? "on" : ""} onClick={() => setView(v.key)}>
+            <button
+              key={v.key}
+              className={view === v.key ? "on" : ""}
+              onClick={() => {
+                setView(v.key);
+                setEndAsk(null);
+              }}
+            >
               {v.label}
             </button>
           ))}
@@ -297,31 +386,56 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
           </p>
         )}
         <ul>
-          {shown.map((g) => (
-            <li
-              key={`${g.channel}:${g.group_id}`}
-              className={sameGroup(target, g) ? "on" : ""}
-              onClick={() => !sameGroup(target, g) && setTarget({ channel: g.channel, group_id: g.group_id })}
-            >
-              <span className={`g-avatar ${g.channel}`} aria-hidden>
-                {(g.group_name ?? "群").trim().slice(0, 1)}
-              </span>
-              <div className="g-main">
-                <div className="g-top">
-                  <span className={`g-name ${g.group_name ? "" : "unnamed"}`}>{groupLabel(g.group_name, g.group_id)}</span>
-                  <time>{shortTime(g.last_message_at)}</time>
+          {shown.map((g) => {
+            const k = groupKey(g);
+            const left = g.pending_count + g.escalated_count;
+            const asking = endAsk === k;
+            return (
+              <li
+                key={k}
+                className={`${sameGroup(target, g) ? "on" : ""} ${asking ? "asking" : ""}`}
+                onClick={() => !sameGroup(target, g) && setTarget({ channel: g.channel, group_id: g.group_id })}
+              >
+                <span className={`g-avatar ${g.channel}`} aria-hidden>
+                  {(g.group_name ?? "群").trim().slice(0, 1)}
+                </span>
+                <div className="g-main">
+                  <div className="g-top">
+                    <span className={`g-name ${g.group_name ? "" : "unnamed"}`}>{groupLabel(g.group_name, g.group_id)}</span>
+                    <time>{shortTime(g.last_message_at)}</time>
+                    {left > 0 && !asking && (
+                      <button
+                        className="g-end"
+                        title="结束会话"
+                        disabled={busy}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEndAsk(k);
+                        }}
+                      >
+                        结束
+                      </button>
+                    )}
+                  </div>
+                  <div className="g-bottom">
+                    <span className={`tag ${g.channel}`}>{CHANNEL_LABEL[g.channel]}</span>
+                    {g.is_external_group && <span className="ext">客户群</span>}
+                    <span className="g-preview">{g.last_content}</span>
+                    {view === "escalated"
+                      ? g.escalated_count > 0 && <span className="g-badge warn">{g.escalated_count}</span>
+                      : g.pending_count > 0 && <span className="g-badge" title="待处理">{g.pending_count}</span>}
+                  </div>
+                  {asking && (
+                    <div className="g-confirm" onClick={(e) => e.stopPropagation()}>
+                      <span>还有 {left} 条没处理完，结束后不再提醒</span>
+                      <button className="primary" disabled={busy} onClick={() => endGroup(g)}>结束会话</button>
+                      <button disabled={busy} onClick={() => setEndAsk(null)}>取消</button>
+                    </div>
+                  )}
                 </div>
-                <div className="g-bottom">
-                  <span className={`tag ${g.channel}`}>{CHANNEL_LABEL[g.channel]}</span>
-                  {g.is_external_group && <span className="ext">客户群</span>}
-                  <span className="g-preview">{g.last_content}</span>
-                  {view === "escalated"
-                    ? g.escalated_count > 0 && <span className="g-badge warn">{g.escalated_count}</span>
-                    : g.pending_count > 0 && <span className="g-badge" title="待处理">{g.pending_count}</span>}
-                </div>
-              </div>
-            </li>
-          ))}
+              </li>
+            );
+          })}
         </ul>
       </div>
       <section className="chat-pane">
@@ -362,8 +476,26 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
                 </form>
               )}
               <span className={`tag ${target.channel}`}>{CHANNEL_LABEL[target.channel]}</span>
-              {current && <span>共 {current.message_count} 条消息</span>}
+              {current && <span className="msg-count">共 {current.message_count} 条消息</span>}
+              <button
+                className="end-btn"
+                disabled={busy || openCount === 0 || headAsk}
+                title={openCount ? "结束这个会话" : "没有待处理的消息"}
+                onClick={() => setHeadAsk(true)}
+              >
+                结束会话
+              </button>
             </div>
+            {headAsk && (
+              <div className="confirm-send end-confirm">
+                <span>
+                  {openCount > 0 ? `还有 ${openCount} 条没处理完，结束后不再提醒` : "结束这个会话"}
+                  {unsent > 0 && `，其中没发出去的 ${unsent} 条回复不再发送`}；客户再发消息会重新回到待处理。
+                </span>
+                <button className="primary" disabled={busy} onClick={() => endGroup(target)}>结束会话</button>
+                <button disabled={busy} onClick={() => setHeadAsk(false)}>取消</button>
+              </div>
+            )}
             <div
               className="chat-list"
               ref={listRef}
@@ -380,6 +512,9 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
               {loading && <p className="empty pad">加载中…</p>}
               {moreBefore && <button className="load-more" onClick={loadOlder}>加载更早的消息</button>}
               {!loading && !moreBefore && items.length > 0 && <p className="chat-start">已经是最早的消息</p>}
+              {endsAt.before.map((e) => (
+                <EndSep key={e.id} end={e} />
+              ))}
               {items.map(({ message: m, suggestion }, i) => (
                 <div key={m.id}>
                   {(i === 0 || day(items[i - 1].message.sent_at) !== day(m.sent_at)) && (
@@ -398,6 +533,9 @@ export default function Conversations({ operator, canAutoSend, notify }: Props) 
                       <SugChip s={suggestion} focused={focus?.suggestion?.id === suggestion.id} onFocus={() => setFocusId(suggestion.id)} />
                     )}
                   </div>
+                  {endsAt.after.get(i)?.map((e) => (
+                    <EndSep key={e.id} end={e} />
+                  ))}
                 </div>
               ))}
               {moreAfter && <button className="load-more" onClick={loadNewer}>加载更新的消息</button>}

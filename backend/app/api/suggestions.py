@@ -20,11 +20,13 @@ S = SuggestionStatus
 VIEWS: dict[str, list[SuggestionStatus] | None] = {
     "todo": [S.GENERATING, S.READY, S.FAILED],
     "escalated": [S.ESCALATED],
-    "done": [S.ADOPTED, S.EDITED, S.DISMISSED],
+    "done": [S.ADOPTED, S.EDITED, S.DISMISSED, S.CLOSED],
     "all": None,
 }
-# 已处理完的建议不能再改状态
+# 还没处理完的建议；结束会话时这些随会话结束
 OPEN = {S.GENERATING, S.READY, S.FAILED, S.ESCALATED}
+# 还能回复的：随会话结束的消息之后补上回复，也记为已回复
+REPLYABLE = OPEN | {S.CLOSED}
 
 
 @router.get("/inbox", response_model=list[InboxItem])
@@ -68,8 +70,8 @@ def _get(session: Session, suggestion_id: uuid.UUID) -> Suggestion:
     return sug
 
 
-def _ensure_open(sug: Suggestion) -> None:
-    if sug.status not in OPEN:
+def _ensure_open(sug: Suggestion, allowed: set[SuggestionStatus] = OPEN) -> None:
+    if sug.status not in allowed:
         raise HTTPException(status.HTTP_409_CONFLICT, f"该建议已处理（{sug.status.value}）")
 
 
@@ -85,7 +87,7 @@ def adopt(suggestion_id: uuid.UUID, body: AdoptIn, session: Session = Depends(ge
     否则由技术支持复制后在客户端手动发送。
     """
     sug = _get(session, suggestion_id)
-    _ensure_open(sug)
+    _ensure_open(sug, REPLYABLE)
     content = (body.content if body.content is not None else sug.content or "").strip()
     if not content:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "回复内容为空")

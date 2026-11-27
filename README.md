@@ -65,6 +65,7 @@ docker-compose.yml
 - `POST /api/attachments`（表单上传）、`GET /api/attachments/{id}`：图片、文件
 - `POST /api/conversations/send`：在会话里发文字 + 图片 + 文件（可带 `suggestion_id` 表示回复哪条客户消息）
 - `POST /api/send-tasks/{id}/resend|cancel|mark-manual-sent`：发送失败后重发、取消排队、标记已手动发送
+- `POST /api/conversations/end`：结束会话（群里没回复的客户消息不再算待处理，没发出去的回复不再发送；客户再发消息时重新回到待处理），记录是谁结束的
 - `POST /api/messages/{id}/fetch-media`：重新下载客户发的图片或文件
 - `GET /api/inbox?view=todo|escalated|done|all&channel=`：按消息列出待处理（旧接口，工作台已不用）
 - `POST /api/suggestions/{id}/adopt|escalate|dismiss|regenerate`：处理 AI 建议

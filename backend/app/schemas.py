@@ -199,11 +199,27 @@ class SendTaskOut(BaseModel):
     finished_at: datetime | None
 
 
+class ConversationEndOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    ended_by: str | None
+    ended_at: datetime
+    closed_count: int = Field(description="随会话结束的未回复客户消息数")
+
+
 class ConversationOut(BaseModel):
     items: list[InboxItem] = Field(description="按时间从早到晚")
     has_more_before: bool
     has_more_after: bool
     outbox: list[SendTaskOut] = Field(default=[], description="工作台发出、还没出现在聊天记录里的消息（排队、发送中、失败，及刚发出的）")
+    ends: list[ConversationEndOut] = Field(default=[], description="这个群最近的会话结束记录，按时间从早到晚")
+
+
+class EndIn(BaseModel):
+    channel: Channel
+    group_id: str = Field(min_length=1, max_length=128)
+    operator: str | None = Field(default=None, max_length=64)
 
 
 class GroupNameIn(BaseModel):

@@ -129,7 +129,8 @@ button, input, textarea { font: inherit; color: inherit; }
 .icon { width: 18px; height: 18px; flex: none; }
 
 /* 通用按钮：次要按钮、主按钮 */
-.tabs button, .filters button, .actions button, .escalate button, .confirm-send button, .composer-bar button {
+.tabs button, .filters button, .actions button, .escalate button, .confirm-send button, .composer-bar button,
+.chat-head .end-btn {
   height: 32px;
   padding: 0 12px;
   border: 1px solid var(--border-strong);
@@ -142,7 +143,8 @@ button, input, textarea { font: inherit; color: inherit; }
   white-space: nowrap;
   transition: background .15s, border-color .15s, color .15s, box-shadow .15s;
 }
-.actions button:hover, .escalate button:hover, .confirm-send button:hover, .composer-bar button:hover:not(:disabled) {
+.actions button:hover, .escalate button:hover, .confirm-send button:hover, .composer-bar button:hover:not(:disabled),
+.chat-head .end-btn:hover:not(:disabled) {
   background: var(--hover);
 }
 .actions button.primary, .confirm-send button.primary, .composer-bar button.primary {
@@ -480,6 +482,59 @@ input.group-search {
 }
 .g-badge.warn { background: #f08c00; }
 
+/* 结束会话：鼠标移到群上（或选中）时出现，在时间的位置 */
+.g-end {
+  display: none;
+  flex: none;
+  align-self: center;
+  height: 20px;
+  margin: -1px 0;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+  transition: color .12s, background .12s, border-color .12s;
+}
+.g-end:hover:not(:disabled) { color: var(--danger); background: var(--danger-soft); border-color: transparent; }
+.group-list li:hover .g-end, .group-list li.on .g-end { display: inline-block; }
+.group-list li:hover .g-top time:has(+ .g-end), .group-list li.on .g-top time:has(+ .g-end) { display: none; }
+@media (hover: none) {
+  .g-end { display: inline-block; }
+}
+.group-list li.asking { background: var(--active); cursor: default; }
+.g-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.g-confirm span { flex-basis: 100%; }
+.g-confirm button {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.g-confirm button:hover:not(:disabled) { background: var(--hover); }
+.g-confirm button.primary { background: var(--primary-bg); border-color: transparent; color: var(--on-accent); }
+.g-confirm button.primary:hover:not(:disabled) { background: var(--primary-bg); filter: brightness(1.08); }
+
 /* 聊天区 */
 .chat-head {
   display: flex;
@@ -500,7 +555,7 @@ input.group-search {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.chat-head > span:last-child { font-size: 12px; color: var(--text-3); }
+.chat-head .msg-count { font-size: 12px; color: var(--text-3); }
 .chat-head .back { display: none; margin: 0; }
 .chat-head b.unnamed, .g-name.unnamed { color: var(--text-3); font-weight: 500; }
 .chat-head .name-btn { margin: 0; font-size: 12.5px; }
@@ -516,6 +571,8 @@ input.group-search {
   cursor: pointer;
 }
 .chat-head .name-edit .link { margin: 0; }
+.chat-head .end-btn { margin-left: auto; }
+.end-confirm { margin: 0; border-width: 0 0 1px; border-radius: 0; padding: 8px 16px 8px 20px; flex: none; }
 .chat-head .name-edit button { flex: none; white-space: nowrap; }
 
 .chat-list { flex: 1; overflow-y: auto; padding: 12px 20px 20px; background: var(--sunken); }
@@ -542,6 +599,17 @@ input.group-search {
   margin: 18px 0 8px;
 }
 .day-sep::before, .day-sep::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+/* 会话结束的分隔线 */
+.end-sep {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 14px 0;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.end-sep::before, .end-sep::after { content: ""; flex: 1; border-top: 1px dashed var(--border-strong); }
+.end-sep span { padding: 2px 10px; border-radius: 999px; background: var(--hover); }
 
 .bubble-row {
   display: flex;
@@ -876,7 +944,9 @@ button.chip-status { cursor: pointer; font: inherit; font-size: 12px; }
   .chat-pane { height: calc(100vh - 90px); }
   .chat-head { padding: 0 14px; }
   .chat-head .back { display: inline; }
-  .chat-head > span:last-child { display: none; }
+  .chat-head .msg-count, .chat-head .tag { display: none; }
+  .end-confirm { padding: 10px 14px; }
+  .end-confirm span { flex-basis: 100%; }
   .chat-head .name-edit input { width: 100%; }
   .chat-head .name-edit { flex: 1 1 auto; }
   .chat-list { padding: 10px 14px 16px; }
