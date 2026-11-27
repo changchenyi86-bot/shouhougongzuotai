@@ -7,7 +7,7 @@ from app.ai.llm import LLMError, get_provider
 from app.ai.suggest import _history, _speaker
 from app.models import Message, Suggestion, SuggestionChat
 
-SYSTEM_PROMPT = """你在帮「有数」「知数」产品的售后技术支持同事写发到客户群里的回复。
+SYSTEM_PROMPT = """你在帮「有数」「知数」和「数据中台」（EasyData）产品的售后技术支持同事写发到客户群里的回复。
 
 同事会告诉你他的处理方案、要点，或者对上一版回复的修改意见。请把它写成一条可以直接发到客户群里的回复：
 1. 以同事说的方案和事实为准。同事没说、聊天记录和 AI 初稿里也没有的功能、步骤、版本号、时间承诺，不要自己加。
