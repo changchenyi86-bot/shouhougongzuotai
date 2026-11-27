@@ -11,11 +11,13 @@
 
 import json
 import re
+import time
 from typing import Literal, Protocol, TypeVar
 
 import httpx
 from pydantic import BaseModel, Field, ValidationError
 
+from app.ai import usage
 from app.config import settings
 
 
@@ -66,6 +68,7 @@ class ClaudeProvider:
     def generate(self, system: str, prompt: str, schema: type[T]) -> tuple[T, str]:
         import anthropic
 
+        purpose, started = usage.purpose_for(schema), time.monotonic()
         try:
             response = self.client.beta.messages.parse(
                 model=self.model,
@@ -78,7 +81,13 @@ class ClaudeProvider:
                 output_format=schema,
             )
         except anthropic.APIError as exc:
+            usage.record(purpose, self.model, ok=False, duration_ms=_ms(started), error=str(exc))
             raise LLMError(f"调用 Claude 失败：{exc}") from exc
+        u = response.usage
+        cache_read = getattr(u, "cache_read_input_tokens", 0) or 0
+        usage.record(purpose, response.model,
+                     (u.input_tokens or 0) + cache_read + (getattr(u, "cache_creation_input_tokens", 0) or 0),
+                     u.output_tokens or 0, cache_read, duration_ms=_ms(started))
         if response.stop_reason == "refusal":
             raise LLMError("模型拒绝回答，请人工处理")
         if response.parsed_output is None:
@@ -167,20 +176,42 @@ class OpenAICompatibleProvider:
         if self.json_mode:
             body["response_format"] = {"type": "json_object"}
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        purpose = usage.purpose_for(schema)
         for attempt in range(2):  # 输出格式不对时重问一次（评测里约百分之一的回复是这样）
+            started, data = time.monotonic(), None
             try:
                 r = self._client.post(self.url, json=body, headers=headers)
                 r.raise_for_status()
                 data = r.json()
                 text = data["choices"][0]["message"]["content"]
             except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
+                record_openai(purpose, self.model, data, body["messages"], None, started, error=str(exc))
                 raise LLMError(f"调用模型接口失败：{exc}") from exc
+            record_openai(purpose, data.get("model") or self.model, data, body["messages"], text, started)
             try:
                 return parse_json(text, schema), data.get("model") or self.model
             except LLMFormatError:
                 if attempt:
                     raise
         raise AssertionError("unreachable")
+
+
+def _ms(started: float) -> int:
+    return int((time.monotonic() - started) * 1000)
+
+
+def record_openai(purpose: str, model: str, data, messages: list, text: str | None, started: float,
+                  error: str | None = None) -> None:
+    """记下一次 OpenAI 兼容接口调用的 token；接口没返回 usage 时按字数估。"""
+    tokens = usage.openai_tokens(data.get("usage") if isinstance(data, dict) else None)
+    if tokens is None and error is None:
+        prompt = "".join(m["content"] if isinstance(m.get("content"), str) else "" for m in messages)
+        tokens, estimated = (usage.estimate(prompt), usage.estimate(text or ""), 0), True
+    else:
+        estimated = False
+    i, o, c = tokens or (0, 0, 0)
+    usage.record(purpose, model, i, o, c, ok=error is None, estimated=estimated, duration_ms=_ms(started),
+                 error=error)
 
 
 _provider: LLMProvider | None = None

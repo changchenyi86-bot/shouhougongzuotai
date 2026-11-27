@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import db
+from app.ai import usage
 from app.ai.llm import LLMError, get_provider
 from app.config import settings
 from app.models import Channel, EvalCase, EvalResult, EvalRun, Message, MessageType
@@ -241,6 +242,7 @@ def judge_prompt(case: CaseSpec, reply: str, can_answer: bool | None) -> str:
     return "\n\n".join(parts)
 
 
+@usage.tagged(is_eval=True)
 def run_case(case: CaseSpec) -> dict:
     """跑一道题，返回要写进 EvalResult 的字段。"""
     from app.ai.suggest import SuggestionFailed, generate

@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 
 from app import db
+from app.ai import usage
 from app.config import settings
 from app.models import Attachment, Message, Suggestion, SuggestionStatus
 
@@ -126,7 +127,8 @@ def run(message_id: uuid.UUID) -> None:
         round = round_messages(session, message) or [message]
         result = error = None
         try:
-            result = generate(session, message, round=round)
+            with usage.scope(**usage.for_message(message)):
+                result = generate(session, message, round=round)
         except SuggestionFailed as exc:
             error = str(exc)
         except Exception as exc:  # noqa: BLE001

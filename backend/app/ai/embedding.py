@@ -3,9 +3,16 @@
 服务只在内网时经本机 SSH 隧道访问；隧道断了相似问答检索就查不了，回复建议照常生成。
 """
 
+import time
+
 import httpx
 
+from app.ai import usage
 from app.config import settings
+
+
+def _ms(started: float) -> int:
+    return int((time.monotonic() - started) * 1000)
 
 
 class EmbeddingError(Exception):
@@ -22,13 +29,20 @@ class EmbeddingClient:
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        started = time.monotonic()
         try:
             r = self._client.post(self.url, json={"model": self.model, "input": texts}, headers=headers)
             r.raise_for_status()
-            rows = sorted(r.json()["data"], key=lambda d: d.get("index", 0))
+            body = r.json()
+            rows = sorted(body["data"], key=lambda d: d.get("index", 0))
             vectors = [[float(x) for x in d["embedding"]] for d in rows]
         except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+            usage.record("embedding", self.model, ok=False, duration_ms=_ms(started), error=str(exc))
             raise EmbeddingError(f"向量模型调用失败：{exc}") from exc
+        tokens = usage.openai_tokens(body.get("usage") if isinstance(body, dict) else None)
+        usage.record("embedding", body.get("model") or self.model,
+                     tokens[0] if tokens else sum(usage.estimate(t) for t in texts),
+                     estimated=tokens is None, duration_ms=_ms(started))
         if len(vectors) != len(texts) or any(len(v) != self.dim for v in vectors):
             raise EmbeddingError(f"向量模型返回的条数或维度不对（应为 {len(texts)} 条 {self.dim} 维）")
         return vectors
