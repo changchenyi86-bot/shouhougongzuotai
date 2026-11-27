@@ -60,7 +60,7 @@ docker-compose.yml
 | `external_id` | 渠道侧消息 ID，与 `channel` 联合唯一，用于回调重试去重 |
 | `group_id` / `group_name` | 群 ID / 群名 |
 | `is_external_group` | 是否外部群（客户群） |
-| `sender_id` / `sender_name` | 发送人 ID / 名称 |
+| `sender_id` / `sender_name` | 发送人 ID / 群里显示的名字 |
 | `msg_type` | `text` / `image` / `file` / `other` |
 | `content` | 归一后的文本内容 |
 | `sent_at` | 渠道侧发送时间 |
@@ -146,9 +146,9 @@ npm run demo
 2. 下载官方 Linux C SDK（`libWeWorkFinanceSdk_C.so`），和私钥一起放到项目根目录 `secrets/wecom/`（已在 .gitignore 中），docker-compose 会挂载到容器 `/opt/wecom`。
 3. 在 `backend/.env` 填写 `WECOM_CORP_ID`、`WECOM_ARCHIVE_SECRET`、`WECOM_ARCHIVE_PRIVATE_KEY_FILES`（见 `.env.example`）。后端每 3 秒增量拉取一次（`WECOM_ARCHIVE_POLL_INTERVAL`，企业微信限制拉取接口每分钟 4000 次，3 秒一次远低于上限）。新消息入库后工作台页面 2 秒内刷新，AI 建议在后台另外生成，不耽误消息显示。
 4. 可选：存档应用「接收事件服务器」填 `https://<域名>/webhooks/wecom` 并配置 `WECOM_CALLBACK_TOKEN` / `WECOM_CALLBACK_AES_KEY`，有新消息时会立即拉取。
-5. 可选：填写 `WECOM_CONTACT_SECRET`（客户联系 Secret），工作台可显示外部客户群名称。新开通的企业没有单独的客户联系 Secret，用「客户联系 → 客户 → API → 可调用接口的应用」里那个自建应用的 Secret。
+5. 可选：填写 `WECOM_CONTACT_SECRET`（客户联系 Secret），工作台可显示外部客户群名称，以及群里每个人的昵称（群昵称优先）。新开通的企业没有单独的客户联系 Secret，用「客户联系 → 客户 → API → 可调用接口的应用」里那个自建应用的 Secret。
    自建应用的「企业可信IP」不收第三方服务商的 IP；本机出口 IP 加不进去时，经一台已在可信 IP 里的服务器转发：
-   本机开 `ssh -N -D 127.0.0.1:18968 <服务器>`，`.env` 里填 `WECOM_CONTACT_PROXY=socks5://host.docker.internal:18968`（只有查群名走它）。
+   本机开 `ssh -N -D 127.0.0.1:18968 <服务器>`，`.env` 里填 `WECOM_CONTACT_PROXY=socks5://host.docker.internal:18968`（只有查群名和群成员走它）。
    还是查不到群名的群，技术支持可以在「会话」页群名旁点「填写群名」手动填，要和企业微信里显示的群名一字不差，自动发送靠它找群。
 
 ### 消息加密密钥（和七鱼共用）
@@ -167,7 +167,10 @@ npm run demo
   上传后后台显示的版本号不是 2 的话按实际版本号改。没配私钥、也没列在跳过里的版本会让拉取停住并在日志里提示，不会悄悄丢消息。
 - 不要在企业微信后台重置会话存档 Secret，七鱼也在用它。
 
-发送人 ID 以 `wm` / `wo` 开头的是客户，只有客户的文本消息会生成 AI 建议；员工发言也入库，作为上下文。
+发送人 ID 以 `wm`（微信用户）、`wo` / `lo`（其他企业的企业微信用户）开头的是客户，只有客户的文本消息会生成 AI 建议；员工发言也入库，作为上下文。
+聊天记录里每条消息显示发送人的昵称和来源（灰色「内」是本企业员工，绿色「@微信」、橙色「@企业微信」是客户）。昵称来自外部群的成员名单，
+需要上面的客户联系 Secret；内部群的接口不给名字，显示员工账号；查不到昵称的客户显示「客户 ·ID 末尾 4 位」。
+以前入库、没有名字的消息，后台每 10 分钟补一次。
 群里的图片和文件会在后台下载，保存在 `ATTACHMENT_DIR`（docker-compose 里是 `attachments` 卷），单个上限 `ATTACHMENT_MAX_MB`（默认 20MB），下载失败可在工作台重试。
 会话存档不能通过 API 发消息，所以回复有两种发法（客户群回复都保留人工确认）：
 

@@ -19,6 +19,11 @@ class ChannelAdapter(ABC):
         """发送人是否客户（相对于本公司员工）。渠道能区分时应覆盖。"""
         return True
 
+    def sender_kind(self, message: Message) -> str:
+        """发送人来自哪里：internal 本企业员工 / wechat 微信用户 / wecom 其他企业的企业微信用户 /
+        external 渠道分不出细类的外部人员。"""
+        return "external" if self.is_customer(message) else "internal"
+
     def needs_reply(self, message: Message) -> bool:
         """这条消息是否需要 AI 生成回复建议：客户发的、非空文本消息。"""
         return self.is_customer(message) and message.msg_type == MessageType.TEXT and bool(message.content.strip())

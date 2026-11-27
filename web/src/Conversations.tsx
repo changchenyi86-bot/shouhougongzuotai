@@ -22,8 +22,9 @@ import {
   type StaffBrief,
   type Suggestion,
 } from "./api";
-import Composer, { customerLabel } from "./Composer";
+import Composer from "./Composer";
 import MessageBody, { AttachmentView } from "./MessageBody";
+import { Avatar, SenderLine, senderName } from "./Sender";
 import ReflowTip from "./ReflowTip";
 
 export interface ChatTarget {
@@ -157,36 +158,36 @@ function OutboxBubble({ task, busy, onAction }: { task: SendTask; busy: boolean;
   const needsAction = task.status === "failed" || task.status === "cancelled";
   return (
     <div className={`bubble-row staff outbox ${task.status}`}>
-      <div className="who">
-        {task.created_by ?? "工作台"}
-        <time>{hm(task.created_at)}</time>
-      </div>
-      {task.attachments.map((a) => (
-        <AttachmentView key={a.id} att={a} />
-      ))}
-      {task.content && <div className="bubble">{task.content}</div>}
-      <div className="outbox-status">
-        {status}
-        {task.status === "failed" && task.error && <span className="send-error">{task.error}</span>}
-        {task.status === "queued" && (
-          <button className="link" disabled={busy} onClick={() => onAction("cancel")}>取消发送</button>
-        )}
-        {needsAction && !confirming && (
-          <>
-            <button className="link" disabled={busy} onClick={() => setConfirming(true)}>重新发送</button>
-            <button className="link" disabled={busy} onClick={() => onAction("dismiss")}>
-              {task.status === "failed" ? "我已手动发送" : "不发了"}
-            </button>
-          </>
-        )}
-      </div>
-      {confirming && (
-        <div className="confirm-send">
-          <span>确认重新发送到群里？</span>
-          <button className="primary" disabled={busy} onClick={() => { setConfirming(false); onAction("resend"); }}>确认重新发送</button>
-          <button disabled={busy} onClick={() => setConfirming(false)}>取消</button>
+      <Avatar name={task.created_by} customer={false} />
+      <div className="msg-col">
+        <SenderLine name={task.created_by ?? "工作台"} kind="internal" time={hm(task.created_at)} />
+        {task.attachments.map((a) => (
+          <AttachmentView key={a.id} att={a} />
+        ))}
+        {task.content && <div className="bubble">{task.content}</div>}
+        <div className="outbox-status">
+          {status}
+          {task.status === "failed" && task.error && <span className="send-error">{task.error}</span>}
+          {task.status === "queued" && (
+            <button className="link" disabled={busy} onClick={() => onAction("cancel")}>取消发送</button>
+          )}
+          {needsAction && !confirming && (
+            <>
+              <button className="link" disabled={busy} onClick={() => setConfirming(true)}>重新发送</button>
+              <button className="link" disabled={busy} onClick={() => onAction("dismiss")}>
+                {task.status === "failed" ? "我已手动发送" : "不发了"}
+              </button>
+            </>
+          )}
         </div>
-      )}
+        {confirming && (
+          <div className="confirm-send">
+            <span>确认重新发送到群里？</span>
+            <button className="primary" disabled={busy} onClick={() => { setConfirming(false); onAction("resend"); }}>确认重新发送</button>
+            <button disabled={busy} onClick={() => setConfirming(false)}>取消</button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -765,19 +766,19 @@ export default function Conversations({ me, canAutoSend, notify, onOpenKnowledge
                     id={`m-${m.id}`}
                     className={`bubble-row ${m.from_customer ? "cust" : "staff"} ${focus?.message.id === m.id ? "focused" : ""}`}
                   >
-                    <div className="who">
-                      {customerLabel(m)}
-                      <time>{hm(m.sent_at)}</time>
+                    <Avatar name={m.sender_name} customer={m.from_customer} />
+                    <div className="msg-col">
+                      <SenderLine name={senderName(m)} kind={m.sender_kind} time={hm(m.sent_at)} />
+                      <MessageBody message={m} onChanged={() => refresh()} />
+                      {suggestion && (
+                        <SugChip
+                          s={suggestion}
+                          focused={focus?.suggestion?.id === suggestion.id}
+                          onFocus={() => setFocusId(suggestion.id)}
+                          onReopen={() => !busy && reopenOne(suggestion)}
+                        />
+                      )}
                     </div>
-                    <MessageBody message={m} onChanged={() => refresh()} />
-                    {suggestion && (
-                      <SugChip
-                        s={suggestion}
-                        focused={focus?.suggestion?.id === suggestion.id}
-                        onFocus={() => setFocusId(suggestion.id)}
-                        onReopen={() => !busy && reopenOne(suggestion)}
-                      />
-                    )}
                   </div>
                   {endsAt.after.get(i)?.map((e) => (
                     <EndSep key={e.id} end={e} />

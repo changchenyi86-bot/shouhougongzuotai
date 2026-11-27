@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from fastapi import HTTPException, Request, status
 
 from app.channels.base import ChannelAdapter
-from app.channels.wecom.archive import get_syncer, is_external_user
+from app.channels.wecom.archive import get_syncer, is_external_user, sender_kind
 from app.channels.wecom.crypto import WeComCrypto, WeComCryptoError
 from app.config import settings
 from app.models import Channel, Message
@@ -72,3 +72,6 @@ class WeComAdapter(ChannelAdapter):
     def is_customer(self, message: Message) -> bool:
         # 外部联系人即客户；员工发言也入库，用于上下文和后续知识沉淀，但不生成建议
         return is_external_user(message.sender_id)
+
+    def sender_kind(self, message: Message) -> str:
+        return sender_kind(message.sender_id)

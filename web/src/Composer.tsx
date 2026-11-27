@@ -11,7 +11,8 @@ import {
 } from "./api";
 import AiChat from "./AiChat";
 import Knowledge from "./Knowledge";
-import { formatSize } from "./MessageBody";
+import { FileIcon, formatSize } from "./MessageBody";
+import { senderName } from "./Sender";
 import { MOD, SEND_KEYS, loadSendKey, saveSendKey, type SendKey } from "./sendKey";
 
 const CONFIDENCE: Record<string, string> = { high: "把握高", medium: "把握一般", low: "把握低" };
@@ -24,12 +25,6 @@ async function copy(text: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-export function customerLabel(m: InboxItem["message"]): string {
-  if (m.sender_name) return m.sender_name;
-  // 企业微信会话存档只给 ID：员工是账号名，客户是一长串 ID，只显示末尾几位便于区分
-  return m.from_customer ? `客户 ·${m.sender_id.slice(-4)}` : m.sender_id;
 }
 
 type Pending = { key: number; name: string; att?: Attachment; error?: string };
@@ -268,7 +263,7 @@ export default function Composer(props: Props) {
           <div className="ai-head">
             <b>AI 建议</b>
             <span className="ai-for">
-              回复 {customerLabel(focus.message)}：「{focus.message.content.slice(0, 40)}
+              回复 {senderName(focus.message)}：「{focus.message.content.slice(0, 40)}
               {focus.message.content.length > 40 ? "…" : ""}」
             </span>
             {props.openTotal > 1 && (
@@ -353,7 +348,7 @@ export default function Composer(props: Props) {
 
       {linked && (
         <div className="reply-to">
-          回复 {customerLabel(linked.message)}：「{linked.message.content.slice(0, 30)}」
+          回复 {senderName(linked.message)}：「{linked.message.content.slice(0, 30)}」
           <span className="muted">（发出后这条消息记为已处理）</span>
           <button
             className="link"
@@ -372,7 +367,8 @@ export default function Composer(props: Props) {
         <div className="chips">
           {files.map((f) => (
             <span key={f.key} className={`chip ${f.error ? "err" : ""}`} title={f.error}>
-              {f.att?.mime.startsWith("image/") ? "🖼" : "📎"} {f.name}
+              <FileIcon name={f.name} size={14} />
+              {f.name}
               {f.att && <small>{formatSize(f.att.size)}</small>}
               {!f.att && !f.error && <small>上传中…</small>}
               {f.error && <small>上传失败：{f.error}</small>}

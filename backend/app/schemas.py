@@ -50,6 +50,14 @@ class MessageOut(MessageIn):
 
         return ADAPTERS[self.channel].is_customer(self)
 
+    @computed_field
+    @property
+    def sender_kind(self) -> Literal["internal", "wechat", "wecom", "external"]:
+        """发送人来自哪里：本企业员工 / 微信用户 / 其他企业的企业微信用户 / 渠道分不出细类的外部人员。"""
+        from app.channels import ADAPTERS
+
+        return ADAPTERS[self.channel].sender_kind(self)
+
 
 class KnowledgeRef(BaseModel):
     """生成建议时从售后数字人查到的一条参考知识。"""

@@ -12,7 +12,7 @@ from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from app import db
 from app.channels.wecom import media
@@ -30,14 +30,22 @@ log = logging.getLogger(__name__)
 CURSOR_KEY = "wecom_archive_seq"
 BACKFILL_INTERVAL = 600  # 秒
 
-# 外部联系人（客户）的 external_userid 以 wo / wm 开头，且是 30 位左右的随机串；
-# 员工 userid 由企业自定义，可能恰好以 wm/wo 开头（如 wmeng），所以同时检查长度
-EXTERNAL_USER_PREFIXES = ("wo", "wm")
+# 外部联系人（客户）的 external_userid 是 30 位左右的随机串：wm 开头是微信用户，wo、lo 开头是其他企业的企业微信用户
+# （群成员接口里都是「外部联系人」）。员工 userid 由企业自定义，可能恰好以这些字母开头（如 wmeng），所以同时检查长度
+WECHAT_USER_PREFIX = "wm"
+EXTERNAL_USER_PREFIXES = (WECHAT_USER_PREFIX, "wo", "lo")
 EXTERNAL_USER_MIN_LEN = 20
 
 
 def is_external_user(user_id: str) -> bool:
     return user_id.startswith(EXTERNAL_USER_PREFIXES) and len(user_id) >= EXTERNAL_USER_MIN_LEN
+
+
+def sender_kind(user_id: str) -> str:
+    """internal 本企业员工 / wechat 微信用户 / wecom 其他企业的企业微信用户。"""
+    if not is_external_user(user_id):
+        return "internal"
+    return "wechat" if user_id.startswith(WECHAT_USER_PREFIX) else "wecom"
 
 
 def load_private_keys(files: dict[str, str]) -> dict[str, RSAPrivateKey]:
@@ -94,7 +102,7 @@ def to_message_in(record: dict, group: GroupInfo) -> MessageIn | None:
         group_name=group.name,
         is_external_group=group.is_external if group.is_external is not None else is_external_user(sender),
         sender_id=sender,
-        sender_name=None,
+        sender_name=group.members.get(sender),
         msg_type=msg_type,
         content=content,
         sent_at=datetime.fromtimestamp(record.get("msgtime", 0) / 1000, tz=timezone.utc),
@@ -133,8 +141,8 @@ class ArchiveSyncer:
         random_key = key.decrypt(base64.b64decode(item["encrypt_random_key"]), padding.PKCS1v15()).decode()
         return json.loads(self.client.decrypt(random_key, item["encrypt_chat_msg"]))
 
-    def _group(self, room_id: str) -> GroupInfo:
-        return self._directory.lookup(room_id) if self._directory else GroupInfo(None, None)
+    def _group(self, room_id: str, sender: str | None = None) -> GroupInfo:
+        return self._directory.lookup(room_id, sender) if self._directory else GroupInfo(None, None)
 
     def sync_once(self) -> int:
         """拉取到最新为止，返回新入库的消息数。
@@ -151,28 +159,39 @@ class ArchiveSyncer:
         finally:
             self._lock.release()
 
-    def backfill_group_names(self, session) -> int:
-        """已入库但没有群名的群（如当时查群名失败）再查一次，查到就补上。最多每 10 分钟一轮。"""
+    def backfill_names(self, session) -> int:
+        """已入库但没有群名、发送人名字的消息（如当时没查到、或早期版本没查）再查一次，查到就补上。
+        最多每 10 分钟一轮；群信息有缓存，查不到名字的人（如已退群）不会反复调接口。返回补上的群名和人名数。"""
         if self._directory is None or time.monotonic() - self._names_checked_at < BACKFILL_INTERVAL:
             return 0
         self._names_checked_at = time.monotonic()
-        room_ids = session.scalars(
-            select(Message.group_id).where(Message.channel == Channel.WECOM, Message.group_name.is_(None))
-            .distinct().limit(50)
+        wecom = Message.channel == Channel.WECOM
+        no_group_name = set(session.scalars(
+            select(Message.group_id).where(wecom, Message.group_name.is_(None)).distinct()).all())
+        no_sender_name = session.execute(
+            select(Message.group_id, Message.sender_id).where(wecom, Message.sender_name.is_(None))
+            .group_by(Message.group_id, Message.sender_id).order_by(func.max(Message.sent_at).desc()).limit(2000)
         ).all()
-        filled = 0
-        for room_id in room_ids:
+        missing: dict[str, set[str]] = {room_id: set() for room_id in no_group_name}
+        for room_id, sender in no_sender_name:
+            missing.setdefault(room_id, set()).add(sender)
+        groups = people = 0
+        for room_id, senders in missing.items():
             info = self._directory.lookup(room_id)
-            if info.name:
-                session.execute(
-                    update(Message).where(Message.channel == Channel.WECOM, Message.group_id == room_id,
-                                          Message.group_name.is_(None)).values(group_name=info.name)
-                )
-                filled += 1
-        if filled:
+            where = (wecom, Message.group_id == room_id)
+            if room_id in no_group_name and info.name:
+                session.execute(update(Message).where(*where, Message.group_name.is_(None))
+                                .values(group_name=info.name))
+                groups += 1
+            for sender in senders & info.members.keys():
+                session.execute(update(Message).where(*where, Message.sender_id == sender,
+                                                      Message.sender_name.is_(None))
+                                .values(sender_name=info.members[sender]))
+                people += 1
+        if groups or people:
             session.commit()
-            log.info("补上了 %d 个群的群名", filled)
-        return filled
+            log.info("补上了 %d 个群的群名、%d 个人的名字", groups, people)
+        return groups + people
 
     def _sync(self) -> int:
         from app.ingest import ingest
@@ -180,10 +199,10 @@ class ArchiveSyncer:
         created = skipped = 0
         with db.SessionLocal() as session:
             try:
-                self.backfill_group_names(session)
-            except Exception:  # noqa: BLE001  补群名失败不影响拉消息
+                self.backfill_names(session)
+            except Exception:  # noqa: BLE001  补名字失败不影响拉消息
                 session.rollback()
-                log.exception("补群名失败")
+                log.exception("补群名、人名失败")
             cursor = session.get(SyncCursor, CURSOR_KEY) or SyncCursor(key=CURSOR_KEY, value="0")
             seq = int(cursor.value)
             while True:
@@ -206,7 +225,8 @@ class ArchiveSyncer:
                                           item.get("seq"), item.get("msgid"), exc)
                             record = None
                     if record is not None:
-                        data = to_message_in(record, self._group(record["roomid"])) if record.get("roomid") else None
+                        data = (to_message_in(record, self._group(record["roomid"], record.get("from")))
+                                if record.get("roomid") else None)
                         if data is not None:
                             msg, is_new = ingest(session, data)
                             created += int(is_new)
