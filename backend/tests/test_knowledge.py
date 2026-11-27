@@ -117,7 +117,7 @@ def test_retrieve_cards_then_documents(mcp):
     assert "改名后重新导出" in card.content and "不适用：导出 CSV" in card.content and "不能说：说是浏览器问题" in card.content
     # 三路轮流合并、按文件去重：手册、FAQ、不限类型里新出现的缺陷单
     assert (manual.kind, faq.kind, bug.kind) == ("manual", "faq", "bug")
-    assert bug.branch == "知数" and "![" not in bug.snippet
+    assert bug.branch == "知数" and "![" not in bug.snippet and "公开链接" not in bug.to_prompt()
     # 前几篇读全文：去掉头部元数据和图片，取出原文链接；读不到的只用摘要
     assert faq.url == "https://study.sf.163.com/documents/read/privatization/cjwt14"
     assert faq.content.startswith("## Excel导出后") and "![" not in faq.content and "source_url" not in faq.content
@@ -133,7 +133,30 @@ def test_retrieve_links_beyond_read_full(mcp, monkeypatch):
     faq = knowledge.retrieve(MSG["content"])[2]
     # 只有第一篇带正文，后面的也读一下取原文链接
     assert faq.kind == "faq" and faq.content == "" and faq.url.startswith("https://study.sf.163.com/")
-    assert "[K3] FAQ｜有数\n标题：Excel导出后，打开提示Excel文件损坏\n原因是有重名报表" == faq.to_prompt()
+    assert ("[K3] FAQ｜有数\n标题：Excel导出后，打开提示Excel文件损坏\n"
+            "公开链接（客户能打开）：https://study.sf.163.com/documents/read/privatization/cjwt14\n原因是有重名报表") == faq.to_prompt()
+
+
+def test_products_for_group():
+    pf = knowledge.products_for_group
+    assert pf("某银行-BD售后群") == ["ed"] and pf("某证券 DB 运维群") == ["ed"]
+    assert pf("某客户-BD&BI技术支持群") == ["bi", "ed"] and pf("某客户BD有数群") == ["bi", "ed"]
+    assert pf("某客户-BI售后群") == ["bi"] and pf("某客户知数群") == ["bi"] and pf(None) == ["bi"]
+    # 英文单词里的字母不算标记
+    assert pf("ABDC 项目群") == ["bi"] and pf("MOBILE 群") == ["bi"]
+
+
+def test_retrieve_by_group_product(mcp):
+    items = knowledge.retrieve(MSG["content"], "某银行-BD售后群")
+    assert {a["product"] for n, a in mcp.calls if n in ("search", "case_match")} == {"ed"}
+    assert len(items) == 4
+    mcp.calls.clear()
+    # BD 和 BI 都带：两个产品都查，文档按名次轮流合并，篇数不超过设置
+    items = knowledge.retrieve(MSG["content"], "某客户-BD&BI技术支持群")
+    assert [a["product"] for n, a in mcp.calls if n == "case_match"] == ["bi", "ed"]
+    # 假接口两个产品返回同样的文件：按文件去重，不重复带给模型
+    assert [k.source_id for k in items] == [CARD["card_id"], "bi-manual-daochu.md", "bi-faq-cjwt14.md", "zs-bug-188123.md"]
+    assert [k.ref for k in items] == ["K1", "K2", "K3", "K4"]
 
 
 def test_retrieve_skips_small_talk_and_unconfigured(mcp, monkeypatch):

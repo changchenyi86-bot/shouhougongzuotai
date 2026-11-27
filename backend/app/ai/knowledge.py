@@ -36,7 +36,10 @@ KIND_LABELS = {
     "history": "历史回复",
 }
 # 知识库的产品前缀 → 适用分支
-BRANCHES = {"bi": "有数", "zs": "知数"}
+BRANCHES = {"bi": "有数", "zs": "知数", "ed": "数据中台"}
+# 群名里的产品标记：BD（偶尔写成 DB）是数据中台的群，BI 是有数的群；前后不能紧挨着英文字母
+_BD_GROUP = re.compile(r"(?<![A-Za-z])(BD|DB)(?![A-Za-z])", re.I)
+_BI_GROUP = re.compile(r"(?<![A-Za-z])BI(?![A-Za-z])|有数|知数", re.I)
 
 # 纯寒暄、确认类消息不查知识库
 _SMALL_TALK = re.compile(r"^(好的?|好滴|嗯+|哦+|收到|了解|明白|知道了|谢谢|多谢|感谢|辛苦了?|ok|okay|thx|thanks|👍)+$", re.I)
@@ -81,7 +84,14 @@ class KnowledgeItem(BaseModel):
             return f"[{self.ref}] 历史回复｜技术支持{self.author or ''}以前{where}发出，未经审核\n{self.content}"
         if self.kind == "card":
             head += "｜草稿，技术支持还没确认" if self.card_status == "draft" else "｜技术支持已确认"
-        return f"{head}\n标题：{self.title}\n{self.content or self.snippet}"
+        link = f"\n公开链接（客户能打开）：{self.url}" if self.public_url else ""
+        return f"{head}\n标题：{self.title}{link}\n{self.content or self.snippet}"
+
+    @property
+    def public_url(self) -> bool:
+        """产品手册和 FAQ 的原文是公开帮助文档，链接可以发给客户；工单、缺陷单是内部系统，不给链接。"""
+        return bool(self.url and self.kind in ("manual", "faq") and self.url.startswith("https://")
+                    and "overmind" not in self.url)
 
     def to_record(self) -> dict:
         return self.model_dump(exclude={"content"})
@@ -228,18 +238,39 @@ def set_client(client: KnowledgeClient | None) -> None:
     _client = client
 
 
-def retrieve(text: str) -> list[KnowledgeItem]:
+def products_for_group(group_name: str | None) -> list[str]:
+    """按群名决定查哪些产品的知识：只带 BD 的群查数据中台（ed），BD 和 BI 都带的两边都查，
+    其余（BI、知数、没标的群）查默认产品（bi，检索服务会自动带上知数）。"""
+    name = group_name or ""
+    if _BD_GROUP.search(name):
+        return [settings.knowledge_product, "ed"] if _BI_GROUP.search(name) else ["ed"]
+    return [settings.knowledge_product]
+
+
+def retrieve(text: str, group_name: str | None = None) -> list[KnowledgeItem]:
     """按客户消息查参考知识：纠错卡在前，然后是手册、FAQ、工单。没配置或不需要查时返回空。
 
+    查哪个产品按群名定（见 products_for_group）；两个产品都查时，文档按名次轮流合并，总篇数不变。
     失败抛 KnowledgeError。
     """
     client = get_client()
     query = search_query(text)
     if client is None or query is None:
         return []
-    product = settings.knowledge_product
-    items = client.cards(query, product) + client.documents(
-        query, product, settings.knowledge_top, settings.knowledge_read_full, settings.knowledge_article_chars)
+    products = products_for_group(group_name)
+    cards: list[KnowledgeItem] = []
+    per_product: list[list[KnowledgeItem]] = []
+    for product in products:
+        cards += client.cards(query, product)
+        per_product.append(client.documents(query, product, settings.knowledge_top, settings.knowledge_read_full,
+                                            settings.knowledge_article_chars))
+    docs: list[KnowledgeItem] = []
+    for rank in range(max((len(p) for p in per_product), default=0)):
+        docs += [p[rank] for p in per_product if rank < len(p)]
+    seen: set[str] = set()
+    cards = [c for c in cards if not (c.source_id in seen or seen.add(c.source_id))]
+    docs = [d for d in docs if not (d.source_id in seen or seen.add(d.source_id))]
+    items = cards + docs[: settings.knowledge_top]
     for i, item in enumerate(items, 1):
         item.ref = f"K{i}"
     return items

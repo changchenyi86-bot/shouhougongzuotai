@@ -107,17 +107,22 @@ class CaseSpec:
     reference: str
     expected_keys: list[str]
     expect_reply: bool | None
+    branch: str = ""
 
     @classmethod
     def of(cls, c: EvalCase) -> "CaseSpec":
         return cls(c.id, c.kind, c.question, c.context, c.expected, c.must_not, c.reference,
-                   list(c.expected_keys or []), c.expect_reply)
+                   list(c.expected_keys or []), c.expect_reply, c.branch or "")
 
 
-def _message(content: str, sent_at: datetime, customer: bool) -> Message:
+# 评测题按分支给一个带产品标记的群名，查知识时和真实群一样按群名分产品（见 knowledge.products_for_group）
+_EVAL_GROUP = {"有数": "评测 BI（不发到群里）", "知数": "评测 BI（不发到群里）", "数据中台": "评测 BD（不发到群里）"}
+
+
+def _message(content: str, sent_at: datetime, customer: bool, branch: str = "") -> Message:
     """评测用的消息：不入库，只用来拼提示词。客户的发送人编号按企业微信外部联系人的格式。"""
     return Message(id=uuid.uuid4(), channel=Channel.WECOM, external_id="eval", group_id="eval",
-                   group_name="评测（不发到群里）", is_external_group=True,
+                   group_name=_EVAL_GROUP.get(branch, "评测（不发到群里）"), is_external_group=True,
                    sender_id="wm_eval_customer" if customer else "eval_support",
                    sender_name="客户" if customer else "技术支持", msg_type=MessageType.TEXT,
                    content=content, sent_at=sent_at)
@@ -126,13 +131,13 @@ def _message(content: str, sent_at: datetime, customer: bool) -> Message:
 _SPEAKER = re.compile(r"^(客户|技术支持)[：:]\s*(.*)$")
 
 
-def _context(text: str, now: datetime) -> list[Message]:
+def _context(text: str, now: datetime, branch: str = "") -> list[Message]:
     lines = [ln for ln in (text or "").splitlines() if ln.strip()]
     out = []
     for i, ln in enumerate(lines):
         m = _SPEAKER.match(ln.strip())
         who, content = (m.group(1), m.group(2)) if m else ("客户", ln.strip())
-        out.append(_message(content, now - timedelta(minutes=len(lines) - i), who == "客户"))
+        out.append(_message(content, now - timedelta(minutes=len(lines) - i), who == "客户", branch))
     return out
 
 
@@ -219,7 +224,8 @@ def run_case(case: CaseSpec) -> dict:
     out: dict = {}
     with db.SessionLocal() as session:
         try:
-            g = generate(session, _message(case.question, now, True), history=_context(case.context, now),
+            g = generate(session, _message(case.question, now, True, case.branch),
+                         history=_context(case.context, now, case.branch),
                          evaluating=True)
         except SuggestionFailed as exc:
             return {"error": str(exc), "seconds": round(time.monotonic() - started, 1)}

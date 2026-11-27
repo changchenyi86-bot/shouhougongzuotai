@@ -69,7 +69,7 @@ def retrieve_knowledge(session: Session, message: Message) -> list[KnowledgeItem
     售后数字人是产品知识的来源：技术支持审核通过的答案经 BI 纠错卡回写到数字人。
     工作台自己的相似问答（审核过的工作台知识、历史回复）另由 similar.search 查。失败抛 KnowledgeError。
     """
-    return knowledge.retrieve(message.content)
+    return knowledge.retrieve(message.content, message.group_name)
 
 
 def _speaker(message: Message) -> str:
