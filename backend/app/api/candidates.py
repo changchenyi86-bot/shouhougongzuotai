@@ -153,7 +153,7 @@ def _reindex(candidate_id: uuid.UUID) -> None:
 @router.post("/candidates/{candidate_id}/approve", response_model=CandidateOut)
 def approve(candidate_id: uuid.UUID, body: CandidateEdit, staff: Staff = Depends(current_staff),
             session: Session = Depends(get_session)) -> CandidateOut:
-    """审核通过：工作台之后生成建议时会用；有数和通用的写入售后数字人（BI 纠错卡），知数暂时只在工作台用。"""
+    """审核通过：工作台之后生成建议时会用；有数和通用的写入售后数字人（BI 纠错卡），知数、数据中台暂时只在工作台用。"""
     cand = _get(session, candidate_id)
     _need(cand, C.PENDING)
     _ensure_reviewer(cand, staff.name)

@@ -389,7 +389,7 @@ class KnowledgeCandidate(Base):
     title: Mapped[str] = mapped_column(String(256), default="")
     question: Mapped[str] = mapped_column(Text, default="")
     answer: Mapped[str] = mapped_column(Text, default="")
-    branch: Mapped[str] = mapped_column(String(8), default="通用", comment="适用分支：有数 / 知数 / 通用")
+    branch: Mapped[str] = mapped_column(String(8), default="通用", comment="适用分支：有数 / 知数 / 数据中台 / 通用")
     kind: Mapped[str] = mapped_column(String(16), default="how_to", comment="how_to / fact / troubleshoot / not_supported")
     module: Mapped[str] = mapped_column(String(64), default="")
     reason: Mapped[str | None] = mapped_column(Text, comment="AI 判断是否通用的依据")

@@ -1,7 +1,7 @@
 """审核通过的工作台知识转成售后数字人的 BI 纠错卡。
 
 字段和售后数字人卡库一致（见数字人自建实例的卡片说明）。卡片编号以 bi-verified-wb- 开头，和技术支持在
-运营看板里审核的卡区分开。有数和通用的知识写成 BI 卡；知数的结论卡暂不支持，只在工作台里用。
+运营看板里审核的卡区分开。有数和通用的知识写成 BI 卡；知数、数据中台暂不支持，只在工作台里用。
 写入卡库由本机的同步脚本 scripts/sync_digital_human_cards.py 完成：取这里的卡片，和服务器上最新的卡库合并后上传。
 """
 
@@ -14,8 +14,8 @@ BEIJING = timezone(timedelta(hours=8))
 
 
 def card_id_for(cand: KnowledgeCandidate) -> str | None:
-    """有数、通用的知识写成 BI 纠错卡；知数暂不支持。"""
-    if cand.branch == "知数":
+    """有数、通用的知识写成 BI 纠错卡；知数、数据中台的卡库暂不支持，只在工作台里用。"""
+    if cand.branch in ("知数", "数据中台"):
         return None
     return CARD_PREFIX + cand.id.hex[:12]
 

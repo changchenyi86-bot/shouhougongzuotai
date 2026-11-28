@@ -21,7 +21,7 @@ const VIEWS: { key: View; label: string }[] = [
   { key: "skipped", label: "不收录" },
   { key: "gaps", label: "待补知识" },
 ];
-const BRANCHES: Branch[] = ["有数", "知数", "通用"];
+const BRANCHES: Branch[] = ["有数", "知数", "数据中台", "通用"];
 
 function when(iso: string | null) {
   if (!iso) return "";
@@ -38,7 +38,7 @@ interface CardProps {
 
 function syncText(c: Candidate) {
   if (c.status !== "approved") return null;
-  if (!c.card_id) return "知数的纠错卡暂不支持，只在工作台里用";
+  if (!c.card_id) return `${c.branch}的纠错卡暂不支持，只在工作台里用`;
   if (c.synced_status === "confirmed") return `已写入售后数字人（${when(c.synced_at)}）`;
   return "工作台已在用，等待写入售后数字人";
 }

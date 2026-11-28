@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.ai import embedding
 from app.ai.embedding import EmbeddingError
-from app.ai.knowledge import KnowledgeItem, search_query
+from app.ai.knowledge import BRANCHES, KnowledgeItem, search_query
 from app.config import settings
 from app.models import CandidateStatus, KnowledgeCandidate, Message, QaEntry, Suggestion, SuggestionStatus
 
@@ -52,7 +52,7 @@ def index_reply(session: Session, sug: Suggestion) -> bool:
         return False
     entry = session.scalar(select(QaEntry).where(QaEntry.suggestion_id == sug.id))
     _upsert(session, entry, source="reply", suggestion_id=sug.id, message_id=message.id,
-            question=question[:2000], answer=answer[:4000], branch=None,
+            question=question[:2000], answer=answer[:4000], branch=branch_of(sug.products),
             group_name=message.group_name, author=sug.handled_by, embedding=vectors[0],
             model=settings.embedding_model)
     return True
@@ -74,6 +74,20 @@ def index_knowledge(session: Session, cand: KnowledgeCandidate) -> bool:
     return True
 
 
+def branch_of(codes: list[str] | None) -> str | None:
+    """建议查的产品只有一个时，存成那个产品的分支（有数 / 知数 / 数据中台）；几个都查或不确定时不标。"""
+    codes = sorted(set(codes or []))
+    return BRANCHES.get(codes[0]) if len(codes) == 1 else None
+
+
+def allowed_branches(codes: list[str] | None) -> set[str] | None:
+    """这一轮查哪些产品，就只参考这些产品和通用的问答；几个产品都查或不确定时不过滤。"""
+    labels = {BRANCHES[c] for c in codes or [] if c in BRANCHES}
+    if labels & {"有数", "知数"}:  # 知数跑在有数上，两边的问答互相参考（同查知识库时的做法）
+        labels |= {"有数", "知数"}
+    return labels if labels and len(labels) < len(BRANCHES) else None
+
+
 def _cosine(a: list[float], b: list[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b))
     na, nb = math.sqrt(sum(x * x for x in a)), math.sqrt(sum(y * y for y in b))
@@ -81,14 +95,16 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 
 def _nearest(session: Session, vector: list[float], source: str, exclude: set[uuid.UUID], k: int,
-             min_score: float, skip_suggestions: set[uuid.UUID] = frozenset()) -> list[tuple[QaEntry, float]]:
+             min_score: float, skip_suggestions: set[uuid.UUID] = frozenset(),
+             branches: set[str] | None = None) -> list[tuple[QaEntry, float]]:
     if session.get_bind().dialect.name == "postgresql":
         rows = session.execute(
             text("SELECT id, 1 - (embedding <=> CAST(:q AS vector)) AS score FROM qa_entries "
                  "WHERE source = :source AND embedding IS NOT NULL AND model = :model "
                  "ORDER BY embedding <=> CAST(:q AS vector) LIMIT :n"),
             {"q": "[" + ",".join(f"{x:.6f}" for x in vector) + "]", "source": source,
-             "model": settings.embedding_model, "n": k + len(exclude) + len(skip_suggestions)},
+             "model": settings.embedding_model,
+             "n": (k * 4 if branches else k) + len(exclude) + len(skip_suggestions)},
         ).all()
         scored = [(session.get(QaEntry, r.id), float(r.score)) for r in rows]
     else:  # 测试用的 SQLite：在内存里算
@@ -101,6 +117,8 @@ def _nearest(session: Session, vector: list[float], source: str, exclude: set[uu
     for entry, score in scored:
         if entry is None or score < min_score or entry.message_id in exclude or entry.suggestion_id in skip_suggestions:
             continue
+        if branches is not None and entry.branch not in (None, "", "通用") and entry.branch not in branches:
+            continue
         out.append((entry, score))
         if len(out) >= k:
             break
@@ -108,10 +126,11 @@ def _nearest(session: Session, vector: list[float], source: str, exclude: set[uu
 
 
 def search(session: Session, question: str, exclude_messages: set[uuid.UUID] | None = None,
-           exclude_same_question: bool = False) -> list[KnowledgeItem]:
+           exclude_same_question: bool = False, products: list[str] | None = None) -> list[KnowledgeItem]:
     """按客户消息查相似的工作台知识和历史回复。没配置 embedding 或不需要查时返回空，失败抛 EmbeddingError。
 
     exclude_same_question：评测时用，题目取自真实群消息，问题原文一字不差的那条回复就是答案，不能给模型看。
+    products：这一轮查的产品（bi / zs / ed），只参考这些产品和通用的问答，免得拿中台的回复去答有数的问题。
     """
     if search_query(question) is None:
         return []
@@ -120,11 +139,12 @@ def search(session: Session, question: str, exclude_messages: set[uuid.UUID] | N
         return []
     exclude = exclude_messages or set()
     top, floor = settings.similar_qa_top, settings.similar_qa_min_score
-    knowledge = _nearest(session, vectors[0], "knowledge", exclude, top, floor)
+    branches = allowed_branches(products)
+    knowledge = _nearest(session, vectors[0], "knowledge", exclude, top, floor, branches=branches)
     # 已经整理成工作台知识的那条回复，不再作为历史回复重复给模型
     distilled = set(session.scalars(select(KnowledgeCandidate.suggestion_id).where(
         KnowledgeCandidate.id.in_([e.candidate_id for e, _ in knowledge]))))
-    replies = _nearest(session, vectors[0], "reply", exclude, top, floor, distilled)
+    replies = _nearest(session, vectors[0], "reply", exclude, top, floor, distilled, branches)
     if exclude_same_question:
         same = question.strip()
         knowledge = [(e, x) for e, x in knowledge if e.question.strip() != same]

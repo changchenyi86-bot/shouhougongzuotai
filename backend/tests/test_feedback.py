@@ -398,3 +398,68 @@ def test_transfer_marks_open_rounds_missed(client, fake_llm, wangwu):
     out = _adopt(client, sid, gaps[0]["ai_suggestion"])
     assert out["adoption"] == "exact" and out["missed"] == "transfer" and out["missed_by"] == "王五"
     assert _gaps(client)["items"][0]["candidate"]["status"] == "proposed"
+
+
+def test_zhongtai_knowledge_not_written_to_cards(client, fake_llm, wangwu, monkeypatch):
+    monkeypatch.setattr(settings, "cards_sync_token", "sync-secret")
+    _, cid = _edited_reply(client)
+    client.post(f"/api/candidates/{cid}/confirm", json={"branch": "数据中台"})
+    out = wangwu.post(f"/api/candidates/{cid}/approve", json={}).json()
+    assert out["status"] == "approved" and out["branch"] == "数据中台" and out["card_id"] is None
+    cards = client.get("/api/digital-human/cards", headers={"Authorization": "Bearer sync-secret"}).json()
+    assert cards == {"cards": [], "unsynced": 0}
+
+
+def test_judgement_branch_zhongtai():
+    from app.ai.reflow import Judgement
+
+    assert Judgement(general=True, reason="", branch="数据中台").branch == "数据中台"
+    assert Judgement(general=True, reason="", branch="中台").branch == "数据中台"
+    assert Judgement(general=True, reason="", branch="BD").branch == "数据中台"
+    assert Judgement(general=True, reason="", branch="有数 BI").branch == "有数"
+
+
+def test_similar_branch_filter():
+    from app.ai import similar
+
+    assert similar.branch_of(["ed"]) == "数据中台" and similar.branch_of(["bi", "zs"]) is None
+    assert similar.allowed_branches(["ed"]) == {"数据中台"}
+    assert similar.allowed_branches(["bi"]) == {"有数", "知数"}
+    assert similar.allowed_branches(["bi", "zs", "ed"]) is None and similar.allowed_branches([]) is None
+
+
+def test_similar_skips_other_product(client, fake_llm, fake_embedding, monkeypatch):
+    """中台群发出的回复，不拿去给有数群的同类问题参考。"""
+    monkeypatch.setattr(settings, "ai_round_window_minutes", 0)
+    mid = _msg(client, "报表导出一直转圈怎么办？", group="wrBD", name="某银行-BD-支持")
+    _adopt(client, _sug(client, mid, group="wrBD")["id"], "您好，导出转圈一般是数据量大，请改成后台导出。")
+    _msg(client, "报表导出一直在转圈怎么办", group="wrBI", name="某券商-BI-支持")
+    assert "[H1]" not in fake_llm.calls[-1][1]
+    _msg(client, "报表导出一直在转圈怎么办", group="wrBD2", name="某保险-BD-支持")
+    assert "[H1]" in fake_llm.calls[-1][1]
+
+
+def test_import_candidates(client, fake_llm, tmp_path, monkeypatch):
+    import json
+
+    from app import db, import_candidates
+    from app.models import KnowledgeCandidate
+
+    mid = _msg(client, "抽数任务能批量改来源吗", group="wrBD", name="某银行-BD-支持")
+    sid = _sug(client, mid, group="wrBD")["id"]
+    path = tmp_path / "drafts.jsonl"
+    path.write_text("\n".join([
+        json.dumps({"suggestion_id": sid, "question": "抽数任务能批量改来源吗？", "answer": "不支持批量修改。",
+                    "branch": "中台", "kind": "not_supported", "author": "客服号"}, ensure_ascii=False),
+        json.dumps({"suggestion_id": sid, "question": "重复的一条", "answer": "x"}, ensure_ascii=False),
+        json.dumps({"suggestion_id": "00000000-0000-0000-0000-000000000000", "question": "q", "answer": "a"}),
+        json.dumps({"suggestion_id": sid, "question": "", "answer": "a"}),
+    ]), encoding="utf-8")
+    monkeypatch.setattr("sys.argv", ["x", str(path)])
+    import_candidates.main()
+    with db.SessionLocal() as session:
+        rows = session.query(KnowledgeCandidate).all()
+    assert len(rows) == 1 and rows[0].branch == "数据中台" and rows[0].status.value == "pending"
+    assert rows[0].confirmed_by == "真实回复复盘"
+    listed = client.get("/api/candidates", params={"view": "pending"}).json()
+    assert [c["question"] for c in listed] == ["抽数任务能批量改来源吗？"]
