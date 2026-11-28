@@ -66,6 +66,9 @@ def client(monkeypatch, fake_llm):
                            connect_args={"check_same_thread": False})
     monkeypatch.setattr(db, "engine", engine)
     monkeypatch.setattr(db, "SessionLocal", sessionmaker(bind=engine, expire_on_commit=False))
+    from app import colleagues
+
+    monkeypatch.setattr(colleagues, "_cache", (0.0, frozenset()))  # 每个用例重新读同事名单
     # 建议生成改为同步执行，便于断言
     monkeypatch.setattr(worker, "submit", lambda fn, *args: fn(*args))
     monkeypatch.setattr(worker, "schedule", lambda delay, fn, *args: worker.submit(fn, *args))

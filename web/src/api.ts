@@ -411,6 +411,34 @@ export const editStaff = (
   body: Partial<{ name: string; role: Role; team_id: string; clear_team: boolean; active: boolean; password: string }>,
 ) => call<Staff>(`/api/staff/${id}`, { method: "PATCH", body: JSON.stringify(body) });
 
+// ---------- 同事的个人微信（管理员）：名单上的外部账号按我方处理 ----------
+
+export interface ColleagueAccount {
+  channel: Channel;
+  sender_id: string;
+  name: string;
+  added_by: string | null;
+  created_at: string;
+}
+
+export interface ColleagueCandidate {
+  channel: Channel;
+  sender_id: string;
+  name: string;
+  /** 在几个客户群里说过话 */
+  groups: number;
+  messages: number;
+  last_at: string | null;
+  reason: string;
+}
+
+export const fetchColleagues = () => call<ColleagueAccount[]>("/api/colleague-accounts");
+export const fetchColleagueCandidates = () => call<ColleagueCandidate[]>("/api/colleague-accounts/candidates");
+export const addColleague = (channel: Channel, sender_id: string, name = "") =>
+  post<{ account: ColleagueAccount; closed: number }>("/api/colleague-accounts", { channel, sender_id, name });
+export const removeColleague = (channel: Channel, sender_id: string) =>
+  call<void>(`/api/colleague-accounts/${channel}/${encodeURIComponent(sender_id)}`, { method: "DELETE" });
+
 /** 指定或取消群负责人（管理员） */
 export const setGroupOwner = (channel: Channel, group_id: string, owner_id: string | null) =>
   put<void>("/api/groups/owner", { channel, group_id, owner_id });

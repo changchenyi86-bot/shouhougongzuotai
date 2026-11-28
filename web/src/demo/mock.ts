@@ -704,6 +704,22 @@ async function handle(path: string, query: URLSearchParams, method: string, body
     return s;
   }
 
+  if (path === "colleague-accounts" && method === "GET") return COLLEAGUES;
+  if (path === "colleague-accounts/candidates") return COLLEAGUE_CANDIDATES;
+  if (path === "colleague-accounts" && method === "POST") {
+    const b = body as { sender_id: string; name: string };
+    const i = COLLEAGUE_CANDIDATES.findIndex((c) => c.sender_id === b.sender_id);
+    if (i >= 0) COLLEAGUE_CANDIDATES.splice(i, 1);
+    const account = { channel: "wecom", sender_id: b.sender_id, name: b.name, added_by: ME.name, created_at: new Date().toISOString() };
+    COLLEAGUES.push(account);
+    return { account, closed: 3 };
+  }
+  hit = path.match(/^colleague-accounts\/[^/]+\/(.+)$/);
+  if (hit && method === "DELETE") {
+    const i = COLLEAGUES.findIndex((c) => c.sender_id === decodeURIComponent(hit![1]));
+    if (i >= 0) COLLEAGUES.splice(i, 1);
+    return undefined;
+  }
   if (path === "gaps") {
     const view = query.get("view") ?? "todo";
     const all = demoGaps();
@@ -808,6 +824,15 @@ async function handle(path: string, query: URLSearchParams, method: string, body
 }
 
 const uploaded = new Map<string, Attachment>();
+
+const COLLEAGUES: { channel: string; sender_id: string; name: string; added_by: string | null; created_at: string }[] = [
+  { channel: "wecom", sender_id: "wmDemoColleagueA0123456789abcdefgh", name: "Strelizia", added_by: "管理员", created_at: "2026-11-28T14:00:00Z" },
+];
+const COLLEAGUE_CANDIDATES = [
+  { channel: "wecom", sender_id: "wmDemoColleagueB0123456789abcdefgh", name: "网易-BI技术支持-小唐", groups: 3, messages: 12, last_at: "2026-11-28T09:12:00Z", reason: "名字里有「网易」" },
+  { channel: "wecom", sender_id: "wmDemoColleagueC0123456789abcdefgh", name: "bi技术支持-小易", groups: 1, messages: 2, last_at: "2026-11-27T15:40:00Z", reason: "名字里有「技术支持」" },
+  { channel: "wecom", sender_id: "wmDemoColleagueD0123456789abcdefgh", name: "懒羊羊", groups: 3, messages: 7, last_at: "2026-11-28T02:05:00Z", reason: "在 3 个客户群里说过话" },
+];
 
 export function installMock() {
   const real = window.fetch.bind(window);

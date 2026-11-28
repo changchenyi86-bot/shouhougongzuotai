@@ -643,3 +643,15 @@ class ModelPrice(Base):
     cached_price: Mapped[float | None] = mapped_column(comment="命中缓存的输入单价；空表示按输入单价算")
     updated_by: Mapped[str | None] = mapped_column(String(64))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class ColleagueAccount(Base):
+    """用个人微信（或别的外部账号）在客户群里回复的同事。名单上的人按我方处理：不生成建议，说的话算作回复。"""
+
+    __tablename__ = "colleague_accounts"
+
+    channel: Mapped[Channel] = mapped_column(Enum(Channel, native_enum=False, length=16), primary_key=True)
+    sender_id: Mapped[str] = mapped_column(String(128), primary_key=True, comment="渠道侧发送人 ID（如 wm 开头的微信用户）")
+    name: Mapped[str] = mapped_column(String(128), default="", comment="群里显示的名字，加入名单时记下")
+    added_by: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
