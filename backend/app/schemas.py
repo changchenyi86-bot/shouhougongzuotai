@@ -67,7 +67,7 @@ class KnowledgeRef(BaseModel):
 
     ref: str = Field(description="提示词里的编号，如 K1")
     kind: str = Field(description="card 纠错卡 / manual 产品手册 / faq / ticket 历史工单 / bug 缺陷单 等")
-    branch: str = Field(description="适用分支：有数 / 知数 / 通用")
+    branch: str = Field(description="适用分支：有数 / 知数 / 数据中台 / 通用")
     title: str
     source_id: str = Field(description="纠错卡的 card_id，或数字人知识库里的文件名")
     url: str | None = Field(default=None, description="原文链接（产品手册、FAQ 是帮助中心，工单是 Overmind）")
@@ -510,7 +510,7 @@ class ChatTurnOut(BaseModel):
 
 # ---------- 候选知识 ----------
 
-Branch = Literal["有数", "知数", "通用"]
+Branch = Literal["有数", "知数", "数据中台", "通用"]
 Kind = Literal["how_to", "fact", "troubleshoot", "not_supported"]
 
 

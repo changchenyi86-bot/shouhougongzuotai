@@ -75,7 +75,7 @@ def record(session: Session, sug: Suggestion, final: str, via_chat: bool) -> Non
 
 # ---------- 回流判断 ----------
 
-JUDGE_PROMPT = """你在帮「有数」「知数」产品的售后技术支持整理知识库。
+JUDGE_PROMPT = """你在帮「有数」「知数」「数据中台」产品的售后技术支持整理知识库。
 
 下面是客户群里的一次问答：客户的问题、AI 最初建议的回复、技术支持实际发出的回复（技术支持改过或自己写的），
 可能还有技术支持和 AI 的对话（他向 AI 说明的处理方案）。请判断这次问答值不值得沉淀成通用知识，下次别的客户问同类问题时直接用。
@@ -91,7 +91,7 @@ JUDGE_PROMPT = """你在帮「有数」「知数」产品的售后技术支持�
 - answer：可以直接回复任何客户的答案，以技术支持实际发出的回复和他对 AI 说明的方案为准，
   去掉人名、群名、客户环境和数据等特有信息，保留步骤、条件和注意事项；不要加入技术支持没说过的内容；
 - title：一句话标题；module：所属功能模块，如「报表导出」「权限管理」，说不准就留空；
-- branch：适用分支，有数（BI 报表、大屏、数据集等）/ 知数（智能问数、数据问答、智能体等）/ 通用（账号、部署、升级等两边都有的），按问答内容和群名判断；
+- branch：适用分支，有数（BI 报表、大屏、数据集等）/ 知数（智能问数、数据问答、智能体等）/ 数据中台（数据开发、离线任务、数据传输、数据治理、NDH 等；群名带 BD 的多是中台）/ 通用（账号、部署、升级等几个产品都有的），按问答内容和群名判断；
 - kind：how_to 操作做法 / fact 结论说明 / troubleshoot 排查和配置问题 / not_supported 不支持及替代办法。
 不管值不值得，都在 reason 里用一句话说明理由。
 
@@ -105,7 +105,7 @@ class Judgement(BaseModel):
     question: str = Field(default="", description="通用的标准问法")
     answer: str = Field(default="", description="通用答案")
     module: str = Field(default="", description="功能模块，说不准就留空")
-    branch: Literal["有数", "知数", "通用"] = Field(default="通用", description="适用分支")
+    branch: Literal["有数", "知数", "数据中台", "通用"] = Field(default="通用", description="适用分支")
     kind: Literal["how_to", "fact", "troubleshoot", "not_supported"] = Field(default="how_to", description="类型")
 
     @field_validator("branch", mode="before")
@@ -113,6 +113,8 @@ class Judgement(BaseModel):
     def _branch(cls, v):
         # 自有模型偶尔写成「有数 BI」「知数平台」之类，按关键字归类
         v = str(v or "")
+        if "中台" in v or v.upper() in ("BD", "ED"):
+            return "数据中台"
         return next((b for b in ("有数", "知数") if b in v), "通用")
 
     @field_validator("kind", mode="before")

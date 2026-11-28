@@ -399,7 +399,7 @@ def generate(session: Session, message: Message, history: list[Message] | None =
     if has_question:  # 只是确认、致谢、客户之间交流时，相似问答也不查，免得把草稿带偏
         try:
             refs += similar.search(session, question, {m.id for m in history} | {m.id for m in round},
-                                   exclude_same_question=evaluating)
+                                   exclude_same_question=evaluating, products=product.codes)
         except EmbeddingError as exc:
             log.warning("查相似历史问答失败 message=%s：%s", message.id, exc)
             errors.append(f"相似历史问答没查成（{exc}）")

@@ -61,7 +61,7 @@ export interface KnowledgeRef {
   ref: string;
   /** card 纠错卡 / manual 产品手册 / faq / ticket 历史工单 / bug 缺陷单 等 */
   kind: string;
-  /** 适用分支：有数 / 知数 / 通用 */
+  /** 适用分支：有数 / 知数 / 数据中台 / 通用 */
   branch: string;
   title: string;
   source_id: string;
@@ -459,7 +459,7 @@ export const assignConversation = (channel: Channel, group_id: string, staff_id:
 
 // ---------- 候选知识 ----------
 
-export type Branch = "有数" | "知数" | "通用";
+export type Branch = "有数" | "知数" | "数据中台" | "通用";
 export type KnowledgeKind = "how_to" | "fact" | "troubleshoot" | "not_supported";
 export const KIND_LABEL: Record<KnowledgeKind, string> = {
   how_to: "操作做法",
