@@ -167,7 +167,7 @@ export default function StatsPage() {
                 <th className="num">未用</th>
                 <th className="num">原样采纳率</th>
                 <th className="num">经 AI 对话</th>
-                <th className="num">转人工</th>
+                <th className="num" title="大改或没用 AI 建议、转给同事求助的，都进知识库的「待补知识」">AI 没答上</th>
                 <th className="num">无需回复</th>
                 <th className="num" title="自己的回复整理成的知识审核通过的 / 确认加入候选知识的">沉淀知识</th>
                 <th className="num" title="审核过的候选知识">审核</th>
@@ -185,7 +185,7 @@ export default function StatsPage() {
                   <td className="num">{r.unused || ""}</td>
                   <td className="num">{r.replied ? pct(r.exact, r.replied) : ""}</td>
                   <td className="num">{r.via_chat || ""}</td>
-                  <td className="num">{r.escalated || ""}</td>
+                  <td className="num">{r.missed || ""}</td>
                   <td className="num">{r.dismissed || ""}</td>
                   <td className="num" title={`通过 ${r.knowledge_approved} 条，提交 ${r.knowledge_submitted} 条`}>
                     {r.knowledge_approved || r.knowledge_submitted ? `${r.knowledge_approved}/${r.knowledge_submitted}` : ""}

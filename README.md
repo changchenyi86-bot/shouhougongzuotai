@@ -24,9 +24,9 @@ backend/
     send_queue.py    自动发送队列（确认发送 → 电脑端发送程序领取 → 回报结果）、频率限制
     ai/              AI 回复建议：llm.py 模型接口（可切换）、suggest.py 提示词、knowledge.py 查售后数字人知识、worker.py 后台生成；
                      similar.py 相似历史问答（向量检索）、refine.py 和 AI 对话润色、reflow.py 采纳情况与回流判断
-    api/suggestions.py  AI 建议：采纳 / 修改 / 转人工 / 忽略 / 重新生成 / 改回待回复
+    api/suggestions.py  AI 建议：采纳 / 修改 / 忽略 / 重新生成 / 改回待回复
     api/assist.py    和 AI 对话润色回复
-    api/candidates.py   候选知识：确认 / 审核 / 停用，以及给同步脚本用的纠错卡
+    api/candidates.py   候选知识：确认 / 审核 / 停用；待补知识（AI 没答上的问题）；给同步脚本用的纠错卡
     api/stats.py     AI 建议采纳情况（按人按周）
     ai/evaluate.py、api/evaluation.py  回复建议评测：导入题库、后台一键跑一轮、打分、按块统计、和上一轮对比
     cards.py         审核通过的知识转成售后数字人的 BI 纠错卡
@@ -40,7 +40,7 @@ backend/
   tests/
 scripts/sync_digital_human_cards.py  把审核通过的知识写进售后数字人的 BI 纠错卡库（在能 SSH 到数字人服务器的电脑上运行）
 windows-agent/       电脑端发送程序：在常开的 Windows 电脑上操作官方企业微信客户端发消息
-web/                 React 工作台（登录；会话：群列表 + 聊天记录 + AI 建议 + 和 AI 对话 + 输入框 + 右边的客户档案；知识库：候选知识确认和审核；
+web/                 React 工作台（登录；会话：群列表 + 聊天记录 + AI 建议 + 和 AI 对话 + 输入框 + 右边的客户档案；知识库：候选知识确认和审核、待补知识；
                      采纳统计；评测；团队设置：成员、群负责人；工单/积分排名占位）
 docker-compose.yml
 ```
@@ -84,9 +84,9 @@ docker-compose.yml
 - `GET /api/messages?channel=&group_id=&since=&limit=`：查询消息
 - `POST /webhooks/{channel}`：渠道回调（钉钉、飞书目前返回 501）
 - `GET/POST /webhooks/wecom`：企业微信会话存档应用的事件回调（URL 校验、msgaudit_notify）
-- `GET /api/groups?view=todo|escalated|unassigned|all`：群列表（待处理数、转人工数、负责人、谁在处理）。管理员看全部，其他人只看自己负责的群和正在替别人处理的群；unassigned 是还没分给人的会话
+- `GET /api/groups?view=todo|unassigned|all`：群列表（待处理数、负责人、谁在处理）。管理员看全部，其他人只看自己负责的群和正在替别人处理的群；unassigned 是还没分给人的会话
 - `PUT /api/groups/owner`：指定或取消群负责人（管理员）
-- `POST /api/conversations/assign`：把进行中的会话转给同事（管理员、群负责人、正在处理的人）
+- `POST /api/conversations/assign`：把进行中的会话转给同事（管理员、群负责人、正在处理的人）；转给同事求助时，还没回复的几轮记为 AI 没答上
 - `GET /api/conversation?channel=&group_id=&before=|after=|anchor=`：一个群的聊天记录（含 AI 建议、附件、工作台发出的消息状态）
 - `POST /api/attachments`（表单上传）、`GET /api/attachments/{id}`：图片、文件
 - `GET /api/conversation/members?channel=&group_id=`：群里能 @ 的人（输入框打 @ 时选）
@@ -94,11 +94,12 @@ docker-compose.yml
 - `POST /api/send-tasks/{id}/resend|cancel|mark-manual-sent`：发送失败后重发、取消排队、标记已手动发送
 - `POST /api/conversations/end`：结束会话（群里没回复的客户消息不再算待处理，没发出去的回复不再发送；客户再发消息时重新回到待处理），记录是谁结束的
 - `POST /api/messages/{id}/fetch-media`：重新下载客户发的图片或文件
-- `GET /api/inbox?view=todo|escalated|done|all&channel=`：按消息列出待处理（旧接口，工作台已不用）
-- `POST /api/suggestions/{id}/adopt|escalate|dismiss|regenerate|reopen`：处理 AI 建议（reopen：把「无需回复」改回待回复）
+- `GET /api/inbox?view=todo|done|all&channel=`：按消息列出待处理（旧接口，工作台已不用）
+- `POST /api/suggestions/{id}/adopt|dismiss|regenerate|reopen`：处理 AI 建议（reopen：把「无需回复」改回待回复）
 - `GET/POST /api/suggestions/{id}/chat`：和 AI 对话润色回复（技术支持说方案或要点，AI 写成发给客户的回复）
 - `GET /api/candidates?view=proposed|pending|approved|rejected|skipped`、`GET /api/candidates/counts`：候选知识
 - `POST /api/candidates/{id}/confirm|decline|approve|reject|retire`：确认加入候选知识 / 不用 / 审核通过 / 不通过 / 停用
+- `GET /api/gaps?view=todo|filled|skipped|all`：待补知识（AI 没答上的问题）及各状态条数
 - `GET /api/digital-human/cards`、`POST /api/digital-human/cards/synced`：同步脚本取要写入售后数字人的纠错卡、回报写入结果
 - `GET /api/stats/adoption?weeks=8`：AI 建议采纳情况，按人按周
 - `GET /api/eval/sets`、`POST /api/eval/sets/{name}/import`（管理员，上传 .jsonl）：评测题库
@@ -202,7 +203,7 @@ npm run demo
 
 ## AI 回复建议
 
-新的客户消息入库后，后台结合同群最近 20 条聊天记录生成回复建议，给出「可直接回复 / 建议转人工」和把握程度。
+新的客户消息入库后，后台结合同群最近 20 条聊天记录生成回复建议，给出「可直接回复 / 没把握」和把握程度。
 AI 同时判断这条消息需不需要回复：寒暄、致谢、确认收到、测试这类，不超过 `AUTO_DISMISS_MAX_CHARS` 个字、不带问号、也没有 @ 人的，
 自动标成「AI 判断无需回复」，不算待处理，聊天记录里可以一键改回待回复；其余只在建议上提示「AI 觉得可能不用回复」。
 后台重启时还在生成中的建议，启动后自动补生成（太久以前的消息标为生成失败，可以手动重新生成）。
@@ -256,6 +257,14 @@ AI 建议下方点「和 AI 对话」，技术支持说自己的方案、要点�
 3. 审核通过后，工作台生成建议时马上能用上；有数和通用的知识转成售后数字人的 BI 纠错卡（编号 `bi-verified-wb-` 开头，
    状态 confirmed，审核人即工作台审核人），由 `scripts/sync_digital_human_cards.py` 写进数字人自建实例的卡库。
    知数的结论卡暂不支持，只在工作台里用。通过后发现答案有误可以停用，同步后数字人那边的卡也停用。
+
+### AI 没答上和待补知识
+
+工作台没有「转人工」。下面几种情况自动把这一轮记为「AI 没答上」（记第一次的原因和人），进「知识库 → 待补知识」：
+大改了 AI 建议、没用 AI 建议自己写（含 AI 没写出建议）、把会话转给同事求助（分给还没人处理的会话、自己接手的不算）。
+转给同事后同事原样用了 AI 建议，也照样让 AI 判断要不要整理成知识。待补知识按整理出的候选知识分成：
+待补、已补上（审核通过）、不用补（个案、回复的人觉得不用沉淀、标为无需回复）。「采纳统计」的「AI 没答上」一列按触发的人算。
+早期转人工、还没回复的消息，启动时回到待处理，记为 AI 没答上（原因「转人工（旧）」）。
 
 同步脚本读服务器上数字人正在用的卡库，替换其中工作台的卡片、其他卡片原样保留，存成新版本上传，数字人自动重新加载。
 数字人那边以后发布了更高版本的卡库，再运行一次脚本即可把工作台的卡合进去。服务器和目录配在 `backend/.env`（见 `.env.example`）。

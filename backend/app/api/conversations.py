@@ -56,7 +56,7 @@ def updates(session: Session = Depends(get_session)) -> dict:
 
 @router.get("/groups", response_model=list[GroupOut])
 def list_groups(
-    view: Literal["todo", "escalated", "unassigned", "all"] = "all",
+    view: Literal["todo", "unassigned", "all"] = "all",
     channel: Channel | None = None,
     q: str | None = Query(None, max_length=100, description="按群名搜索"),
     limit: int = Query(200, ge=1, le=500),
@@ -75,7 +75,6 @@ def list_groups(
             func.count(Suggestion.id).filter(
                 or_(Suggestion.status.in_(TODO), Suggestion.send_status.in_(send_queue.NEEDS_ACTION))
             ).label("pending"),
-            func.count(Suggestion.id).filter(Suggestion.status == S.ESCALATED).label("escalated"),
         )
         .outerjoin(Suggestion, Suggestion.message_id == Message.id)
         .group_by(Message.channel, Message.group_id)
@@ -85,7 +84,7 @@ def list_groups(
     stats = stats.subquery()
     # 每个群最新的一条消息（取群名、预览）
     latest = (
-        select(Message, stats.c.total, stats.c.pending, stats.c.escalated)
+        select(Message, stats.c.total, stats.c.pending)
         .join(stats, and_(Message.channel == stats.c.channel, Message.group_id == stats.c.group_id,
                           Message.sent_at == stats.c.last_at))
         .order_by(stats.c.last_at.desc(), Message.id)
@@ -93,14 +92,14 @@ def list_groups(
     send_queue.expire_stale(session)
     unlinked = _unlinked_pending(session)
     groups: dict[tuple, GroupOut] = {}
-    for m, total, pending, escalated in session.execute(latest):
+    for m, total, pending in session.execute(latest):
         key = (m.channel, m.group_id)
         if key in groups:  # 同一时刻多条消息时只取一条
             continue
         groups[key] = GroupOut(channel=m.channel, group_id=m.group_id, group_name=m.group_name,
                                is_external_group=m.is_external_group, last_message_at=m.sent_at,
                                last_content=m.content, message_count=total,
-                               pending_count=pending + unlinked.get(key, 0), escalated_count=escalated)
+                               pending_count=pending + unlinked.get(key, 0))
     keys = routing.visible(session, staff)
     if keys is not None:
         groups = {k: g for k, g in groups.items() if k in keys}
@@ -125,8 +124,6 @@ def list_groups(
         result = [g for g in result if q.lower() in (g.group_name or g.group_id).lower()]
     if view == "todo":
         result = [g for g in result if g.pending_count]
-    elif view == "escalated":
-        result = [g for g in result if g.escalated_count]
     elif view == "unassigned":
         result = [g for g in result if g.conversation_open and g.assignee is None]
     return result[:limit]
@@ -171,6 +168,14 @@ def reassign(body: AssignIn, staff: Staff = Depends(current_staff), session: Ses
     target = session.get(Staff, body.staff_id)
     if target is None or not target.active:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "成员不存在或已停用")
+    if conv.assignee_id not in (None, target.id) and target.id != staff.id:
+        # 转给同事求助：还没回复的几轮记为 AI 没答上（分给还没人处理的会话、自己接手的不算）
+        for sug in session.scalars(
+            select(Suggestion).join(Message, Message.id == Suggestion.message_id)
+            .where(Message.channel == body.channel, Message.group_id == body.group_id,
+                   Suggestion.status.in_([S.READY, S.FAILED]))
+        ):
+            reflow.mark_missed(sug, "transfer", staff.name)
     routing.assign(conv, target)
     session.commit()
     return target
@@ -359,14 +364,14 @@ def end_conversation(body: EndIn, staff: Staff = Depends(current_staff),
                      session: Session = Depends(get_session)) -> Conversation:
     """结束会话。
 
-    群里还没回复的客户消息（AI 建议待处理、生成中、生成失败、已转人工）随会话结束，不再算待处理；
+    群里还没回复的客户消息（AI 建议待处理、生成中、生成失败）随会话结束，不再算待处理；
     没发出去的回复（发送失败、已取消）不再发送。正在排队或发送中的回复照常发出。
     之后客户再发消息，这个群重新回到待处理，算新的一次会话。
     """
     routing.ensure_access(session, staff, body.channel, body.group_id)
     send_queue.expire_stale(session)
     now = datetime.now(timezone.utc)
-    # 行锁：和发送、转人工等同时操作同一条消息时，后到的一方会看到最新状态
+    # 行锁：和发送、标无需回复等同时操作同一条消息时，后到的一方会看到最新状态
     open_sugs = session.scalars(
         select(Suggestion).join(Message, Message.id == Suggestion.message_id)
         .where(Message.channel == body.channel, Message.group_id == body.group_id, Suggestion.status.in_(OPEN))

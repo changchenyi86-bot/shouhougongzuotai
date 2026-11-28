@@ -77,9 +77,9 @@ def test_dismiss_while_generating_not_overwritten(client, fake_llm, monkeypatch)
 def test_regenerate_only_ready_or_failed(client):
     _post(client)
     sid = _todo(client)[0]["suggestion"]["id"]
-    client.post(f"/api/suggestions/{sid}/escalate", json={})
+    client.post(f"/api/suggestions/{sid}/dismiss", json={})
     assert client.post(f"/api/suggestions/{sid}/regenerate").status_code == 409
-    assert _todo(client, "escalated")[0]["suggestion"]["status"] == "escalated"
+    assert _todo(client, "done")[0]["suggestion"]["status"] == "dismissed"
 
 
 def test_adopt_as_is(client):
@@ -92,8 +92,9 @@ def test_adopt_as_is(client):
     assert body["suggestion"]["status"] == "adopted" and body["suggestion"]["handled_by"] == "李四"
     assert body["suggestion"]["final_content"] == "您好，请清理浏览器缓存后重试。"
     assert _todo(client) == [] and len(_todo(client, "done")) == 1
+    assert body["suggestion"]["missed"] is None
     # 已处理的不能再处理
-    assert client.post(f"/api/suggestions/{sid}/escalate", json={}).status_code == 409
+    assert client.post(f"/api/suggestions/{sid}/dismiss", json={}).status_code == 409
 
 
 def test_adopt_edited(client):
@@ -109,16 +110,6 @@ def test_adopt_empty_rejected(client):
     _post(client)
     sid = _todo(client)[0]["suggestion"]["id"]
     assert client.post(f"/api/suggestions/{sid}/adopt", json={"content": "  "}).status_code == 422
-
-
-def test_escalate_then_adopt(client):
-    _post(client)
-    sid = _todo(client)[0]["suggestion"]["id"]
-    r = client.post(f"/api/suggestions/{sid}/escalate", json={"note": "涉及数据丢失", "operator": "李四"})
-    assert r.json()["status"] == "escalated" and r.json()["note"] == "涉及数据丢失"
-    assert _todo(client) == [] and len(_todo(client, "escalated")) == 1
-    # 转人工后，专人仍可在工作台修改并回复
-    assert client.post(f"/api/suggestions/{sid}/adopt", json={"content": "已修复"}).json()["suggestion"]["status"] == "edited"
 
 
 def test_dismiss(client):

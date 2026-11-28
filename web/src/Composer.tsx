@@ -3,7 +3,6 @@ import {
   adopt,
   attachmentUrl,
   dismiss,
-  escalate,
   fetchMembers,
   PRODUCT_CODES,
   PRODUCT_LABEL,
@@ -84,8 +83,6 @@ export default function Composer(props: Props) {
   const [filledChat, setFilledChat] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [noteOpen, setNoteOpen] = useState(false);
-  const [note, setNote] = useState("");
   const [dragging, setDragging] = useState(false);
   const [sendKey, setSendKey] = useState<SendKey>(loadSendKey);
   const [keyMenu, setKeyMenu] = useState(false);
@@ -274,11 +271,10 @@ export default function Composer(props: Props) {
     setConfirming(false);
   };
 
-  // 换了要回复的客户消息：自己打的字跟着关联到新的那条，对话小窗和转人工备注收起
+  // 换了要回复的客户消息：自己打的字跟着关联到新的那条，对话小窗收起
   const focusId = focus?.suggestion?.id ?? null;
   useEffect(() => {
     setChatOpen(false);
-    setNoteOpen(false);
     if (basis === "typed" && !unlinked) setLinked(focus);
   }, [focusId]); // 只在换消息时执行
 
@@ -468,17 +464,15 @@ export default function Composer(props: Props) {
           {s.status === "generating" && <p className="ai-text muted">正在生成回复建议…</p>}
           {s.status === "failed" && <p className="ai-text err">生成失败：{s.error}</p>}
           {inUse && <p className="ai-text muted">已填入下方输入框，可以修改后发送。</p>}
-          {!inUse && (s.status === "ready" || s.status === "escalated") && (
+          {!inUse && s.status === "ready" && (
             <>
               <div className="sug-head">
-                {s.status === "escalated" ? (
-                  <span className="badge warn">已转人工{s.handled_by ? ` · ${s.handled_by}` : ""}</span>
-                ) : maybeNoReply ? (
+                {maybeNoReply ? (
                   <span className="badge">AI 觉得可能不用回复</span>
                 ) : s.can_answer ? (
                   <span className="badge ok">可直接回复</span>
                 ) : (
-                  <span className="badge warn">AI 建议转人工</span>
+                  <span className="badge warn">AI 没把握</span>
                 )}
                 {s.confidence && <span className="conf">{CONFIDENCE[s.confidence]}</span>}
                 {s.reason && <span className="reason">{s.reason}</span>}
@@ -492,7 +486,7 @@ export default function Composer(props: Props) {
               {s.products && s.products.length > 0 && (
                 <ProductLine s={s} busy={busy} onChange={(code) => run(() => setSuggestionProduct(s.id, [code]))} />
               )}
-              {s.note && <p className="note">转人工备注：{s.note}</p>}
+              {s.note && <p className="note">备注：{s.note}</p>}
               {s.content && (
                 <p className="ai-text">
                   {focusAskers.map((who) => (
@@ -528,14 +522,11 @@ export default function Composer(props: Props) {
             >
               和 AI 对话
             </button>
-            {s.status !== "escalated" && s.status !== "generating" && (
-              <button disabled={busy} onClick={() => setNoteOpen((v) => !v)}>转人工</button>
-            )}
             <button disabled={busy} onClick={() => run(() => dismiss(s.id))}>无需回复</button>
-            {s.status !== "escalated" && s.status !== "generating" && (
+            {s.status !== "generating" && (
               <button disabled={busy} onClick={() => run(() => regenerate(s.id))}>重新生成</button>
             )}
-            {s.content && !inUse && (s.status === "ready" || s.status === "escalated") && (
+            {s.content && !inUse && s.status === "ready" && (
               <CopyButton text={s.content} label="复制" title="复制 AI 建议的文字" />
             )}
           </div>
@@ -547,23 +538,6 @@ export default function Composer(props: Props) {
               onFilled={setFilledChat}
               notify={notify}
             />
-          )}
-          {noteOpen && (
-            <div className="escalate">
-              <input placeholder="备注（可选）：需要谁处理、缺什么信息" value={note} onChange={(e) => setNote(e.target.value)} />
-              <button
-                disabled={busy}
-                onClick={() =>
-                  run(async () => {
-                    await escalate(s.id, note);
-                    setNoteOpen(false);
-                    setNote("");
-                  })
-                }
-              >
-                确认转人工
-              </button>
-            </div>
           )}
         </div>
       )}

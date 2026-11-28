@@ -129,6 +129,10 @@ class SuggestionOut(BaseModel):
     note: str | None
     handled_by: str | None
     handled_at: datetime | None
+    missed: Literal["rewritten", "own", "transfer", "escalated"] | None = Field(
+        default=None, description="AI 没答上的原因：大改 / 没用、自己写 / 转给同事求助 / 早期转人工")
+    missed_by: str | None = None
+    missed_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -259,7 +263,6 @@ class GroupOut(BaseModel):
     last_content: str
     message_count: int
     pending_count: int = Field(description="待处理数：待回复的客户消息、还没发出或发送失败的回复")
-    escalated_count: int = Field(description="已转人工、还没回复的客户消息数")
     owner: StaffBrief | None = Field(default=None, description="群负责人")
     assignee: StaffBrief | None = Field(default=None, description="进行中的会话分给了谁")
     conversation_open: bool = Field(default=False, description="有进行中的会话")
@@ -558,6 +561,39 @@ class CandidateEdit(BaseModel):
     note: str | None = Field(default=None, max_length=1000, description="审核意见")
 
 
+class GapOut(BaseModel):
+    """待补知识：AI 没答上的一轮客户问题。"""
+
+    suggestion_id: uuid.UUID
+    message_id: uuid.UUID
+    channel: Channel
+    group_id: str
+    group_name: str | None
+    customer_text: str = Field(description="这一轮客户的原话")
+    question: str | None = Field(description="AI 结合上下文补全的问题")
+    ai_suggestion: str | None
+    can_answer: bool | None
+    ai_reason: str | None
+    knowledge_found: int = Field(description="查到的参考知识条数")
+    knowledge_cited: int = Field(description="建议实际引用的条数")
+    knowledge_problem: str | None = Field(description="知识库没查成或没查的原因")
+    status: SuggestionStatus
+    final_content: str | None
+    handled_by: str | None
+    note: str | None
+    missed: Literal["rewritten", "own", "transfer", "escalated"]
+    missed_by: str | None
+    missed_at: datetime
+    candidate: CandidateBrief | None
+    state: Literal["todo", "filled", "skipped"] = Field(
+        description="todo 待补 / filled 已补上（整理的知识审核通过）/ skipped 不用补（个案、无需回复）")
+
+
+class GapsOut(BaseModel):
+    items: list[GapOut]
+    counts: dict[str, int] = Field(description="各状态的条数：todo / filled / skipped")
+
+
 class CandidateCounts(BaseModel):
     mine: int = Field(description="AI 建议沉淀、等我（当前登录的人）确认的")
     pending: int = Field(description="等审核的（不含我自己提交的）")
@@ -587,7 +623,7 @@ class AdoptionRow(BaseModel):
     major: int
     unused: int
     via_chat: int = Field(description="其中经 AI 对话润色的")
-    escalated: int = Field(description="转人工")
+    missed: int = Field(description="AI 没答上（大改、没用 AI 建议自己写、转给同事求助）")
     dismissed: int = Field(description="标为无需回复")
     knowledge_submitted: int = Field(description="确认加入候选知识的")
     knowledge_approved: int = Field(description="自己的回复整理成的知识审核通过的")

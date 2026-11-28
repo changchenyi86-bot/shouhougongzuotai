@@ -1,4 +1,4 @@
-"""工作台收件箱与 AI 建议处理：采纳、修改后采纳、转人工、忽略、重新生成。"""
+"""工作台收件箱与 AI 建议处理：采纳、修改后采纳、忽略、重新生成。"""
 
 import uuid
 from datetime import datetime, timezone
@@ -20,7 +20,6 @@ router = APIRouter(prefix="/api", dependencies=[Depends(current_staff)])
 S = SuggestionStatus
 VIEWS: dict[str, list[SuggestionStatus] | None] = {
     "todo": [S.GENERATING, S.READY, S.FAILED],
-    "escalated": [S.ESCALATED],
     "done": [S.ADOPTED, S.EDITED, S.DISMISSED, S.CLOSED],
     "all": None,
 }
@@ -31,7 +30,7 @@ REPLYABLE = OPEN | {S.CLOSED, S.MERGED}
 
 @router.get("/inbox", response_model=list[InboxItem])
 def inbox(
-    view: Literal["todo", "escalated", "done", "all"] = "todo",
+    view: Literal["todo", "done", "all"] = "todo",
     channel: Channel | None = None,
     group_id: str | None = None,
     limit: int = Query(50, ge=1, le=200),
@@ -119,18 +118,6 @@ def adopt(suggestion_id: uuid.UUID, body: AdoptIn, staff: Staff = Depends(curren
     session.commit()
     worker.submit(reflow.after_reply, sug.id)
     return AdoptOut(suggestion=SuggestionOut.model_validate(sug), delivery=sug.delivery, detail=detail)
-
-
-@router.post("/suggestions/{suggestion_id}/escalate", response_model=SuggestionOut)
-def escalate(suggestion_id: uuid.UUID, body: HandleIn, staff: Staff = Depends(current_staff),
-             session: Session = Depends(get_session)) -> Suggestion:
-    """转人工：AI 答不了，交给技术支持专人处理。"""
-    sug = _get(session, suggestion_id, staff)
-    _ensure_open(sug)
-    _mark(sug, S.ESCALATED, staff)
-    sug.note = body.note
-    session.commit()
-    return sug
 
 
 @router.post("/suggestions/{suggestion_id}/dismiss", response_model=SuggestionOut)

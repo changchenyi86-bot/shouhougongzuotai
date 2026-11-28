@@ -16,7 +16,7 @@ router = APIRouter(prefix="/api", dependencies=[Depends(current_staff)])
 
 BEIJING = timezone(timedelta(hours=8))
 S, C = SuggestionStatus, CandidateStatus
-COUNTED = ("replied", "exact", "minor", "major", "unused", "via_chat", "escalated", "dismissed",
+COUNTED = ("replied", "exact", "minor", "major", "unused", "via_chat", "missed", "dismissed",
            "knowledge_submitted", "knowledge_approved", "reviews")
 
 
@@ -43,7 +43,7 @@ def adoption(weeks: int = Query(8, ge=1, le=52), session: Session = Depends(get_
 
     sugs = session.scalars(select(Suggestion).where(
         Suggestion.handled_at >= since,
-        Suggestion.status.in_([S.ADOPTED, S.EDITED, S.ESCALATED, S.DISMISSED]),
+        Suggestion.status.in_([S.ADOPTED, S.EDITED, S.DISMISSED]),
     ))
     for s in sugs:
         row = counts[_week(s.handled_at)]["AI" if s.auto_dismissed else _who(s.handled_by)]
@@ -51,10 +51,11 @@ def adoption(weeks: int = Query(8, ge=1, le=52), session: Session = Depends(get_
             row["replied"] += 1
             row[s.adoption or ("exact" if s.status == S.ADOPTED else "major")] += 1
             row["via_chat"] += s.via_chat
-        elif s.status == S.ESCALATED:
-            row["escalated"] += 1
         else:
             row["dismissed"] += 1
+    # AI 没答上：算在改写、自己写、转给同事求助的人头上（早期转人工的算转的人）
+    for s in session.scalars(select(Suggestion).where(Suggestion.missed_at >= since, Suggestion.status != S.MERGED)):
+        counts[_week(s.missed_at)][_who(s.missed_by)]["missed"] += 1
 
     cands = session.scalars(select(KnowledgeCandidate).where(or_(
         KnowledgeCandidate.confirmed_at >= since, KnowledgeCandidate.reviewed_at >= since)))

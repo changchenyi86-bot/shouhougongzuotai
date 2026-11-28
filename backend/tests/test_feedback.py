@@ -327,13 +327,74 @@ def test_adoption_stats(client, fake_llm, wangwu):
     assert r.status_code == 200, r.text
     _adopt(wangwu, s2["id"], "完全自己写的另一段回复内容")
     s3 = _sug(client, _msg(client))
-    wangwu.post(f"/api/suggestions/{s3['id']}/escalate", json={})
+    # 王五把会话转给同事求助：还没回复的这条记为王五那边 AI 没答上
+    me = client.get("/api/auth/me").json()["id"]
+    r = wangwu.post("/api/conversations/assign", json={"channel": "wecom", "group_id": "wrA", "staff_id": me})
+    assert r.status_code == 200, r.text
+    assert client.post(f"/api/suggestions/{s3['id']}/dismiss", json={}).status_code == 200
     fake_llm.draft_result = SuggestionDraft(needs_reply=False, can_answer=True, confidence="high", reply="不客气",
                                             reason="致谢", references=[])
     _msg(client, "谢谢")
     week = client.get("/api/stats/adoption", params={"weeks": 2}).json()["weeks"][0]
     people = {p["operator"]: p for p in week["people"]}
     assert people["李四"]["exact"] == 1 and people["李四"]["replied"] == 1
-    assert people["王五"]["unused"] == 1 and people["王五"]["escalated"] == 1
+    assert people["王五"]["unused"] == 1 and people["王五"]["missed"] == 2  # 自己写的一条 + 转给同事的一条
+    assert people["李四"]["missed"] == 0
     assert people["AI"]["dismissed"] == 1
     assert week["total"]["replied"] == 2 and week["total"]["exact"] == 1
+
+
+def _gaps(client, view="todo"):
+    r = client.get("/api/gaps", params={"view": view})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_ai_missed_goes_to_gaps(client, fake_llm, wangwu):
+    """大改、没用 AI 建议自己写的记为 AI 没答上，进待补知识；原样采纳、小改的不算。"""
+    ai = "您好，请清理浏览器缓存后重试。"
+    exact = _sug(client, _msg(client, "导出按钮点了没反应"))
+    assert _adopt(client, exact["id"], exact["content"])["missed"] is None
+    minor = _sug(client, _msg(client, "导出按钮还是没反应"))
+    assert _adopt(client, minor["id"], ai[:-1] + "，再试一次。")["missed"] is None
+    own_mid = _msg(client, "报表导出一直转圈怎么办？")
+    own = _adopt(client, _sug(client, own_mid)["id"], "您好，导出转圈一般是数据量大，请在导出设置里改成后台导出。")
+    assert own["missed"] == "own" and own["missed_by"] == "李四" and own["missed_at"]
+    rw_mid = _msg(client, "怎么清缓存")
+    rw = _adopt(client, _sug(client, rw_mid)["id"], "您好，请按 Ctrl+Shift+Delete 清理浏览器缓存后再刷新页面重试。")
+    assert rw["adoption"] == "major" and rw["missed"] == "rewritten"
+
+    gaps = _gaps(client)
+    assert gaps["counts"] == {"todo": 2, "filled": 0, "skipped": 0}
+    first = gaps["items"][1]  # 最近的在前
+    assert first["message_id"] == own_mid and first["customer_text"] == "报表导出一直转圈怎么办？"
+    assert first["final_content"].startswith("您好，导出转圈") and first["ai_suggestion"] == ai
+    assert first["candidate"]["status"] == "proposed" and first["state"] == "todo"
+    assert first["knowledge_found"] == 0 and first["group_name"] == "某银行-有数项目群"
+
+    # 整理成的知识审核通过：已补上；回复的人觉得不用沉淀：不用补
+    cid = first["candidate"]["id"]
+    client.post(f"/api/candidates/{cid}/confirm", json={})
+    assert wangwu.post(f"/api/candidates/{cid}/approve", json={}).status_code == 200
+    client.post(f"/api/candidates/{_sug(client, rw_mid)['candidate']['id']}/decline")
+    assert _gaps(client)["counts"] == {"todo": 0, "filled": 1, "skipped": 1}
+    assert [g["message_id"] for g in _gaps(client, "filled")["items"]] == [own_mid]
+    assert len(_gaps(client, "all")["items"]) == 2
+
+
+def test_transfer_marks_open_rounds_missed(client, fake_llm, wangwu):
+    """转给同事求助时，还没回复的几轮记为 AI 没答上；分给还没人处理的会话不算。同事原样用了建议也照样整理知识。"""
+    sid = _sug(client, _msg(client))["id"]
+    body = {"channel": "wecom", "group_id": "wrA"}
+    assert client.post("/api/conversations/assign", json={**body, "staff_id": wangwu.staff_id}).status_code == 200
+    s = next(i["suggestion"] for i in client.get("/api/conversation", params=body).json()["items"]
+             if i["suggestion"] and i["suggestion"]["id"] == sid)
+    assert s["missed"] is None  # 管理员分给王五：不是求助
+    me = client.get("/api/auth/me").json()["id"]
+    assert wangwu.post("/api/conversations/assign", json={**body, "staff_id": me}).status_code == 200
+    gaps = _gaps(client)["items"]
+    assert [(g["suggestion_id"], g["missed"], g["missed_by"], g["status"]) for g in gaps] == [(sid, "transfer", "王五", "ready")]
+    # 同事回复：原样用了 AI 建议，也照样整理成候选知识
+    out = _adopt(client, sid, gaps[0]["ai_suggestion"])
+    assert out["adoption"] == "exact" and out["missed"] == "transfer" and out["missed_by"] == "王五"
+    assert _gaps(client)["items"][0]["candidate"]["status"] == "proposed"

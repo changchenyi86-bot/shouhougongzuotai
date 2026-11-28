@@ -4,12 +4,14 @@
 2. 相似问答：发出的回复存向量，之后同类问题生成建议时给模型参考（app/ai/similar.py）。
 3. 回流：没有原样采纳的（客服改过、经对话润色、自己写的），由 AI 判断是不是通用问题。
    是就整理成通用问答，等回复的人确认后进「候选知识」，在工作台审核通过才写入售后数字人。
+4. AI 没答上：大改、没用 AI 建议自己写的，记下原因，进知识库页的「待补知识」（转给同事求助的在转交时记）。
 """
 
 import difflib
 import logging
 import re
 import uuid
+from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -55,9 +57,17 @@ def classify(ai_text: str | None, final: str) -> tuple[str, float]:
     return UNUSED, score
 
 
+def mark_missed(sug: Suggestion, reason: str, who: str | None) -> None:
+    """记为 AI 没答上（进「待补知识」）。记过的保留第一次的原因和人。"""
+    if sug.missed is None:
+        sug.missed, sug.missed_by, sug.missed_at = reason, who, datetime.now(timezone.utc)
+
+
 def record(session: Session, sug: Suggestion, final: str, via_chat: bool) -> None:
-    """发出回复时调用（还没提交）：记下采纳情况。"""
+    """发出回复时调用（还没提交）：记下采纳情况；大改或没用 AI 建议的记为 AI 没答上。"""
     sug.adoption, sug.adoption_score = classify(sug.content, final)
+    if sug.adoption in (MAJOR, UNUSED):
+        mark_missed(sug, "rewritten" if sug.adoption == MAJOR else "own", sug.handled_by)
     sug.via_chat = bool(via_chat) and session.scalar(
         select(SuggestionChat.id).where(SuggestionChat.suggestion_id == sug.id, SuggestionChat.role == "ai").limit(1)
     ) is not None
@@ -163,7 +173,7 @@ def judge(session: Session, sug: Suggestion) -> KnowledgeCandidate | None:
 
 
 def after_reply(suggestion_id: uuid.UUID) -> None:
-    """回复发出后在后台执行：存相似问答向量；没有原样采纳的判断要不要沉淀。"""
+    """回复发出后在后台执行：存相似问答向量；没有原样采纳的、或 AI 没答上的判断要不要沉淀。"""
     from app import db
 
     with db.SessionLocal() as session:
@@ -176,7 +186,7 @@ def after_reply(suggestion_id: uuid.UUID) -> None:
         except EmbeddingError as exc:
             session.rollback()
             log.warning("回复存相似问答失败 suggestion=%s：%s（下次启动时补存）", suggestion_id, exc)
-        if not settings.reflow_enabled or sug.adoption == EXACT or sug.candidate is not None:
+        if not settings.reflow_enabled or (sug.adoption == EXACT and not sug.missed) or sug.candidate is not None:
             return
         try:
             judge(session, sug)

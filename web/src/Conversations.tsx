@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   CHANNEL_LABEL,
+  MISSED_LABEL,
   assignConversation,
   cancelTask,
   dismissTask,
@@ -51,7 +52,6 @@ interface Props {
 
 const VIEWS: { key: GroupView; label: string; admin?: boolean }[] = [
   { key: "todo", label: "待处理" },
-  { key: "escalated", label: "已转人工" },
   { key: "unassigned", label: "待分配", admin: true },
   { key: "all", label: "全部" },
 ];
@@ -68,7 +68,7 @@ const whoOf = (c: { owner: StaffBrief | null; assignee: StaffBrief | null; conve
   assignee: c.assignee,
   open: c.conversation_open,
 });
-const OPEN: Suggestion["status"][] = ["generating", "ready", "failed", "escalated"];
+const OPEN: Suggestion["status"][] = ["generating", "ready", "failed"];
 
 // 客户档案展开还是收起，记在各人自己的浏览器里；没记过时，宽屏默认展开
 const CARD_KEY = "customerCard";
@@ -143,6 +143,11 @@ function SugChip({ s, focused, onFocus, onReopen }: { s: Suggestion; focused: bo
     return (
       <span className="chip-line">
         <span className="chip-status ok" title={s.final_content ?? undefined}>已回复{s.handled_by ? ` · ${s.handled_by}` : ""}</span>
+        {s.missed && (
+          <span className="chip-status miss" title={`${MISSED_LABEL[s.missed]}，已进知识库的「待补知识」`}>
+            AI 没答上
+          </span>
+        )}
         {tag && <span className="chip-status kn" title={s.candidate!.question}>{tag}</span>}
       </span>
     );
@@ -161,8 +166,8 @@ function SugChip({ s, focused, onFocus, onReopen }: { s: Suggestion; focused: bo
         会话已结束
       </span>
     );
-  const label = { generating: "AI 生成中…", ready: "AI 建议待处理", failed: "AI 建议生成失败", escalated: "已转人工" }[
-    s.status as "generating" | "ready" | "failed" | "escalated"
+  const label = { generating: "AI 生成中…", ready: "AI 建议待处理", failed: "AI 建议生成失败" }[
+    s.status as "generating" | "ready" | "failed"
   ];
   return (
     <button className={`chip-status open ${s.status} ${focused ? "on" : ""}`} onClick={onFocus}>
@@ -636,7 +641,7 @@ export default function Conversations({ me, canAutoSend, notify, onOpenKnowledge
 
   // 还没处理完的：没回复的客户消息、没发出去的回复。群列表里的数是全群的，聊天里只算已加载的
   const unsent = outbox.filter((t) => t.status === "failed" || t.status === "cancelled").length;
-  const openCount = Math.max(current ? current.pending_count + current.escalated_count : 0, open.length + unsent);
+  const openCount = Math.max(current ? current.pending_count : 0, open.length + unsent);
   const canTransfer = who.open && (admin || who.assignee?.id === me.id || who.owner?.id === me.id);
   const ranked = colleagues
     .filter((s) => s.active && s.id !== who.assignee?.id)
@@ -690,19 +695,17 @@ export default function Conversations({ me, canAutoSend, notify, onOpenKnowledge
           <p className="empty pad">
             {view === "todo"
               ? "没有待处理的群 🎉"
-              : view === "escalated"
-                ? "没有转人工的消息"
-                : view === "unassigned"
-                  ? "没有等着分配的会话"
-                  : admin
-                    ? "暂无群聊"
-                    : "还没有分给你的群"}
+              : view === "unassigned"
+                ? "没有等着分配的会话"
+                : admin
+                  ? "暂无群聊"
+                  : "还没有分给你的群"}
           </p>
         )}
         <ul>
           {shown.map((g) => {
             const k = groupKey(g);
-            const left = g.pending_count + g.escalated_count;
+            const left = g.pending_count;
             const asking = endAsk === k;
             // 管理员看谁在处理；其他人只在替别人处理时标出来
             const chip = admin
@@ -746,9 +749,7 @@ export default function Conversations({ me, canAutoSend, notify, onOpenKnowledge
                     <span className={`tag ${g.channel}`}>{CHANNEL_LABEL[g.channel]}</span>
                     {g.is_external_group && <span className="ext">客户群</span>}
                     <span className="g-preview">{g.last_content}</span>
-                    {view === "escalated"
-                      ? g.escalated_count > 0 && <span className="g-badge warn">{g.escalated_count}</span>
-                      : g.pending_count > 0 && <span className="g-badge" title="待处理">{g.pending_count}</span>}
+                    {g.pending_count > 0 && <span className="g-badge" title="待处理">{g.pending_count}</span>}
                   </div>
                   {asking && (
                     <div className="g-confirm" onClick={(e) => e.stopPropagation()}>
@@ -826,7 +827,9 @@ export default function Conversations({ me, canAutoSend, notify, onOpenKnowledge
                 {transferOpen && (
                   <div className="transfer-pop" role="dialog" aria-label="转给同事">
                     <p className="hint">
-                      {who.assignee ? "转过去以后由对方处理这次会话，对方的待处理里会出现这个群。" : "这次会话还没分给人，选一个人处理。"}
+                      {who.assignee
+                        ? "转过去以后由对方处理这次会话，对方的待处理里会出现这个群。还没回复的消息会记为 AI 没答上。"
+                        : "这次会话还没分给人，选一个人处理。"}
                     </p>
                     {ranked.length === 0 && <p className="hint">{colleagues.length ? "没有可以转的同事" : "加载中…"}</p>}
                     <ul className="people">

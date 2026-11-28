@@ -10,13 +10,16 @@ import {
   type CandidateView,
   type KnowledgeKind,
 } from "./api";
+import Gaps from "./Gaps";
 
-const VIEWS: { key: CandidateView; label: string }[] = [
+type View = CandidateView | "gaps";
+const VIEWS: { key: View; label: string }[] = [
   { key: "proposed", label: "待我确认" },
   { key: "pending", label: "待审核" },
   { key: "approved", label: "已通过" },
   { key: "rejected", label: "未通过" },
   { key: "skipped", label: "不收录" },
+  { key: "gaps", label: "待补知识" },
 ];
 const BRANCHES: Branch[] = ["有数", "知数", "通用"];
 
@@ -215,7 +218,7 @@ interface Props {
 
 /** 知识库：回复发出后 AI 建议沉淀的问答，回复的人确认、其他同事审核通过后，工作台和售后数字人都会用上。 */
 export default function KnowledgePage({ me, notify, onCountsChanged }: Props) {
-  const [view, setView] = useState<CandidateView>("proposed");
+  const [view, setView] = useState<View>("proposed");
   const [items, setItems] = useState<Candidate[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const firstCounts = useRef(true);
@@ -223,6 +226,7 @@ export default function KnowledgePage({ me, notify, onCountsChanged }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(() => {
+    if (view === "gaps") return;
     fetchCandidates(view, view === "proposed" ? me : undefined)
       .then((r) => {
         setItems(r);
@@ -263,26 +267,30 @@ export default function KnowledgePage({ me, notify, onCountsChanged }: Props) {
           </button>
         ))}
       </div>
-      <div className="cand-list">
-        {error && <p className="error pad">加载失败：{error}</p>}
-        {loading && <p className="empty pad">加载中…</p>}
-        {!loading && !error && items.length === 0 && (
-          <p className="empty pad">
-            {view === "proposed"
-              ? "没有等你确认的。你改过 AI 建议后发出的回复，AI 觉得通用时会出现在这里"
-              : view === "pending"
-                ? "没有等审核的候选知识"
-                : view === "approved"
-                  ? "还没有审核通过的知识"
-                  : view === "rejected"
-                    ? "没有未通过或停用的"
-                    : "没有 AI 判断不收录的"}
-          </p>
-        )}
-        {items.map((c) => (
-          <CandidateCard key={`${c.id}:${c.status}`} c={c} me={me} onChanged={changed} notify={notify} />
-        ))}
-      </div>
+      {view === "gaps" ? (
+        <Gaps me={me} onOpen={setView} />
+      ) : (
+        <div className="cand-list">
+          {error && <p className="error pad">加载失败：{error}</p>}
+          {loading && <p className="empty pad">加载中…</p>}
+          {!loading && !error && items.length === 0 && (
+            <p className="empty pad">
+              {view === "proposed"
+                ? "没有等你确认的。你改过 AI 建议后发出的回复，AI 觉得通用时会出现在这里"
+                : view === "pending"
+                  ? "没有等审核的候选知识"
+                  : view === "approved"
+                    ? "还没有审核通过的知识"
+                    : view === "rejected"
+                      ? "没有未通过或停用的"
+                      : "没有 AI 判断不收录的"}
+            </p>
+          )}
+          {items.map((c) => (
+            <CandidateCard key={`${c.id}:${c.status}`} c={c} me={me} onChanged={changed} notify={notify} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

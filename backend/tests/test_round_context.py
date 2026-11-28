@@ -74,18 +74,18 @@ def test_ready_followup_merges_and_legacy_schema(client):
         assert SuggestionOut.model_validate(sug).covers == [second]
 
 
-def test_support_window_escalated_and_status_history(client, fake_llm, monkeypatch):
+def test_support_window_handled_and_status_history(client, fake_llm, monkeypatch):
     first = post(client, 1, "旧问题？", 0)
-    assert client.post(f"/api/suggestions/{snapshot(first).id}/escalate", json={}).status_code == 200
+    assert client.post(f"/api/suggestions/{snapshot(first).id}/dismiss", json={}).status_code == 200
     post(client, 2, "先发截图", 1, sender="lisi")
     old = post(client, 3, "超过时间窗？", 2)
     recent = post(client, 4, "新问题？", 1900)
     latest = post(client, 5, "补充情况", 1901)
     current = snapshot(latest)
     assert current.covers == [str(recent), str(latest)]
-    assert snapshot(first).status == S.ESCALATED and snapshot(old).status == S.READY
+    assert snapshot(first).status == S.DISMISSED and snapshot(old).status == S.READY
     prompt = fake_llm.calls[-1][1]
-    assert "已转人工，同事在处理" in prompt and "技术支持 李四" in prompt
+    assert "旧问题？（无需回复）" in prompt and "技术支持 李四" in prompt
     assert "还没回复" in prompt and "<current_round>" in prompt
 
 
@@ -252,8 +252,7 @@ def test_merged_excluded_after_target_reply(client, adoption):
     assert snapshot(first).status == S.MERGED and snapshot(first).merged_into == target.id
 
 
-@pytest.mark.parametrize("action", ["dismiss", "escalate"])
-def test_handled_newest_resumes_earlier_generation(client, fake_llm, monkeypatch, action):
+def test_handled_newest_resumes_earlier_generation(client, fake_llm, monkeypatch):
     pending = collect(monkeypatch)
     first = post(client, 1, "第一个问题？", 1)
     middle = post(client, 2, "第二个问题？", 2)
@@ -262,7 +261,7 @@ def test_handled_newest_resumes_earlier_generation(client, fake_llm, monkeypatch
     pending[0][1](*pending[0][2])
     pending[1][1](*pending[1][2])
     assert len(fake_llm.calls) == 0
-    response = client.post(f"/api/suggestions/{snapshot(latest).id}/{action}", json={})
+    response = client.post(f"/api/suggestions/{snapshot(latest).id}/dismiss", json={})
     assert response.status_code == 200
     pending[2][1](*pending[2][2])
     assert len(pending) == 4 and pending[3][0] == 0 and pending[3][2] == (middle,)
@@ -270,7 +269,7 @@ def test_handled_newest_resumes_earlier_generation(client, fake_llm, monkeypatch
     assert len(fake_llm.calls) == 1
     assert snapshot(middle).status == S.READY and snapshot(middle).covers == list(map(str, [first, middle]))
     assert snapshot(first).status == S.MERGED and snapshot(first).merged_into == snapshot(middle).id
-    assert snapshot(latest).status == (S.DISMISSED if action == "dismiss" else S.ESCALATED)
+    assert snapshot(latest).status == S.DISMISSED
 
 
 def test_zero_window_keeps_equal_timestamp_messages_separate(client, fake_llm, monkeypatch):
@@ -335,3 +334,20 @@ def test_no_question_round_skips_lookup(client, fake_llm, monkeypatch):
     assert sug.status == S.READY
     assert sug.question == "导出报错？\n明天你来升级吧，我请假"
     assert sug.knowledge_note == suggest.NO_QUESTION_NOTE
+
+
+def test_missed_carries_to_merged_round(client, fake_llm):
+    """转给同事求助后客户又补了话、并成新的一轮：这一轮照样记为 AI 没答上，待补知识里只出一条。"""
+    from app.ai import reflow
+
+    first = post(client, 1, "导出报错？", 0)
+    with db.SessionLocal() as session:
+        reflow.mark_missed(session.get(Suggestion, snapshot(first).id), "transfer", "王五")
+        session.commit()
+    latest = post(client, 2, "补充一下截图", 5)
+    assert snapshot(first).status == S.MERGED
+    current = snapshot(latest)
+    assert current.missed == "transfer" and current.missed_by == "王五"
+    gaps = client.get("/api/gaps").json()
+    assert [g["suggestion_id"] for g in gaps["items"]] == [str(current.id)]
+    assert gaps["items"][0]["customer_text"] == "导出报错？\n补充一下截图"
