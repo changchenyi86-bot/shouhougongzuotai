@@ -116,13 +116,13 @@ def video_frames(data: bytes, count: int) -> tuple[bytes, float, int]:
         image = image.convert('RGB')
         image.thumbnail((cell, cell))
         tiles.append(image)
-    height = max(t.height for t in tiles)
-    sheet = Image.new('RGB', (cols * cell, rows * height), 'white')
+    width, height = max(t.width for t in tiles), max(t.height for t in tiles)  # 竖屏视频格子也是竖的，不留大片白边
+    sheet = Image.new('RGB', (cols * width, rows * height), 'white')
     draw = ImageDraw.Draw(sheet)
     font = ImageFont.load_default(size=22)
     for i, ((at, _), tile) in enumerate(zip(frames, tiles)):
-        x, y = (i % cols) * cell, (i // cols) * height
-        sheet.paste(tile, (x + (cell - tile.width) // 2, y))
+        x, y = (i % cols) * width, (i // cols) * height
+        sheet.paste(tile, (x + (width - tile.width) // 2, y))
         label = f'#{i + 1} {int(at) // 60}:{int(at) % 60:02d}'
         right = int(draw.textlength(label, font=font)) + 12
         draw.rectangle((x, y, x + right, y + 30), fill='black')
