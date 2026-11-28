@@ -440,7 +440,7 @@ def test_video_sniff_frames_and_extract(monkeypatch):
     sheet, duration, count = media.video_frames(data, 6)
     assert 2.5 <= duration <= 3.5 and count == 6
     with Image.open(io.BytesIO(sheet)) as im:
-        assert im.size[0] == 3 * 640 and im.format == 'JPEG'
+        assert im.size == (3 * 320, 2 * 240) and im.format == 'JPEG'  # 小视频不放大
     seen = {}
 
     def handler(request):
@@ -489,3 +489,9 @@ def test_archive_video_message_and_download(client, monkeypatch):
     raw = {'msgtype': 'video', 'msgid': 'abcdef123456', 'video': {'sdkfileid': 'V1', 'filesize': 30 * 1024 * 1024}}
     assert wecom_media.media_info(raw) == ('V1', '视频_abcdef12.mp4', 30 * 1024 * 1024)
     assert attachments.max_bytes(video=True) > 30 * 1024 * 1024 > attachments.max_bytes()
+
+
+def test_portrait_video_sheet_has_no_wide_margins():
+    sheet, _, count = media.video_frames(video_bytes(size=(240, 320)), 6)
+    with Image.open(io.BytesIO(sheet)) as im:
+        assert count == 6 and im.size == (3 * 240, 2 * 320)  # 竖屏格子也是竖的
