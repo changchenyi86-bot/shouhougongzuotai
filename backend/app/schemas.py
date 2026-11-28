@@ -874,3 +874,38 @@ class CustomerNoteEdit(BaseModel):
     @classmethod
     def _strip(cls, v: str) -> str:
         return _strip_text(v)
+
+
+class ColleagueAccountOut(BaseModel):
+    """同事的个人微信：名单上的账号按我方处理。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    channel: Channel
+    sender_id: str
+    name: str
+    added_by: str | None
+    created_at: datetime
+
+
+class ColleagueAccountIn(BaseModel):
+    channel: Channel = Channel.WECOM
+    sender_id: str = Field(min_length=1, max_length=128)
+    name: str = Field(default="", max_length=128)
+
+
+class ColleagueAdded(BaseModel):
+    account: ColleagueAccountOut
+    closed: int = Field(description="随加入名单结束的、以前当成客户消息生成的未处理建议条数")
+
+
+class ColleagueCandidate(BaseModel):
+    """可能是同事的外部账号，等管理员确认。"""
+
+    channel: Channel
+    sender_id: str
+    name: str
+    groups: int = Field(description="在几个客户群里说过话")
+    messages: int
+    last_at: datetime | None
+    reason: str
