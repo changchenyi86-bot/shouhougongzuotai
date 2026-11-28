@@ -134,7 +134,7 @@ def run(message_id: uuid.UUID) -> None:
         except Exception as exc:  # noqa: BLE001
             log.exception("生成回复建议失败 message=%s", message_id)
             error = f"内部错误：{exc}"
-        # 生成期间可能已被转人工、忽略或采纳，只在仍处于生成中时写入结果
+        # 生成期间可能已被忽略或采纳，只在仍处于生成中时写入结果
         session.refresh(sug, with_for_update=True)
         if sug.status != SuggestionStatus.GENERATING:
             _resume_previous(session, message)
@@ -151,6 +151,8 @@ def run(message_id: uuid.UUID) -> None:
             if other.status in (SuggestionStatus.GENERATING, SuggestionStatus.READY, SuggestionStatus.FAILED,
                                  SuggestionStatus.MERGED):
                 other.status, other.merged_into = SuggestionStatus.MERGED, sug.id
+                if other.missed and not sug.missed:  # 转给同事求助后客户又补了话：这一轮照样算 AI 没答上
+                    sug.missed, sug.missed_by, sug.missed_at = other.missed, other.missed_by, other.missed_at
         if result is None:
             sug.status, sug.error = SuggestionStatus.FAILED, error
             sug.knowledge = sug.knowledge_error = sug.knowledge_note = sug.profile = None
@@ -205,7 +207,7 @@ def after_media(attachment_id: uuid.UUID) -> None:
             sug = session.get(Suggestion, sug.merged_into)
         if sug is None:
             return
-        # 生成中的由 run 结束时检查；同事已经回复、转人工、手动标无需回复的不动
+        # 生成中的由 run 结束时检查；同事已经回复、手动标无需回复的不动
         regenerate = sug.status in ACTIVE or (sug.status == SuggestionStatus.DISMISSED and sug.auto_dismissed
                                                and not sug.handled_by)
         if not regenerate or sug.updated_at >= attachment.extracted_at:

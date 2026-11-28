@@ -1,4 +1,7 @@
-"""候选知识：AI 建议沉淀 → 回复的人确认 → 其他技术支持审核通过 → 工作台生成建议时用，并写入售后数字人。"""
+"""候选知识：AI 建议沉淀 → 回复的人确认 → 其他技术支持审核通过 → 工作台生成建议时用，并写入售后数字人。
+
+待补知识：AI 没答上的问题（客服大改或没用 AI 建议、转给同事求助），补知识、提高命中率时从这里看缺什么。
+"""
 
 import hmac
 import logging
@@ -16,8 +19,9 @@ from app.ai.embedding import EmbeddingError
 from app.auth import current_staff
 from app.config import settings
 from app.db import get_session
-from app.models import CandidateStatus, KnowledgeCandidate, Message, Staff, Suggestion
-from app.schemas import CandidateCounts, CandidateEdit, CandidateOut, CardsOut, CardsSyncedIn
+from app.models import CandidateStatus, KnowledgeCandidate, Message, Staff, Suggestion, SuggestionStatus
+from app.schemas import (CandidateBrief, CandidateCounts, CandidateEdit, CandidateOut, CardsOut, CardsSyncedIn, GapOut,
+                         GapsOut)
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", dependencies=[Depends(current_staff)])
@@ -185,6 +189,54 @@ def retire(candidate_id: uuid.UUID, body: CandidateEdit, staff: Staff = Depends(
     session.commit()
     worker.submit(_reindex, cand.id)
     return _out(session, cand)
+
+
+# ---------- 待补知识 ----------
+
+
+def _gap_state(sug: Suggestion) -> str:
+    cand = sug.candidate
+    if cand is not None and cand.status == C.APPROVED:
+        return "filled"
+    if sug.status == SuggestionStatus.DISMISSED or (cand is not None and cand.status in (C.NOT_GENERAL, C.DECLINED)):
+        return "skipped"
+    return "todo"
+
+
+def _gap(sug: Suggestion, message: Message, texts: dict[uuid.UUID, str], state: str) -> GapOut:
+    ids = [uuid.UUID(v) for v in (sug.covers or [str(message.id)])]
+    knowledge = sug.knowledge or []
+    return GapOut(
+        suggestion_id=sug.id, message_id=message.id, channel=message.channel, group_id=message.group_id,
+        group_name=message.group_name,
+        customer_text="\n".join(texts[i] for i in ids if i in texts) or message.content,
+        question=sug.question, ai_suggestion=sug.content, can_answer=sug.can_answer, ai_reason=sug.reason,
+        knowledge_found=len(knowledge), knowledge_cited=sum(bool(k.get("cited")) for k in knowledge),
+        knowledge_problem=sug.knowledge_error or sug.knowledge_note,
+        status=sug.status, final_content=sug.final_content, handled_by=sug.handled_by, note=sug.note,
+        missed=sug.missed, missed_by=sug.missed_by, missed_at=sug.missed_at,
+        candidate=CandidateBrief.model_validate(sug.candidate) if sug.candidate else None, state=state,
+    )
+
+
+@router.get("/gaps", response_model=GapsOut)
+def list_gaps(
+    view: Literal["todo", "filled", "skipped", "all"] = "todo",
+    limit: int = Query(100, ge=1, le=500),
+    session: Session = Depends(get_session),
+) -> GapsOut:
+    """AI 没答上的问题，最近的在前。整理成的知识审核通过算已补上；个案、无需回复的算不用补。"""
+    rows = session.execute(
+        select(Suggestion, Message).join(Message, Message.id == Suggestion.message_id)
+        .where(Suggestion.missed.is_not(None), Suggestion.status != SuggestionStatus.MERGED)
+        .order_by(Suggestion.missed_at.desc())
+    ).all()
+    states = [(sug, msg, _gap_state(sug)) for sug, msg in rows]
+    counts = {k: sum(st == k for *_, st in states) for k in ("todo", "filled", "skipped")}
+    picked = [(s, m, st) for s, m, st in states if view == "all" or st == view][:limit]
+    ids = {uuid.UUID(v) for s, m, _ in picked for v in (s.covers or [])}
+    texts = {i: c for i, c in session.execute(select(Message.id, Message.content).where(Message.id.in_(ids)))} if ids else {}
+    return GapsOut(items=[_gap(s, m, texts, st) for s, m, st in picked], counts=counts)
 
 
 # ---------- 写入售后数字人：本机同步脚本用，凭 CARDS_SYNC_TOKEN 访问（不用登录） ----------

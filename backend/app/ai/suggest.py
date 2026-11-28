@@ -127,7 +127,7 @@ def _speaker(message: Message) -> str:
 ROUND_STATUSES = {SuggestionStatus.GENERATING, SuggestionStatus.READY, SuggestionStatus.FAILED}
 STATUS_LABELS = {
     SuggestionStatus.ADOPTED: "已回复", SuggestionStatus.EDITED: "已回复",
-    SuggestionStatus.DISMISSED: "无需回复", SuggestionStatus.ESCALATED: "已转人工，同事在处理",
+    SuggestionStatus.DISMISSED: "无需回复",
     SuggestionStatus.CLOSED: "会话结束时没回复", SuggestionStatus.MERGED: "已并入别的回复",
     SuggestionStatus.READY: "还没回复", SuggestionStatus.GENERATING: "还没回复",
     SuggestionStatus.FAILED: "还没回复",

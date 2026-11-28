@@ -168,7 +168,7 @@ function ResultDetail({ r }: { r: EvalResult }) {
             AI 这次的建议
             {r.done && !r.error && (
               <small>
-                {r.can_answer ? "有把握直接回复" : "建议转人工"}
+                {r.can_answer ? "有把握直接回复" : "没把握"}
                 {r.needs_reply === false && " · 判断不用回复"}
                 {r.seconds ? ` · ${r.seconds} 秒` : ""}
               </small>

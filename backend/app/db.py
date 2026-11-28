@@ -35,7 +35,8 @@ _NEW_COLUMNS = {
                     "via_chat": "BOOLEAN NOT NULL DEFAULT FALSE", "profile": "JSON",
                     "covers": "JSON", "merged_into": "UUID", "question": "TEXT",
                     "products": "JSON", "product_source": "VARCHAR(16)", "product_reason": "TEXT",
-                    "product_override": "JSON", "product_original": "JSON", "product_corrected_by": "VARCHAR(64)"},
+                    "product_override": "JSON", "product_original": "JSON", "product_corrected_by": "VARCHAR(64)",
+                    "missed": "VARCHAR(16)", "missed_by": "VARCHAR(64)", "missed_at": "TIMESTAMP WITH TIME ZONE"},
     "eval_results": {"question": "TEXT"},
     "attachments": {"extracted_text": "TEXT", "extract_status": "VARCHAR(16)",
                     "extract_error": "TEXT", "extract_model": "VARCHAR(128)",
@@ -60,6 +61,14 @@ def _add_missing_columns() -> None:
         # 早期版本把企业微信视频存成「其他」消息，改成视频，工作台里才能下载、播放（枚举按名字存）
         conn.execute(text("UPDATE messages SET msg_type = 'VIDEO' "
                           "WHERE msg_type = 'OTHER' AND content = '[视频]' AND attachment_id IS NULL"))
+        # 去掉了「转人工」：早期转人工、还没回复的消息回到待处理，记为 AI 没答上（谁、什么时候转的照留）
+        conn.execute(text(
+            "UPDATE suggestions SET missed = 'escalated', missed_by = handled_by, "
+            "missed_at = COALESCE(handled_at, updated_at), handled_by = NULL, handled_at = NULL, "
+            "status = CASE WHEN COALESCE(content, '') <> '' THEN 'READY' ELSE 'FAILED' END, "
+            "error = CASE WHEN COALESCE(content, '') <> '' THEN error "
+            "ELSE COALESCE(error, 'AI 没有写回复，可以重新生成') END "
+            "WHERE status = 'ESCALATED'"))
 
 
 def get_session() -> Iterator[Session]:

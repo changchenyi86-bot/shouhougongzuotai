@@ -50,18 +50,16 @@ def test_end_closes_unreplied_and_reopens_on_new_message(client, monkeypatch):
         _msg(client, n)
     _msg(client, 4, sender="lisi")  # 员工发言没有建议
     _msg(client, 5, group="wrB")
-    client.post(f"/api/suggestions/{_sid(client, '第1条')}/escalate", json={"operator": "王五"})
     client.post(f"/api/suggestions/{_sid(client, '第2条')}/adopt", json={"content": "好的", "operator": "李四"})
-    assert _todo(client) == {"wrA": 1, "wrB": 1}
+    assert _todo(client) == {"wrA": 2, "wrB": 1}
 
     r = _end(client)
     assert r.status_code == 201
     end = r.json()
-    assert end["ended_by"] == "李四" and end["closed_count"] == 2  # 第1条（已转人工）、第3条（待处理）
+    assert end["ended_by"] == "李四" and end["closed_count"] == 2  # 第1条、第3条（待处理）
     # 已回复的不受影响，其余随会话结束；别的群不受影响
     assert _status(client) == {"第1条": "closed", "第2条": "edited", "第3条": "closed"}
     assert _todo(client) == {"wrB": 1}
-    assert not [g for g in client.get("/api/groups", params={"view": "escalated"}).json() if g["group_id"] == "wrA"]
     conv = _conv(client)
     assert [e["id"] for e in conv["ends"]] == [end["id"]]
     closed = next(i["suggestion"] for i in conv["items"] if i["message"]["content"] == "第3条")
@@ -82,8 +80,8 @@ def test_closed_message_can_still_be_replied(client):
     _msg(client, 1)
     sid = _sid(client, "第1条")
     _end(client)
-    # 结束后不能再转人工或标记无需回复，但可以补上回复
-    assert client.post(f"/api/suggestions/{sid}/escalate", json={}).status_code == 409
+    # 结束后不能再标记无需回复，但可以补上回复
+    assert client.post(f"/api/suggestions/{sid}/dismiss", json={}).status_code == 409
     r = client.post(f"/api/suggestions/{sid}/adopt", json={"content": "补充一下：已修复", "operator": "李四"})
     assert r.status_code == 200 and r.json()["suggestion"]["status"] == "edited"
 

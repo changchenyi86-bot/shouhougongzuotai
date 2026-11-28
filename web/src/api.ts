@@ -50,7 +50,6 @@ export type SuggestionStatus =
   | "failed"
   | "adopted"
   | "edited"
-  | "escalated"
   | "dismissed"
   /** 结束会话时还没回复，随会话一起结束 */
   | "closed"
@@ -133,7 +132,19 @@ export interface Suggestion {
   note: string | null;
   handled_by: string | null;
   handled_at: string | null;
+  /** AI 没答上：客服大改或没用 AI 建议、转给同事求助（escalated 是早期的转人工），进知识库的待补知识 */
+  missed?: Missed | null;
+  missed_by?: string | null;
+  missed_at?: string | null;
 }
+
+export type Missed = "rewritten" | "own" | "transfer" | "escalated";
+export const MISSED_LABEL: Record<Missed, string> = {
+  rewritten: "大改了 AI 建议",
+  own: "没用 AI 建议，自己写的",
+  transfer: "转给同事求助",
+  escalated: "转人工（旧）",
+};
 
 export type SendStatus = "queued" | "sending" | "sent" | "failed" | "cancelled" | "manual";
 
@@ -194,8 +205,6 @@ export const adopt = (id: string, content: string, send = false, viaChat = false
     mentions,
   });
 export const fetchSendState = () => call<SendState>("/api/send/status");
-export const escalate = (id: string, note: string) =>
-  post<Suggestion>(`/api/suggestions/${id}/escalate`, { note: note || null });
 export const dismiss = (id: string) => post<Suggestion>(`/api/suggestions/${id}/dismiss`);
 export const regenerate = (id: string) => post<Suggestion>(`/api/suggestions/${id}/regenerate`);
 /** 把「无需回复」改回待回复 */
@@ -224,7 +233,6 @@ export interface Group {
   last_content: string;
   message_count: number;
   pending_count: number;
-  escalated_count: number;
   /** 群负责人 */
   owner: StaffBrief | null;
   /** 进行中的会话分给了谁 */
@@ -296,7 +304,7 @@ export interface Conversation {
   conversation_open: boolean;
 }
 
-export type GroupView = "todo" | "escalated" | "unassigned" | "all";
+export type GroupView = "todo" | "unassigned" | "all";
 
 /** 工作台有没有新变化（新消息、AI 建议、会话分配），版本号变了再去刷新列表和聊天记录 */
 export const fetchUpdates = () => call<{ version: string }>("/api/updates");
@@ -521,6 +529,43 @@ export const candidateAction = (
   edit: CandidateEdit = {},
 ) => post<Candidate>(`/api/candidates/${id}/${action}`, edit);
 
+// ---------- 待补知识 ----------
+
+export type GapState = "todo" | "filled" | "skipped";
+export type GapView = GapState | "all";
+
+/** AI 没答上的一轮客户问题 */
+export interface Gap {
+  suggestion_id: string;
+  message_id: string;
+  channel: Channel;
+  group_id: string;
+  group_name: string | null;
+  /** 这一轮客户的原话 */
+  customer_text: string;
+  /** AI 结合上下文补全的问题 */
+  question: string | null;
+  ai_suggestion: string | null;
+  can_answer: boolean | null;
+  ai_reason: string | null;
+  knowledge_found: number;
+  knowledge_cited: number;
+  /** 知识库没查成或没查的原因 */
+  knowledge_problem: string | null;
+  status: SuggestionStatus;
+  final_content: string | null;
+  handled_by: string | null;
+  note: string | null;
+  missed: Missed;
+  missed_by: string | null;
+  missed_at: string;
+  candidate: { id: string; status: CandidateStatus; question: string } | null;
+  /** todo 待补 / filled 已补上（整理的知识审核通过）/ skipped 不用补（个案、无需回复） */
+  state: GapState;
+}
+export const fetchGaps = (view: GapView) =>
+  call<{ items: Gap[]; counts: Record<GapState, number> }>(`/api/gaps?view=${view}`);
+
 // ---------- 采纳统计 ----------
 
 export interface AdoptionRow {
@@ -531,7 +576,8 @@ export interface AdoptionRow {
   major: number;
   unused: number;
   via_chat: number;
-  escalated: number;
+  /** AI 没答上（大改、自己写、转给同事求助） */
+  missed: number;
   dismissed: number;
   knowledge_submitted: number;
   knowledge_approved: number;

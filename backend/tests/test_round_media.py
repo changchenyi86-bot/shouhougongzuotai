@@ -90,8 +90,9 @@ def test_late_recognition_regenerates_until_handled(client, fake_llm):
     assert len(fake_llm.calls) == calls + 1 and "SQL 报错 column online" in fake_llm.calls[-1][1]
     assert snapshot(image).status == S.READY and snapshot(question).status == S.MERGED
 
-    # 同事已经接手（转人工）：识别再出结果也不动
-    assert client.post(f"/api/suggestions/{snapshot(image).id}/escalate", json={}).status_code == 200
+    # 同事已经回复：识别再出结果也不动
+    r = client.post(f"/api/suggestions/{snapshot(image).id}/adopt", json={"content": "我们看下这个报错"})
+    assert r.status_code == 200
     finish(att, "又识别了一次")
     worker.after_media(att)
     assert len(fake_llm.calls) == calls + 1

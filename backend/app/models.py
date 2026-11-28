@@ -95,15 +95,13 @@ class SuggestionStatus(str, enum.Enum):
     FAILED = "failed"  # 生成失败
     ADOPTED = "adopted"  # 原样采纳
     EDITED = "edited"  # 修改后采纳
-    ESCALATED = "escalated"  # 转人工
     DISMISSED = "dismissed"  # 忽略（无需回复）
     CLOSED = "closed"  # 结束会话时还没回复，随会话一起结束
     MERGED = "merged"  # 已并入同一轮的另一条建议
 
 
 # 还没处理完的建议；结束会话时这些随会话结束
-OPEN_SUGGESTION = {SuggestionStatus.GENERATING, SuggestionStatus.READY, SuggestionStatus.FAILED,
-                   SuggestionStatus.ESCALATED}
+OPEN_SUGGESTION = {SuggestionStatus.GENERATING, SuggestionStatus.READY, SuggestionStatus.FAILED}
 
 
 class SendStatus(str, enum.Enum):
@@ -164,7 +162,11 @@ class Suggestion(Base):
     send_status: Mapped[SendStatus | None] = mapped_column(Enum(SendStatus, native_enum=False, length=16), index=True)
     send_error: Mapped[str | None] = mapped_column(Text)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    note: Mapped[str | None] = mapped_column(Text, comment="转人工备注")
+    note: Mapped[str | None] = mapped_column(Text, comment="处理备注（早期转人工时填的）")
+    # AI 没答上：进「待补知识」，用来补知识、提高命中率。记第一次的原因和触发的人
+    missed: Mapped[str | None] = mapped_column(String(16), comment="rewritten / own / transfer / escalated")
+    missed_by: Mapped[str | None] = mapped_column(String(64))
+    missed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     handled_by: Mapped[str | None] = mapped_column(String(64))
     handled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

@@ -6,6 +6,8 @@ import type {
   Channel,
   ChatTurn,
   ConversationEnd,
+  Gap,
+  GapState,
   Group,
   InboxItem,
   KnowledgeRef,
@@ -69,7 +71,6 @@ function room(channel: Channel, id: string, name: string | null, external: boole
       last_content: "",
       message_count: total,
       pending_count: 0,
-      escalated_count: 0,
       owner: null,
       assignee: null,
       conversation_open: false,
@@ -216,16 +217,68 @@ function demoCandidate(r: Room, m: Message) {
   s.candidate = { id: c.id, status: c.status, question: c.question };
 }
 
+/** 待补知识：演示群里 AI 没答上的，加上几条早些天的 */
+function demoGaps(): Gap[] {
+  const out: Gap[] = [];
+  for (const r of rooms)
+    for (const { message: m, suggestion: s } of r.items) {
+      if (!s?.missed || s.status === "merged") continue;
+      const c = s.candidate;
+      out.push({
+        suggestion_id: s.id, message_id: m.id, channel: r.group.channel, group_id: r.group.group_id,
+        group_name: r.group.group_name, customer_text: m.content, question: s.question ?? null,
+        ai_suggestion: s.content, can_answer: s.can_answer, ai_reason: s.reason,
+        knowledge_found: s.knowledge.length, knowledge_cited: s.knowledge.filter((k) => k.cited).length,
+        knowledge_problem: s.knowledge_error ?? s.knowledge_note ?? null, status: s.status,
+        final_content: s.final_content, handled_by: s.handled_by, note: s.note,
+        missed: s.missed, missed_by: s.missed_by ?? null, missed_at: s.missed_at ?? m.sent_at, candidate: c ?? null,
+        state: c?.status === "approved" ? "filled" : s.status === "dismissed" || c?.status === "not_general" || c?.status === "declined" ? "skipped" : "todo",
+      });
+    }
+  const older = (days: number, h: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() - days);
+    d.setHours(h, 12, 0, 0);
+    return d.toISOString();
+  };
+  const base = { channel: "wecom" as const, group_id: "g-old", ai_reason: null, knowledge_problem: null, note: null, can_answer: false };
+  out.push(
+    {
+      ...base, suggestion_id: "s-old1", message_id: "m-old1", group_name: "物流客户-有数项目群",
+      customer_text: "大屏轮播的时候图表会闪一下，能关掉动画吗？", question: "大屏轮播切换时图表闪烁，怎么关闭切换动画？",
+      ai_suggestion: "您好，麻烦提供一下大屏链接和浏览器版本，我们看一下。", knowledge_found: 4, knowledge_cited: 0,
+      status: "ready", final_content: null, handled_by: null, missed: "transfer", missed_by: "宋奔", missed_at: older(1, 16),
+      candidate: null, state: "todo",
+    },
+    {
+      ...base, suggestion_id: "s-old2", message_id: "m-old2", group_name: "保险客户-知数交付群",
+      customer_text: "智能问数能不能限制只查自己部门的数据？", question: "智能问数怎么按部门做数据权限？",
+      ai_suggestion: "您好，智能问数目前不支持按部门限制。", knowledge_found: 2, knowledge_cited: 1,
+      status: "edited", final_content: "可以的，在数据集上配置行权限（按部门字段），智能问数查询时会自动带上当前用户的行权限。",
+      handled_by: "唐已杰", missed: "rewritten", missed_by: "唐已杰", missed_at: older(2, 11),
+      candidate: { id: "c-old2", status: "approved", question: "智能问数怎么按部门限制能查的数据？" }, state: "filled",
+    },
+    {
+      ...base, suggestion_id: "s-old3", message_id: "m-old3", group_name: "制造客户-知数交付群",
+      customer_text: "昨天那个任务帮忙重跑一下", question: null, ai_suggestion: null, knowledge_found: 0, knowledge_cited: 0,
+      knowledge_problem: "这条是办事请求，没查知识库", status: "edited", final_content: "已经帮您重跑了，跑完了您看下。",
+      handled_by: "姜瑜", missed: "own", missed_by: "姜瑜", missed_at: older(3, 10),
+      candidate: { id: "c-old3", status: "not_general", question: "" }, state: "skipped",
+    },
+  );
+  return out.sort((a, b) => b.missed_at.localeCompare(a.missed_at));
+}
+
 const chats = new Map<string, ChatTurn[]>();
 
 function demoStats(): AdoptionRow[] {
   const row = (operator: string, v: Partial<AdoptionRow>): AdoptionRow => ({
-    operator, replied: 0, exact: 0, minor: 0, major: 0, unused: 0, via_chat: 0, escalated: 0, dismissed: 0,
+    operator, replied: 0, exact: 0, minor: 0, major: 0, unused: 0, via_chat: 0, missed: 0, dismissed: 0,
     knowledge_submitted: 0, knowledge_approved: 0, reviews: 0, ...v,
   });
   return [
-    row("李四", { replied: 18, exact: 9, minor: 4, major: 3, unused: 2, via_chat: 3, escalated: 1, dismissed: 2, knowledge_submitted: 2, knowledge_approved: 1, reviews: 1 }),
-    row("姜瑜", { replied: 11, exact: 4, minor: 2, major: 2, unused: 3, via_chat: 1, escalated: 2, knowledge_submitted: 1, reviews: 2 }),
+    row("李四", { replied: 18, exact: 9, minor: 4, major: 3, unused: 2, via_chat: 3, missed: 6, dismissed: 2, knowledge_submitted: 2, knowledge_approved: 1, reviews: 1 }),
+    row("姜瑜", { replied: 11, exact: 4, minor: 2, major: 2, unused: 3, via_chat: 1, missed: 5, knowledge_submitted: 1, reviews: 2 }),
     row("AI", { dismissed: 7 }),
   ];
 }
@@ -322,13 +375,17 @@ function build(): Room[] {
 
   const retail = room("feishu", "g3", "零售客户-有数运维群", true, 98);
   m = say(retail, "k2Rn", 9, 20, "昨天的数据和系统对不上，麻烦看下");
-  suggest(retail, m, "escalated", {
+  suggest(retail, m, "edited", {
     content: "您好，这个问题我们需要技术同事确认一下，稍后回复您。",
     can_answer: false,
     confidence: "low",
-    reason: "涉及数据核对，建议转人工",
-    note: "请数据组核对昨天的同步任务",
-    handled_by: "李四",
+    reason: "涉及数据核对，资料里没有对应的排查办法",
+    final_content: "您好，我们核对了昨天的同步任务，有一张表同步超时没跑完，已经重新跑过，现在数据对上了，您刷新看下。",
+    adoption: "unused",
+    handled_by: "姜瑜",
+    missed: "own",
+    missed_by: "姜瑜",
+    missed_at: at(9, 26),
   });
   m = say(retail, "k2Rn", 9, 31, "另外大屏今天早上打开特别慢");
   suggest(retail, m, "generating");
@@ -351,6 +408,9 @@ function build(): Room[] {
     content: "您好，许可证续期需要商务确认，我们这边先帮您申请。",
     final_content: "您好，测试环境许可证可以在「系统设置 → 许可证」里上传新的许可证文件，我们把文件发您邮箱，替换后重启服务即可生效。",
     adoption: "major",
+    missed: "rewritten",
+    missed_by: "李四",
+    missed_at: at(8, 41),
   });
   demoCandidate(broker, m);
   m = say(broker, "q8Fs", 8, 52, "好的，收到，谢谢");
@@ -394,7 +454,7 @@ function build(): Room[] {
 
 const rooms = build();
 const PENDING: Suggestion["status"][] = ["generating", "ready", "failed"];
-const OPEN: Suggestion["status"][] = [...PENDING, "escalated"];
+const OPEN: Suggestion["status"][] = PENDING;
 
 function summary(r: Room): Group {
   const last = r.items[r.items.length - 1]?.message;
@@ -403,7 +463,6 @@ function summary(r: Room): Group {
     last_message_at: last?.sent_at ?? r.group.last_message_at,
     last_content: last?.content ?? "",
     pending_count: r.items.filter((i) => i.suggestion && PENDING.includes(i.suggestion.status)).length,
-    escalated_count: r.items.filter((i) => i.suggestion?.status === "escalated").length,
   };
 }
 
@@ -516,11 +575,9 @@ async function handle(path: string, query: URLSearchParams, method: string, body
       .filter((g) =>
         view === "todo"
           ? g.pending_count > 0
-          : view === "escalated"
-            ? g.escalated_count > 0
-            : view === "unassigned"
-              ? g.conversation_open && !g.assignee
-              : true,
+          : view === "unassigned"
+            ? g.conversation_open && !g.assignee
+            : true,
       )
       .sort((a, b) => b.last_message_at.localeCompare(a.last_message_at));
   }
@@ -647,6 +704,14 @@ async function handle(path: string, query: URLSearchParams, method: string, body
     return s;
   }
 
+  if (path === "gaps") {
+    const view = query.get("view") ?? "todo";
+    const all = demoGaps();
+    const counts = { todo: 0, filled: 0, skipped: 0 } as Record<GapState, number>;
+    for (const g of all) counts[g.state]++;
+    return { items: all.filter((g) => view === "all" || g.state === view), counts };
+  }
+
   if (path === "candidates/counts")
     return {
       mine: candidates.filter((c) => c.status === "proposed" && c.author === ME.name).length,
@@ -692,7 +757,7 @@ async function handle(path: string, query: URLSearchParams, method: string, body
     const monday = new Date();
     monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
     const zero = (): AdoptionRow => ({
-      operator: "全部", replied: 0, exact: 0, minor: 0, major: 0, unused: 0, via_chat: 0, escalated: 0, dismissed: 0,
+      operator: "全部", replied: 0, exact: 0, minor: 0, major: 0, unused: 0, via_chat: 0, missed: 0, dismissed: 0,
       knowledge_submitted: 0, knowledge_approved: 0, reviews: 0,
     });
     return {
@@ -708,14 +773,13 @@ async function handle(path: string, query: URLSearchParams, method: string, body
     };
   }
 
-  hit = path.match(/^suggestions\/([^/]+)\/(adopt|escalate|dismiss|regenerate)$/);
+  hit = path.match(/^suggestions\/([^/]+)\/(adopt|dismiss|regenerate)$/);
   if (hit) {
     const s = findSuggestion(hit[1])!;
     if (hit[2] === "adopt") {
       handled(s, "adopted").final_content = String(data.content ?? "");
       return { suggestion: s, delivery: "copy", detail: "" };
     }
-    if (hit[2] === "escalate") handled(s, "escalated").note = (data.note as string) || null;
     if (hit[2] === "dismiss") handled(s, "dismissed");
     if (hit[2] === "regenerate") {
       s.status = "generating";

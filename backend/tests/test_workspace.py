@@ -144,10 +144,10 @@ def test_groups_views(ws):
     _customer_msg(ws)
     sid = _conv(ws)["items"][0]["suggestion"]["id"]
     assert [g["group_id"] for g in ws.get("/api/groups", params={"view": "todo"}).json()] == ["wrA"]
-    assert ws.get("/api/groups", params={"view": "escalated"}).json() == []
-    ws.post(f"/api/suggestions/{sid}/escalate", json={})
-    g = ws.get("/api/groups", params={"view": "escalated"}).json()[0]
-    assert g["escalated_count"] == 1 and g["pending_count"] == 0
+    assert ws.get("/api/groups", params={"view": "escalated"}).status_code == 422  # 转人工已去掉
+    ws.post(f"/api/suggestions/{sid}/dismiss", json={})
+    g = ws.get("/api/groups", params={"view": "all"}).json()[0]
+    assert g["pending_count"] == 0 and "escalated_count" not in g
     assert ws.get("/api/groups", params={"view": "todo"}).json() == []
 
 
